@@ -1,0 +1,152 @@
+// JobMarginAI data model
+// Core idea: a User owns one or more QuickBooksConnections (one per QBO company file).
+// Each connection syncs Jobs, which accumulate CostEntries and Estimates.
+// A WeeklyDigest is generated per connection per week from that data.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  passwordHash  String
+  name          String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  connections   QuickBooksConnection[]
+  subscription  Subscription?
+}
+
+// One per connected QuickBooks Online company file ("realm").
+// A user could plausibly run this for more than one company (e.g. an accountant),
+// so this is 1-to-many rather than 1-to-1.
+model QuickBooksConnection {
+  id                String    @id @default(cuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  realmId           String    @unique // QuickBooks company ID
+  companyName       String?
+
+  // OAuth tokens - encrypted at the application layer before write, see src/lib/crypto.ts
+  accessToken       String    @db.Text
+  refreshToken      String    @db.Text
+  accessTokenExpiresAt   DateTime
+  refreshTokenExpiresAt  DateTime
+
+  environment       String    @default("sandbox") // "sandbox" | "production"
+  costTrackingMode  String    @default("unknown")  // "projects" | "classes" | "unknown" - discovered on first sync
+
+  connectedAt       DateTime  @default(now())
+  disconnectedAt    DateTime?
+  lastSyncedAt      DateTime?
+
+  jobs              Job[]
+  digests           WeeklyDigest[]
+
+  @@index([userId])
+}
+
+// A "job" maps to a QuickBooks Project (sub-customer) or a Class, depending on
+// how the contractor tracks cost. We normalize both into this one model.
+model Job {
+  id                String    @id @default(cuid())
+  connectionId      String
+  connection        QuickBooksConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  qboId             String    // QBO Project/Customer/Class ID
+  name              String
+  customerName      String?
+  status            String    @default("open") // "open" | "closed"
+
+  estimatedRevenue  Decimal?  @db.Decimal(12, 2)
+  estimatedCost     Decimal?  @db.Decimal(12, 2)
+
+  startDate         DateTime?
+  endDate           DateTime?
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  costEntries       CostEntry[]
+  invoices          InvoiceSummary[]
+
+  @@unique([connectionId, qboId])
+  @@index([connectionId])
+}
+
+// Raw actual-cost line items pulled from QBO: bills, expenses, time activities,
+// purchase orders. Kept granular so the profitability engine can break down by category.
+model CostEntry {
+  id            String    @id @default(cuid())
+  jobId         String
+  job           Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  qboSourceType String    // "Bill" | "Expense" | "TimeActivity" | "Purchase"
+  qboSourceId   String
+
+  category      String    // "labor" | "materials" | "subcontractor" | "overhead" | "other"
+  description   String?
+  amount        Decimal   @db.Decimal(12, 2)
+  txnDate       DateTime
+
+  createdAt     DateTime  @default(now())
+
+  @@index([jobId])
+  @@index([jobId, category])
+}
+
+// Actual revenue recognized against a job, from QBO invoices.
+model InvoiceSummary {
+  id          String    @id @default(cuid())
+  jobId       String
+  job         Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  qboInvoiceId String
+  amount       Decimal  @db.Decimal(12, 2)
+  status       String   // "paid" | "open" | "overdue"
+  txnDate      DateTime
+
+  @@index([jobId])
+}
+
+// One generated digest per connection per week. `metrics` holds the computed
+// profitability numbers (see src/lib/profitability.ts); `narrative` is the
+// AI-written summary built strictly from `metrics` (see src/lib/digest.ts).
+model WeeklyDigest {
+  id             String    @id @default(cuid())
+  connectionId   String
+  connection     QuickBooksConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  weekStarting   DateTime
+  metrics        Json      // structured profitability data the narrative is grounded in
+  narrative      String    @db.Text
+  emailedAt      DateTime?
+
+  createdAt      DateTime  @default(now())
+
+  @@unique([connectionId, weekStarting])
+  @@index([connectionId])
+}
+
+model Subscription {
+  id                    String    @id @default(cuid())
+  userId                String    @unique
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  stripeCustomerId      String?   @unique
+  stripeSubscriptionId  String?   @unique
+  status                String    @default("trialing") // "trialing" | "active" | "past_due" | "canceled"
+  trialEndsAt           DateTime?
+  currentPeriodEnd      DateTime?
+
+  createdAt             DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+}
