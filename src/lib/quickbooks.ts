@@ -120,6 +120,34 @@ export async function qboQuery(
 }
 
 /**
+ * Step (disconnect): tell Intuit to invalidate this connection's tokens.
+ * Revoking the refresh token invalidates its paired access token too, so one
+ * call is enough. Intuit's own UI still lets the customer manage/revoke
+ * access from their QuickBooks apps page regardless, but calling this
+ * ourselves on disconnect is the documented best practice and is what the
+ * App Assessment Questionnaire asks whether you do.
+ */
+export async function revokeToken(token: string): Promise<void> {
+  const res = await fetch("https://developer.api.intuit.com/v2/oauth2/tokens/revoke", {
+    method: "POST",
+    headers: {
+      Authorization: basicAuthHeader(),
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ token }),
+  });
+
+  if (!res.ok) {
+    // Not fatal to the disconnect flow - the token may already be expired/
+    // revoked on Intuit's side (e.g. the customer disconnected from within
+    // QuickBooks itself first). Log and continue so the local disconnect
+    // still succeeds.
+    console.error(`QuickBooks token revoke failed: ${res.status} ${await res.text()}`);
+  }
+}
+
+/**
  * Detects whether this company tracks job cost via Projects or via Classes -
  * contractors set this up differently, and the Week 1 plan flags this as
  * something to confirm per-customer. We check for it once at first sync

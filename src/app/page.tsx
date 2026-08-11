@@ -67,6 +67,18 @@ export default function HomePage() {
           </div>
         ))}
       </section>
+
+      <footer className="mt-24 flex flex-wrap items-center justify-between gap-4 border-t border-gray-200 pt-8 text-sm text-gray-500">
+        <span>&copy; {new Date().getFullYear()} PWL Solutions LLC</span>
+        <div className="flex gap-6">
+          <Link href="/privacy" className="hover:text-brand">
+            Privacy Policy
+          </Link>
+          <Link href="/terms" className="hover:text-brand">
+            Terms of Service
+          </Link>
+        </div>
+      </footer>
     </main>
   );
 }

@@ -17,6 +17,20 @@ import { encryptToken, decryptToken } from "@/lib/crypto";
  * this path has been proven against a real Sandbox company.
  */
 export async function POST(req: NextRequest) {
+  try {
+    return await runSync(req);
+  } catch (err) {
+    // Same reasoning as /api/digest/generate: always return JSON on failure
+    // so the dashboard button shows a real error instead of hanging forever.
+    console.error("quickbooks/sync failed:", err);
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Sync failed." },
+      { status: 500 }
+    );
+  }
+}
+
+async function runSync(req: NextRequest) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 

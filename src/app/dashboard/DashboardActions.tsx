@@ -7,32 +7,69 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
   const router = useRouter();
   const [status, setStatus] = useState<string | null>(null);
 
-  async function sync() {
-    setStatus("Syncing with QuickBooks...");
-    const res = await fetch("/api/quickbooks/sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ connectionId }),
-    });
-    const data = await res.json();
-    setStatus(
-      res.ok
-        ? `Synced ${data.jobsSynced} jobs, ${data.purchasesSynced} cost entries, ${data.invoicesSynced} invoices.`
-        : `Sync failed: ${data.error}`
-    );
+  // Shared fetch wrapper: guarantees `status` always ends up with a real
+  // message. Without this, a network error, a timeout, or the server
+  // returning a non-JSON error page (e.g. Vercel's default 500 HTML page)
+  // would throw inside res.json() and leave the button stuck on its
+  // "Syncing..." / "Generating..." message forever with no way to tell
+  // whether it failed or is still running.
+  async function callApi(url: string, busyMessage: string, onSuccess: (data: any) => string) {
+    setStatus(busyMessage);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ connectionId }),
+      });
+
+      let data: any = null;
+      try {
+        data = await res.json();
+      } catch {
+        // Response wasn't JSON (e.g. a raw error page or timeout page).
+        data = null;
+      }
+
+      if (res.ok && data) {
+        setStatus(onSuccess(data));
+      } else {
+        setStatus(`Failed: ${data?.error ?? `Server returned status ${res.status}. Check Vercel logs.`}`);
+      }
+    } catch (err) {
+      setStatus(`Failed: ${err instanceof Error ? err.message : "Network error - please try again."}`);
+    }
     router.refresh();
   }
 
-  async function generateDigest() {
-    setStatus("Generating this week's digest...");
-    const res = await fetch("/api/digest/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ connectionId }),
-    });
-    const data = await res.json();
-    setStatus(res.ok ? "Digest generated below." : `Digest generation failed: ${data.error}`);
-    router.refresh();
+  function sync() {
+    return callApi(
+      "/api/quickbooks/sync",
+      "Syncing with QuickBooks...",
+      (data) => `Synced ${data.jobsSynced} jobs, ${data.purchasesSynced} cost entries, ${data.invoicesSynced} invoices.`
+    );
+  }
+
+  function generateDigest() {
+    return callApi(
+      "/api/digest/generate",
+      "Generating this week's digest...",
+      () => "Digest generated below."
+    );
+  }
+
+  function disconnect() {
+    if (
+      !window.confirm(
+        "Disconnect this QuickBooks company? You'll need to reconnect to get new digests."
+      )
+    ) {
+      return;
+    }
+    return callApi(
+      "/api/quickbooks/disconnect",
+      "Disconnecting from QuickBooks...",
+      () => "Disconnected."
+    );
   }
 
   return (
@@ -48,6 +85,12 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
         className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
       >
         Generate this week&apos;s digest
+      </button>
+      <button
+        onClick={disconnect}
+        className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+      >
+        Disconnect
       </button>
       {status && <span className="text-sm text-gray-500">{status}</span>}
     </div>
