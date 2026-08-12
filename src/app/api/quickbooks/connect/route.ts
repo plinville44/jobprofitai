@@ -24,5 +24,5 @@ export async function GET() {
     .setExpirationTime("10m")
     .sign(new TextEncoder().encode(process.env.AUTH_SECRET));
 
-  return NextResponse.redirect(buildAuthorizeUrl(state));
+  return NextResponse.redirect(await buildAuthorizeUrl(state));
 }

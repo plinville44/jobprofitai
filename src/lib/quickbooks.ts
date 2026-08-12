@@ -9,14 +9,6 @@ function isSandbox() {
   return (process.env.QBO_ENVIRONMENT ?? "sandbox") === "sandbox";
 }
 
-function authBaseUrl() {
-  return "https://appcenter.intuit.com/connect/oauth2";
-}
-
-function tokenUrl() {
-  return "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
-}
-
 function apiBaseUrl() {
   return isSandbox()
     ? "https://sandbox-quickbooks.api.intuit.com"
@@ -24,11 +16,83 @@ function apiBaseUrl() {
 }
 
 /**
+ * Thrown whenever QuickBooks tells us a token is no longer usable and the
+ * only fix is the customer reconnecting (refresh token expired/revoked, or
+ * an access token rejected outright). Its `.message` is written to be shown
+ * directly to the customer, since callers just forward `err.message` into
+ * the API response - see the App Assessment Questionnaire's Authorization
+ * and Authentication questions about handling expired/invalid tokens.
+ */
+export class ReconnectRequiredError extends Error {
+  constructor(
+    message = "Your QuickBooks connection has expired or was disconnected on Intuit's side. Please reconnect QuickBooks below."
+  ) {
+    super(message);
+    this.name = "ReconnectRequiredError";
+  }
+}
+
+interface DiscoveryDocument {
+  authorization_endpoint: string;
+  token_endpoint: string;
+  revocation_endpoint: string;
+}
+
+// Hardcoded fallback only - used if the discovery document fetch itself
+// fails, so a transient network hiccup against Intuit's own discovery
+// endpoint doesn't take the whole OAuth flow down. Normal operation always
+// prefers the live discovery document below.
+const FALLBACK_ENDPOINTS: DiscoveryDocument = {
+  authorization_endpoint: "https://appcenter.intuit.com/connect/oauth2",
+  token_endpoint: "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+  revocation_endpoint: "https://developer.api.intuit.com/v2/oauth2/tokens/revoke",
+};
+
+let discoveryCache: DiscoveryDocument | null = null;
+let discoveryCacheAt = 0;
+const DISCOVERY_TTL_MS = 60 * 60 * 1000; // 1 hour - endpoints essentially never change, this just avoids re-fetching on every request
+
+/**
+ * Fetches Intuit's OAuth2 discovery document to get the current
+ * authorization/token/revocation endpoints, rather than hardcoding them -
+ * this is what the App Assessment Questionnaire asks about directly.
+ * Cached in memory for an hour; falls back to the documented stable URLs
+ * above if the discovery document itself can't be reached.
+ */
+async function getDiscoveryDocument(): Promise<DiscoveryDocument> {
+  const now = Date.now();
+  if (discoveryCache && now - discoveryCacheAt < DISCOVERY_TTL_MS) return discoveryCache;
+
+  const url = isSandbox()
+    ? "https://developer.api.intuit.com/.well-known/openid_sandbox_configuration"
+    : "https://developer.api.intuit.com/.well-known/openid_configuration";
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`discovery document fetch failed: ${res.status}`);
+    const doc = await res.json();
+    if (!doc.authorization_endpoint || !doc.token_endpoint) {
+      throw new Error("discovery document missing expected fields");
+    }
+    discoveryCache = {
+      authorization_endpoint: doc.authorization_endpoint,
+      token_endpoint: doc.token_endpoint,
+      revocation_endpoint: doc.revocation_endpoint ?? FALLBACK_ENDPOINTS.revocation_endpoint,
+    };
+    discoveryCacheAt = now;
+    return discoveryCache;
+  } catch {
+    return FALLBACK_ENDPOINTS;
+  }
+}
+
+/**
  * Step 1: build the URL that sends a contractor to Intuit's login/consent screen.
  * `state` should be a signed, single-use token you can verify on callback (CSRF protection) -
  * see /api/quickbooks/connect for how it's generated and /api/quickbooks/callback for verification.
  */
-export function buildAuthorizeUrl(state: string): string {
+export async function buildAuthorizeUrl(state: string): Promise<string> {
+  const { authorization_endpoint } = await getDiscoveryDocument();
   const params = new URLSearchParams({
     client_id: process.env.QBO_CLIENT_ID ?? "",
     scope: QBO_SCOPE,
@@ -36,7 +100,7 @@ export function buildAuthorizeUrl(state: string): string {
     response_type: "code",
     state,
   });
-  return `${authBaseUrl()}?${params.toString()}`;
+  return `${authorization_endpoint}?${params.toString()}`;
 }
 
 export interface QboTokenResponse {
@@ -51,11 +115,27 @@ function basicAuthHeader(): string {
   return `Basic ${Buffer.from(creds).toString("base64")}`;
 }
 
+/**
+ * Reads the OAuth error code out of a failed token-endpoint response, for
+ * control flow only. Deliberately returns just the parsed `error` field, not
+ * the raw body - callers must never log or return the full body, since
+ * Intuit's error responses can echo back parts of the request.
+ */
+async function readOAuthErrorCode(res: Response): Promise<string | undefined> {
+  try {
+    const body = await res.json();
+    return typeof body?.error === "string" ? body.error : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Step 2: exchange the one-time `code` from the callback for real tokens. */
 export async function exchangeCodeForTokens(
   code: string
 ): Promise<QboTokenResponse> {
-  const res = await fetch(tokenUrl(), {
+  const { token_endpoint } = await getDiscoveryDocument();
+  const res = await fetch(token_endpoint, {
     method: "POST",
     headers: {
       Authorization: basicAuthHeader(),
@@ -70,14 +150,27 @@ export async function exchangeCodeForTokens(
   });
 
   if (!res.ok) {
-    throw new Error(`QuickBooks token exchange failed: ${res.status} ${await res.text()}`);
+    // Status only in the message - never the response body (see
+    // readOAuthErrorCode's comment above).
+    throw new Error(`QuickBooks token exchange failed with status ${res.status}`);
   }
   return res.json();
 }
 
-/** Access tokens expire after ~1 hour - call this before any API request once expired. */
+/**
+ * Access tokens expire after ~1 hour - call this before any API request once
+ * expired (see getValidAccessToken in api/quickbooks/sync/route.ts, which
+ * refreshes proactively ~5 minutes before expiry rather than waiting for a
+ * request to actually fail).
+ *
+ * If the refresh token itself has expired or been revoked, Intuit returns
+ * `invalid_grant` - the customer has to reconnect, no retry will fix it, so
+ * this throws ReconnectRequiredError instead of a generic error in that
+ * specific case.
+ */
 export async function refreshTokens(refreshToken: string): Promise<QboTokenResponse> {
-  const res = await fetch(tokenUrl(), {
+  const { token_endpoint } = await getDiscoveryDocument();
+  const res = await fetch(token_endpoint, {
     method: "POST",
     headers: {
       Authorization: basicAuthHeader(),
@@ -91,7 +184,11 @@ export async function refreshTokens(refreshToken: string): Promise<QboTokenRespo
   });
 
   if (!res.ok) {
-    throw new Error(`QuickBooks token refresh failed: ${res.status} ${await res.text()}`);
+    const errorCode = await readOAuthErrorCode(res);
+    if (errorCode === "invalid_grant") {
+      throw new ReconnectRequiredError();
+    }
+    throw new Error(`QuickBooks token refresh failed with status ${res.status}`);
   }
   return res.json();
 }
@@ -114,7 +211,15 @@ export async function qboQuery(
   });
 
   if (!res.ok) {
-    throw new Error(`QuickBooks API query failed: ${res.status} ${await res.text()}`);
+    // A 401 here means Intuit rejected the access token outright (e.g. the
+    // customer revoked access from within QuickBooks since our last
+    // refresh) - proactive expiry-based refresh won't catch that, so treat
+    // it the same as an expired refresh token: the customer needs to
+    // reconnect, not retry.
+    if (res.status === 401) {
+      throw new ReconnectRequiredError();
+    }
+    throw new Error(`QuickBooks API query failed with status ${res.status}`);
   }
   return res.json();
 }
@@ -128,7 +233,8 @@ export async function qboQuery(
  * App Assessment Questionnaire asks whether you do.
  */
 export async function revokeToken(token: string): Promise<void> {
-  const res = await fetch("https://developer.api.intuit.com/v2/oauth2/tokens/revoke", {
+  const { revocation_endpoint } = await getDiscoveryDocument();
+  const res = await fetch(revocation_endpoint, {
     method: "POST",
     headers: {
       Authorization: basicAuthHeader(),
