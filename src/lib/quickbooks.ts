@@ -116,6 +116,17 @@ function basicAuthHeader(): string {
 }
 
 /**
+ * Intuit's own guidance: capture the `intuit_tid` response header on every
+ * call and include it with any error report, so their support team can look
+ * up the exact request server-side. It's just a request-tracing ID, not
+ * sensitive - safe to include in logs/messages even under the
+ * never-log-credentials-or-QuickBooks-data rule elsewhere in this file.
+ */
+function intuitTid(res: Response): string | null {
+  return res.headers.get("intuit_tid");
+}
+
+/**
  * Reads the OAuth error code out of a failed token-endpoint response, for
  * control flow only. Deliberately returns just the parsed `error` field, not
  * the raw body - callers must never log or return the full body, since
@@ -150,9 +161,9 @@ export async function exchangeCodeForTokens(
   });
 
   if (!res.ok) {
-    // Status only in the message - never the response body (see
-    // readOAuthErrorCode's comment above).
-    throw new Error(`QuickBooks token exchange failed with status ${res.status}`);
+    // Status + intuit_tid only in the message - never the response body
+    // (see readOAuthErrorCode's comment above).
+    throw new Error(`QuickBooks token exchange failed with status ${res.status} (intuit_tid: ${intuitTid(res)})`);
   }
   return res.json();
 }
@@ -188,7 +199,7 @@ export async function refreshTokens(refreshToken: string): Promise<QboTokenRespo
     if (errorCode === "invalid_grant") {
       throw new ReconnectRequiredError();
     }
-    throw new Error(`QuickBooks token refresh failed with status ${res.status}`);
+    throw new Error(`QuickBooks token refresh failed with status ${res.status} (intuit_tid: ${intuitTid(res)})`);
   }
   return res.json();
 }
@@ -219,7 +230,7 @@ export async function qboQuery(
     if (res.status === 401) {
       throw new ReconnectRequiredError();
     }
-    throw new Error(`QuickBooks API query failed with status ${res.status}`);
+    throw new Error(`QuickBooks API query failed with status ${res.status} (intuit_tid: ${intuitTid(res)})`);
   }
   return res.json();
 }
@@ -251,7 +262,7 @@ export async function revokeToken(token: string): Promise<void> {
     // body - Intuit error responses can echo back parts of the request
     // (including the token itself), and logging that would violate the
     // "never log credentials or QuickBooks data" security requirement.
-    console.error(`QuickBooks token revoke failed with status ${res.status}`);
+    console.error(`QuickBooks token revoke failed with status ${res.status} (intuit_tid: ${intuitTid(res)})`);
   }
 }
 

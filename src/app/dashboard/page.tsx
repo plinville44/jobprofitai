@@ -77,6 +77,14 @@ export default async function DashboardPage({
           )}
         </div>
       )}
+
+      <p className="mt-10 border-t border-gray-200 pt-6 text-xs text-gray-400">
+        Need help? Email{" "}
+        <a href="mailto:support@jobprofitai.com" className="text-brand hover:underline">
+          support@jobprofitai.com
+        </a>{" "}
+        and we'll get back to you.
+      </p>
     </main>
   );
 }
