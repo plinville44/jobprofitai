@@ -39,7 +39,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error("quickbooks/disconnect failed:", err);
+    // Message only, never the full error object - see the matching comment
+    // in api/quickbooks/sync/route.ts for why.
+    console.error("quickbooks/disconnect failed:", err instanceof Error ? err.message : "Unknown error");
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Disconnect failed." },
       { status: 500 }

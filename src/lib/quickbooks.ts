@@ -141,9 +141,11 @@ export async function revokeToken(token: string): Promise<void> {
   if (!res.ok) {
     // Not fatal to the disconnect flow - the token may already be expired/
     // revoked on Intuit's side (e.g. the customer disconnected from within
-    // QuickBooks itself first). Log and continue so the local disconnect
-    // still succeeds.
-    console.error(`QuickBooks token revoke failed: ${res.status} ${await res.text()}`);
+    // QuickBooks itself first). Log the status only, never the response
+    // body - Intuit error responses can echo back parts of the request
+    // (including the token itself), and logging that would violate the
+    // "never log credentials or QuickBooks data" security requirement.
+    console.error(`QuickBooks token revoke failed with status ${res.status}`);
   }
 }
 

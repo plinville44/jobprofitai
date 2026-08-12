@@ -22,7 +22,11 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     // Same reasoning as /api/digest/generate: always return JSON on failure
     // so the dashboard button shows a real error instead of hanging forever.
-    console.error("quickbooks/sync failed:", err);
+    // Log only the error message, never the full error object - Intuit's
+    // security review explicitly prohibits logging customer QuickBooks data
+    // or credentials, and some SDK error objects embed the request/response
+    // body (which could contain either) in fields beyond `.message`.
+    console.error("quickbooks/sync failed:", err instanceof Error ? err.message : "Unknown error");
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Sync failed." },
       { status: 500 }
@@ -44,10 +48,11 @@ async function runSync(req: NextRequest) {
   }
 
   const accessToken = await getValidAccessToken(connection);
+  const realmId = decryptToken(connection.realmId);
 
   // --- 1. Jobs (Projects mode: sub-customers with Job=true) ---
   const customerResult = await qboQuery(
-    connection.realmId,
+    realmId,
     accessToken,
     "SELECT Id, DisplayName, Job, ParentRef, Active FROM Customer WHERE Job = true MAXRESULTS 1000"
   );
@@ -71,7 +76,7 @@ async function runSync(req: NextRequest) {
 
   // --- 2. Actual costs: Purchases (covers Expense/Check/CreditCard-type spend) ---
   const purchaseResult = await qboQuery(
-    connection.realmId,
+    realmId,
     accessToken,
     "SELECT Id, TxnDate, TotalAmt, Line FROM Purchase MAXRESULTS 1000"
   );
@@ -108,7 +113,7 @@ async function runSync(req: NextRequest) {
 
   // --- 3. Actual revenue: Invoices tagged to a job ---
   const invoiceResult = await qboQuery(
-    connection.realmId,
+    realmId,
     accessToken,
     "SELECT Id, TxnDate, TotalAmt, Balance, CustomerRef FROM Invoice MAXRESULTS 1000"
   );

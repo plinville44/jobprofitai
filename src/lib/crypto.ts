@@ -44,3 +44,16 @@ export function decryptToken(stored: string): string {
   const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
   return decrypted.toString("utf8");
 }
+
+// Deterministic hash of a QuickBooks realm (company) ID, used only as a
+// lookup key. Intuit's security review requires the realm ID be encrypted
+// at rest like the tokens - but AES-256-GCM uses a random IV, so the same
+// realmId encrypts to a different value every time and can't be used in a
+// `WHERE realmId = ...` lookup. So we store the realId encrypted (via
+// encryptToken/decryptToken, not queryable) alongside this SHA-256 hash
+// (deterministic, queryable, safe to index) purely to find "is this
+// QuickBooks company already connected" without ever storing the real ID in
+// plain text.
+export function hashRealmId(realmId: string): string {
+  return crypto.createHash("sha256").update(realmId).digest("hex");
+}

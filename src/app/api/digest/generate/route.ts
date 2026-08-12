@@ -52,7 +52,9 @@ export async function POST(req: NextRequest) {
     // page instead of JSON, and the dashboard button's fetch call gets stuck
     // forever trying to parse it as JSON. Always return JSON so the UI can
     // show a real error message instead of hanging.
-    console.error("digest/generate failed:", err);
+    // Message only, never the full error object - see the matching comment
+    // in api/quickbooks/sync/route.ts for why.
+    console.error("digest/generate failed:", err instanceof Error ? err.message : "Unknown error");
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Digest generation failed." },
       { status: 500 }

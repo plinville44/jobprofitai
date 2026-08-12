@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { decryptToken } from "@/lib/crypto";
 import DashboardActions from "./DashboardActions";
 
 export default async function DashboardPage({
@@ -55,7 +56,7 @@ export default async function DashboardPage({
           <div className="rounded-xl border border-gray-200 p-6">
             <p className="text-sm text-gray-500">Connected company</p>
             <p className="text-lg font-semibold text-navy">
-              {connections[0].companyName ?? connections[0].realmId}
+              {connections[0].companyName ?? decryptToken(connections[0].realmId)}
             </p>
             <p className="mt-1 text-xs text-gray-400">
               Cost tracking mode: {connections[0].costTrackingMode} · Last synced:{" "}

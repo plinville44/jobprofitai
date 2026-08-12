@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 import { prisma } from "@/lib/prisma";
 import { exchangeCodeForTokens, detectCostTrackingMode } from "@/lib/quickbooks";
-import { encryptToken } from "@/lib/crypto";
+import { encryptToken, hashRealmId } from "@/lib/crypto";
 
 /**
  * GET /api/quickbooks/callback?code=...&state=...&realmId=...
@@ -45,12 +45,14 @@ export async function GET(req: NextRequest) {
 
   const tokens = await exchangeCodeForTokens(code);
   const now = Date.now();
+  const realmIdHash = hashRealmId(realmId);
 
   const connection = await prisma.quickBooksConnection.upsert({
-    where: { realmId },
+    where: { realmIdHash },
     create: {
       userId,
-      realmId,
+      realmId: encryptToken(realmId),
+      realmIdHash,
       environment: process.env.QBO_ENVIRONMENT ?? "sandbox",
       accessToken: encryptToken(tokens.access_token),
       refreshToken: encryptToken(tokens.refresh_token),
@@ -58,6 +60,11 @@ export async function GET(req: NextRequest) {
       refreshTokenExpiresAt: new Date(now + tokens.x_refresh_token_expires_in * 1000),
     },
     update: {
+      // Reassign ownership on reconnect too - if a different JobProfitAI
+      // account connects the same QuickBooks company, that account should
+      // become the owner rather than silently staying with whoever
+      // connected it first.
+      userId,
       accessToken: encryptToken(tokens.access_token),
       refreshToken: encryptToken(tokens.refresh_token),
       accessTokenExpiresAt: new Date(now + tokens.expires_in * 1000),

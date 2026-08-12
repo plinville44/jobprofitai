@@ -32,7 +32,14 @@ model QuickBooksConnection {
   userId            String
   user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  realmId           String    @unique // QuickBooks company ID
+  // The QuickBooks company ("realm") ID, encrypted at rest (AES-256-GCM,
+  // see src/lib/crypto.ts) per Intuit's security requirements. Since the
+  // encrypted value isn't queryable (random IV each time), realmIdHash - a
+  // deterministic SHA-256 hash - is what "which company is this" lookups
+  // actually use. Decrypt `realmId` only when the real ID is needed (e.g.
+  // to call the QuickBooks API).
+  realmId           String    @db.Text
+  realmIdHash       String    @unique
   companyName       String?
 
   // OAuth tokens - encrypted at the application layer before write, see src/lib/crypto.ts
