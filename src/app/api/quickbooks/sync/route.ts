@@ -173,7 +173,13 @@ async function runFullSync(connectionId: string, realmId: string, accessToken: s
   const projectJobs = customerResult?.QueryResponse?.Customer ?? [];
   await upsertJobsFromCustomers(connectionId, projectJobs);
 
-  const purchaseResult = await qboQuery(realmId, accessToken, "SELECT Id, TxnDate, TotalAmt, Line FROM Purchase MAXRESULTS 1000");
+  // Deliberately SELECT * rather than an explicit column list - same reason
+  // as TimeActivity below. "Line" is a composite/array field, and QBO's
+  // query endpoint doesn't reliably project those when explicitly named in
+  // a column list (confirmed: explicitly selecting Line returned an empty
+  // array for every Purchase/Bill in testing, even though TotalAmt was
+  // non-zero - switching to SELECT * fixed it for TimeActivity earlier).
+  const purchaseResult = await qboQuery(realmId, accessToken, "SELECT * FROM Purchase MAXRESULTS 1000");
   const purchases = purchaseResult?.QueryResponse?.Purchase ?? [];
   const purchaseCounts = await upsertCostEntriesFromExpenseTxns(connectionId, purchases, "Purchase");
 
@@ -189,7 +195,7 @@ async function runFullSync(connectionId: string, realmId: string, accessToken: s
     "Bill",
     errors,
     async () => {
-      const result = await qboQuery(realmId, accessToken, "SELECT Id, TxnDate, TotalAmt, Line FROM Bill MAXRESULTS 1000");
+      const result = await qboQuery(realmId, accessToken, "SELECT * FROM Bill MAXRESULTS 1000");
       return result?.QueryResponse?.Bill ?? [];
     },
     [] as any[]
@@ -253,6 +259,12 @@ async function runFullSync(connectionId: string, realmId: string, accessToken: s
       parentId: c.ParentRef?.value ?? null,
       parentName: c.ParentRef?.name ?? null,
     })),
+    // Diagnostic: transactions QBO returned with no Line array at all - was
+    // consistently equal to purchases+bills before switching those queries
+    // to SELECT *. Should be 0 (or near 0) now; if it's still high, the
+    // Line-projection theory was wrong.
+    purchaseEmptyLineTxnCount: purchaseCounts.emptyLineTxnCount,
+    billEmptyLineTxnCount: billCounts.emptyLineTxnCount,
     ...(Object.keys(errors).length > 0 ? { partialErrors: errors } : {}),
   };
 }
@@ -420,6 +432,7 @@ async function upsertCostEntriesFromExpenseTxns(
   viaParentCount: number;
   viaParentAmount: number;
   unresolvedSamples: { source: string; txnId: string; customerId: string; customerName: string | null; amount: number }[];
+  emptyLineTxnCount: number;
 }> {
   let unassignedCount = 0;
   let unassignedAmount = 0;
@@ -428,8 +441,14 @@ async function upsertCostEntriesFromExpenseTxns(
   let viaParentCount = 0;
   let viaParentAmount = 0;
   const unresolvedSamples: { source: string; txnId: string; customerId: string; customerName: string | null; amount: number }[] = [];
+  // Diagnostic: how many transactions came back with no Line array at all
+  // (regardless of TotalAmt) - if this is still non-zero after switching to
+  // SELECT *, the Line-projection theory was wrong and something else is
+  // going on.
+  let emptyLineTxnCount = 0;
 
   for (const txn of txns) {
+    if (!Array.isArray(txn.Line) || txn.Line.length === 0) emptyLineTxnCount++;
     for (const line of txn.Line ?? []) {
       const parsed = parseExpenseLine(line);
       if (parsed.amount === 0) continue; // summary/subtotal lines, nothing to record
@@ -492,7 +511,7 @@ async function upsertCostEntriesFromExpenseTxns(
     }
   }
 
-  return { unassignedCount, unassignedAmount, unresolvedCount, unresolvedAmount, viaParentCount, viaParentAmount, unresolvedSamples };
+  return { unassignedCount, unassignedAmount, unresolvedCount, unresolvedAmount, viaParentCount, viaParentAmount, unresolvedSamples, emptyLineTxnCount };
 }
 
 /** TimeActivity has no Line array - the transaction itself is the cost entry.
