@@ -29,7 +29,11 @@ export default function MarginTrendChart({
         <CartesianGrid stroke="#e1e0d9" vertical={false} />
         <XAxis dataKey="period" stroke="#898781" fontSize={12} />
         <YAxis tickFormatter={(v) => `${v}%`} stroke="#898781" fontSize={12} />
-        <Tooltip formatter={(value: number | null) => (value == null ? ["No data", "Margin"] : [`${value.toFixed(1)}%`, "Margin"])} />
+        <Tooltip
+          formatter={(value: any) =>
+            value == null ? ["No data", "Margin"] : [`${Number(value).toFixed(1)}%`, "Margin"]
+          }
+        />
         {targetMarginPct != null && (
           <ReferenceLine
             y={targetMarginPct}

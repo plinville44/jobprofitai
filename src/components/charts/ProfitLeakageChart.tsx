@@ -48,7 +48,7 @@ export default function ProfitLeakageChart({ steps }: { steps: ProfitLeakageStep
         <XAxis type="number" tickFormatter={(v) => `$${Math.round(v).toLocaleString()}`} stroke="#898781" fontSize={12} />
         <YAxis type="category" dataKey="label" width={140} stroke="#898781" fontSize={12} />
         <Tooltip
-          formatter={(_value: number, _name: string, props: any) => [`$${Math.round(props.payload.display).toLocaleString()}`, "Amount"]}
+          formatter={(_value: any, _name: any, props: any) => [`$${Math.round(props.payload.display).toLocaleString()}`, "Amount"]}
         />
         <Bar dataKey="base" stackId="a" fill="transparent" isAnimationActive={false} />
         <Bar dataKey="visible" stackId="a" radius={[0, 4, 4, 0]} barSize={18}>

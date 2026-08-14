@@ -44,7 +44,7 @@ export default function EstimateVsActualChart({ data }: { data: EstimateVsActual
         <CartesianGrid stroke="#e1e0d9" horizontal={false} />
         <XAxis type="number" tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} stroke="#898781" fontSize={12} />
         <YAxis type="category" dataKey="label" width={110} stroke="#898781" fontSize={12} />
-        <Tooltip formatter={(value: number) => `$${value.toLocaleString()}`} />
+        <Tooltip formatter={(value: any) => `$${Number(value).toLocaleString()}`} />
         {hasAnyEstimate && <Legend wrapperStyle={{ fontSize: 12 }} />}
         {hasAnyEstimate && (
           <Bar dataKey="estimated" name="Estimated" fill="#2a78d6" radius={[0, 4, 4, 0]} barSize={14} />

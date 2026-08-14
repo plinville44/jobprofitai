@@ -40,7 +40,7 @@ export default function JobMarginBarChart({
           <CartesianGrid stroke="#e1e0d9" horizontal={false} />
           <XAxis type="number" tickFormatter={(v) => `${v}%`} stroke="#898781" fontSize={12} />
           <YAxis type="category" dataKey="jobName" width={140} stroke="#898781" fontSize={12} />
-          <Tooltip formatter={(value: number) => [`${value.toFixed(1)}%`, "Margin"]} />
+          <Tooltip formatter={(value: any) => [`${Number(value).toFixed(1)}%`, "Margin"]} />
           {targetMarginPct != null && (
             <ReferenceLine
               x={targetMarginPct}
