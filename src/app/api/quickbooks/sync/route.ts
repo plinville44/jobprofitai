@@ -231,6 +231,16 @@ async function runFullSync(connectionId: string, realmId: string, accessToken: s
     estimates: estimates.length,
     unassignedExpenseCount: purchaseCounts.unassignedCount + billCounts.unassignedCount,
     unassignedExpenseAmount: purchaseCounts.unassignedAmount + billCounts.unassignedAmount,
+    // "Unresolved" = the transaction line WAS tagged to a real QBO customer,
+    // but that customer isn't one of your synced Jobs and isn't unambiguously
+    // one of their Projects either (see resolveJobForCustomerRef) - counted
+    // here instead of silently vanishing. "Matched via parent" = it resolved
+    // successfully, but only by falling back to the job's parent customer -
+    // a judgment call worth being able to spot, not a guessed dollar amount.
+    unresolvedExpenseCount: purchaseCounts.unresolvedCount + billCounts.unresolvedCount + timeCounts.unresolvedCount,
+    unresolvedExpenseAmount: purchaseCounts.unresolvedAmount + billCounts.unresolvedAmount + timeCounts.unresolvedAmount,
+    costsMatchedViaParentCount: purchaseCounts.viaParentCount + billCounts.viaParentCount + timeCounts.viaParentCount,
+    costsMatchedViaParentAmount: purchaseCounts.viaParentAmount + billCounts.viaParentAmount + timeCounts.viaParentAmount,
     timeActivitiesSkippedNoRate: timeCounts.skippedNoRate,
     ...(Object.keys(errors).length > 0 ? { partialErrors: errors } : {}),
   };
@@ -288,6 +298,10 @@ async function runIncrementalSync(
     estimates: estimates.length,
     unassignedExpenseCount: purchaseCounts.unassignedCount + billCounts.unassignedCount,
     unassignedExpenseAmount: purchaseCounts.unassignedAmount + billCounts.unassignedAmount,
+    unresolvedExpenseCount: purchaseCounts.unresolvedCount + billCounts.unresolvedCount + timeCounts.unresolvedCount,
+    unresolvedExpenseAmount: purchaseCounts.unresolvedAmount + billCounts.unresolvedAmount + timeCounts.unresolvedAmount,
+    costsMatchedViaParentCount: purchaseCounts.viaParentCount + billCounts.viaParentCount + timeCounts.viaParentCount,
+    costsMatchedViaParentAmount: purchaseCounts.viaParentAmount + billCounts.viaParentAmount + timeCounts.viaParentAmount,
     timeActivitiesSkippedNoRate: timeCounts.skippedNoRate,
   };
 }
@@ -298,20 +312,61 @@ async function runIncrementalSync(
 
 async function upsertJobsFromCustomers(connectionId: string, customers: any[]) {
   for (const c of customers) {
+    const parentQboId: string | null = c.ParentRef?.value ?? null;
     await prisma.job.upsert({
       where: { connectionId_qboId: { connectionId, qboId: c.Id } },
       create: {
         connectionId,
         qboId: c.Id,
+        parentQboId,
         name: c.DisplayName,
         status: c.Active ? "open" : "closed",
       },
       update: {
+        parentQboId,
         name: c.DisplayName,
         status: c.Active ? "open" : "closed",
       },
     });
   }
+}
+
+/**
+ * Resolves a QBO CustomerRef value (as it appears on a Purchase/Bill/
+ * TimeActivity/Invoice/Estimate line) to one of our synced Jobs.
+ *
+ * Tries a direct qboId match first - this is how it's always worked, and
+ * covers the common case where a transaction was entered directly against
+ * the Project (e.g. invoices created from inside a Project automatically
+ * carry the Project's own id).
+ *
+ * Falls back to matching the transaction's customer as the PARENT of one of
+ * our Jobs - this covers the equally common real-world case where a
+ * bookkeeper tags an expense to the top-level customer instead of drilling
+ * into the specific Project. The fallback only fires when it's unambiguous
+ * (exactly one Job under that parent); if a parent has multiple Jobs, we
+ * genuinely can't tell which one the cost belongs to, so it's left
+ * unresolved rather than guessed at - the "never invent a financial
+ * attribution" rule applies to WHICH job a real dollar amount belongs to,
+ * not just to the dollar amount itself.
+ */
+async function resolveJobForCustomerRef(
+  connectionId: string,
+  customerQboId: string
+): Promise<{ job: { id: string }; method: "direct" | "parent_customer_fallback" } | null> {
+  const direct = await prisma.job.findUnique({
+    where: { connectionId_qboId: { connectionId, qboId: customerQboId } },
+  });
+  if (direct) return { job: direct, method: "direct" };
+
+  const childrenOfParent = await prisma.job.findMany({
+    where: { connectionId, parentQboId: customerQboId },
+    select: { id: true },
+  });
+  if (childrenOfParent.length === 1) {
+    return { job: childrenOfParent[0], method: "parent_customer_fallback" };
+  }
+  return null; // no Job at all, or ambiguous (multiple Jobs under this parent)
 }
 
 /** Reads a job reference + category name off an expense line, checking both
@@ -335,9 +390,20 @@ async function upsertCostEntriesFromExpenseTxns(
   connectionId: string,
   txns: any[],
   sourceType: "Purchase" | "Bill"
-): Promise<{ unassignedCount: number; unassignedAmount: number }> {
+): Promise<{
+  unassignedCount: number;
+  unassignedAmount: number;
+  unresolvedCount: number;
+  unresolvedAmount: number;
+  viaParentCount: number;
+  viaParentAmount: number;
+}> {
   let unassignedCount = 0;
   let unassignedAmount = 0;
+  let unresolvedCount = 0;
+  let unresolvedAmount = 0;
+  let viaParentCount = 0;
+  let viaParentAmount = 0;
 
   for (const txn of txns) {
     for (const line of txn.Line ?? []) {
@@ -354,33 +420,44 @@ async function upsertCostEntriesFromExpenseTxns(
         continue;
       }
 
-      const job = await prisma.job.findUnique({
-        where: { connectionId_qboId: { connectionId, qboId: parsed.jobQboId } },
-      });
-      if (!job) continue; // tagged to a customer that isn't a Job (Job=true) - not job-costing relevant
+      const resolved = await resolveJobForCustomerRef(connectionId, parsed.jobQboId);
+      if (!resolved) {
+        // Tagged to a real QBO customer, but not one of your synced Jobs and
+        // not unambiguously one of their Projects either - counted here
+        // instead of silently disappearing (see Data Health, Phase 4).
+        unresolvedCount++;
+        unresolvedAmount += parsed.amount;
+        continue;
+      }
+      if (resolved.method === "parent_customer_fallback") {
+        viaParentCount++;
+        viaParentAmount += parsed.amount;
+      }
 
       const entryId = `${sourceType}-${txn.Id}-${line.Id ?? "0"}`;
       await prisma.costEntry.upsert({
         where: { id: entryId },
         create: {
           id: entryId,
-          jobId: job.id,
+          jobId: resolved.job.id,
           qboSourceType: sourceType,
           qboSourceId: txn.Id,
           category: categorize(parsed.categoryName),
           description: parsed.description,
           amount: parsed.amount,
           txnDate: new Date(txn.TxnDate),
+          attributionMethod: resolved.method,
         },
         update: {
           amount: parsed.amount,
           description: parsed.description,
+          attributionMethod: resolved.method,
         },
       });
     }
   }
 
-  return { unassignedCount, unassignedAmount };
+  return { unassignedCount, unassignedAmount, unresolvedCount, unresolvedAmount, viaParentCount, viaParentAmount };
 }
 
 /** TimeActivity has no Line array - the transaction itself is the cost entry.
@@ -390,8 +467,12 @@ async function upsertCostEntriesFromExpenseTxns(
 async function upsertCostEntriesFromTimeActivities(
   connectionId: string,
   timeActivities: any[]
-): Promise<{ skippedNoRate: number }> {
+): Promise<{ skippedNoRate: number; unresolvedCount: number; unresolvedAmount: number; viaParentCount: number; viaParentAmount: number }> {
   let skippedNoRate = 0;
+  let unresolvedCount = 0;
+  let unresolvedAmount = 0;
+  let viaParentCount = 0;
+  let viaParentAmount = 0;
 
   for (const ta of timeActivities) {
     const jobQboId = ta.CustomerRef?.value;
@@ -407,29 +488,36 @@ async function upsertCostEntriesFromTimeActivities(
     const amount = Math.round(hours * hourlyRate * 100) / 100;
     if (amount <= 0) continue;
 
-    const job = await prisma.job.findUnique({
-      where: { connectionId_qboId: { connectionId, qboId: jobQboId } },
-    });
-    if (!job) continue;
+    const resolved = await resolveJobForCustomerRef(connectionId, jobQboId);
+    if (!resolved) {
+      unresolvedCount++;
+      unresolvedAmount += amount;
+      continue;
+    }
+    if (resolved.method === "parent_customer_fallback") {
+      viaParentCount++;
+      viaParentAmount += amount;
+    }
 
     const entryId = `TimeActivity-${ta.Id}-0`;
     await prisma.costEntry.upsert({
       where: { id: entryId },
       create: {
         id: entryId,
-        jobId: job.id,
+        jobId: resolved.job.id,
         qboSourceType: "TimeActivity",
         qboSourceId: ta.Id,
         category: "labor",
         description: ta.Description ?? null,
         amount,
         txnDate: new Date(ta.TxnDate),
+        attributionMethod: resolved.method,
       },
-      update: { amount },
+      update: { amount, attributionMethod: resolved.method },
     });
   }
 
-  return { skippedNoRate };
+  return { skippedNoRate, unresolvedCount, unresolvedAmount, viaParentCount, viaParentAmount };
 }
 
 async function upsertInvoices(connectionId: string, invoices: any[]) {
@@ -437,16 +525,14 @@ async function upsertInvoices(connectionId: string, invoices: any[]) {
     const jobQboId = inv.CustomerRef?.value;
     if (!jobQboId) continue;
 
-    const job = await prisma.job.findUnique({
-      where: { connectionId_qboId: { connectionId, qboId: jobQboId } },
-    });
-    if (!job) continue;
+    const resolved = await resolveJobForCustomerRef(connectionId, jobQboId);
+    if (!resolved) continue; // tagged to a customer that isn't a Job and isn't unambiguously one of their Projects
 
     await prisma.invoiceSummary.upsert({
       where: { id: inv.Id },
       create: {
         id: inv.Id,
-        jobId: job.id,
+        jobId: resolved.job.id,
         qboInvoiceId: inv.Id,
         amount: inv.TotalAmt ?? 0,
         status: inv.Balance > 0 ? "open" : "paid",
@@ -478,11 +564,9 @@ async function applyEstimatesToJobs(connectionId: string, estimates: any[]) {
   }
 
   for (const [jobQboId, { amount }] of latestByJob) {
-    const job = await prisma.job.findUnique({
-      where: { connectionId_qboId: { connectionId, qboId: jobQboId } },
-    });
-    if (!job) continue;
-    await prisma.job.update({ where: { id: job.id }, data: { estimatedRevenue: amount } });
+    const resolved = await resolveJobForCustomerRef(connectionId, jobQboId);
+    if (!resolved) continue;
+    await prisma.job.update({ where: { id: resolved.job.id }, data: { estimatedRevenue: amount } });
   }
 }
 

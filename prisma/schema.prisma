@@ -203,6 +203,12 @@ model Job {
   connection        QuickBooksConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
 
   qboId             String    // QBO Project/Customer/Class ID
+  // The parent Customer's QBO id, when this Job is a Project (sub-customer).
+  // Captured so expenses tagged to the parent customer instead of the project
+  // itself - common when a bookkeeper enters a Bill/Purchase without drilling
+  // into the specific Project - can still be attributed to this job when
+  // it's the parent's only job. See CostEntry.attributionMethod.
+  parentQboId       String?
   name              String
   customerName      String?
   status            String    @default("open") // "open" | "closed"
@@ -243,6 +249,14 @@ model CostEntry {
   description   String?
   amount        Decimal   @db.Decimal(12, 2)
   txnDate       DateTime
+
+  // "direct" = the transaction's own CustomerRef matched this job's QBO id
+  // exactly. "parent_customer_fallback" = the transaction was tagged to this
+  // job's PARENT customer instead of the job/project itself, and this was
+  // the parent's only job, so it was attributed here - a judgment call worth
+  // being able to spot and double-check, not a fabricated number (the dollar
+  // amount is always the real transaction amount either way).
+  attributionMethod String @default("direct")
 
   createdAt     DateTime  @default(now())
 
