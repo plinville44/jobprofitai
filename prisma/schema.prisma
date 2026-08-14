@@ -51,12 +51,146 @@ model QuickBooksConnection {
   environment       String    @default("sandbox") // "sandbox" | "production"
   costTrackingMode  String    @default("unknown")  // "projects" | "classes" | "unknown" - discovered on first sync
 
+  // Company-wide default target job margin (%). Per-category overrides live in
+  // MarginTarget below; this is the fallback when no category-specific target
+  // exists. Nullable until the user sets one in Settings - no target means
+  // "below target" comparisons simply don't run yet.
+  targetMarginPct   Decimal?  @db.Decimal(5, 2)
+
+  // Overhead allocation (powers "Fully Loaded Profit" - off by default per spec;
+  // Fully Loaded Profit is only ever computed/shown when overheadEnabled=true
+  // AND overheadMethod/overheadValue are both set).
+  overheadEnabled   Boolean   @default(false)
+  overheadMethod    String?   // "pct_of_revenue" | "pct_of_direct_cost"
+  overheadValue     Decimal?  @db.Decimal(7, 4)
+
+  // Weekly email preferences. Defaults to Monday 8am in the connection owner's
+  // timezone per spec, until they configure otherwise in Settings.
+  emailEnabled      Boolean   @default(true)
+  emailRecipients   String[]  @default([])
+  emailDay          Int       @default(1) // 0=Sun..6=Sat
+  emailHour         Int       @default(8) // 0-23, local to emailTimezone
+  emailTimezone     String    @default("America/New_York")
+
+  // Sync observability (see also the SyncRun history table below - these are
+  // just "latest" fields for fast dashboard reads without a join).
+  lastSyncStatus            String?   // "success" | "error" | "in_progress"
+  lastSyncError             String?
+  lastSyncAttemptAt         DateTime?
+  lastSyncEntitiesUpdated   Json?
+  lastFullSyncAt            DateTime? // last time a full (non-incremental) sync ran
+
   connectedAt       DateTime  @default(now())
   disconnectedAt    DateTime?
   lastSyncedAt      DateTime?
 
   jobs              Job[]
   digests           WeeklyDigest[]
+  marginTargets     MarginTarget[]
+  syncRuns          SyncRun[]
+  analysisRuns      AnalysisRun[]
+  profitInsights    ProfitInsight[]
+  feedback          Feedback[]
+
+  @@index([userId])
+}
+
+// Per-category override of the connection's default target margin (e.g.
+// "roofing jobs should target 22%, everything else uses the company default").
+// category = null is reserved/unused here - the connection-wide default lives
+// on QuickBooksConnection.targetMarginPct directly, not as a row here, to avoid
+// a chicken-and-egg lookup on every request.
+model MarginTarget {
+  id            String    @id @default(cuid())
+  connectionId  String
+  connection    QuickBooksConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  category      String
+  targetPct     Decimal   @db.Decimal(5, 2)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([connectionId, category])
+  @@index([connectionId])
+}
+
+// History of sync attempts, for the observability the App Assessment
+// Questionnaire and the product spec both ask for (last attempted/successful
+// sync, status, errors, entities updated) - not just a "last synced at"
+// snapshot, an actual log to look back on if something goes wrong.
+model SyncRun {
+  id                String    @id @default(cuid())
+  connectionId      String
+  connection        QuickBooksConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  startedAt         DateTime  @default(now())
+  finishedAt        DateTime?
+  status            String    // "in_progress" | "success" | "error"
+  mode              String    // "full" | "incremental"
+  entitiesUpdated   Json?     // e.g. { jobs: 3, purchases: 12, bills: 4, timeActivities: 9, invoices: 8, estimates: 2 }
+  errorMessage      String?
+
+  @@index([connectionId])
+}
+
+// One row per time the dashboard/intelligence numbers were (re)computed.
+// Used to answer "has financial data changed since the last analysis" by
+// comparing dataSnapshotAt to the connection's current lastSyncedAt, so
+// /api/analysis/refresh doesn't re-run the AI layer unless something actually
+// changed.
+model AnalysisRun {
+  id              String    @id @default(cuid())
+  connectionId    String
+  connection      QuickBooksConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  generatedAt     DateTime  @default(now())
+  dataSnapshotAt  DateTime  // the connection.lastSyncedAt this analysis was computed from
+  kind            String    // "dashboard" | "intelligence"
+
+  @@index([connectionId, kind])
+}
+
+// A persisted Profit Intelligence finding (Finding/Evidence/Impact/Action/
+// Confidence). sourceJobIds makes every finding traceable back to the jobs
+// that produced it, per the "why am I seeing this" explainability requirement.
+// confidence is assigned deterministically by app code before storage (based
+// on sample size), never by the model's own self-assessment.
+model ProfitInsight {
+  id                String    @id @default(cuid())
+  connectionId      String
+  connection        QuickBooksConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  generatedAt       DateTime  @default(now())
+  dimension         String    // "job_category" | "customer" | "cost_category" | ...
+  finding           String    @db.Text
+  evidence          String    @db.Text
+  financialImpact   Decimal?  @db.Decimal(12, 2)
+  recommendedAction String    @db.Text
+  confidence        String    // "high" | "medium" | "low"
+  status            String    @default("active") // "active" | "dismissed"
+  sourceJobIds      String[]  @default([])
+
+  @@index([connectionId, status])
+}
+
+// "Suggest an Improvement" submissions. Stored first (always succeeds even if
+// the notification email fails) - the spec is explicit that feedback must not
+// depend on email alone.
+model Feedback {
+  id            String    @id @default(cuid())
+  userId        String
+  userEmail     String
+  connectionId  String?
+  connection    QuickBooksConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  plan          String
+
+  category      String    // "Feature Request" | "Report" | "Integration" | "Bug/Problem" | "Other"
+  message       String    @db.Text
+  page          String
+  screenshotUrl String?   // not wired up yet - see plan's known-limitations note (needs blob storage)
+
+  createdAt     DateTime  @default(now())
 
   @@index([userId])
 }
@@ -73,8 +207,14 @@ model Job {
   customerName      String?
   status            String    @default("open") // "open" | "closed"
 
-  estimatedRevenue  Decimal?  @db.Decimal(12, 2)
-  estimatedCost     Decimal?  @db.Decimal(12, 2)
+  estimatedRevenue  Decimal?  @db.Decimal(12, 2) // synced from QBO Estimate entity when available
+  estimatedCost     Decimal?  @db.Decimal(12, 2) // manual only - QBO's public API doesn't expose internal cost budgets, see plan §6
+  estimatedCostSource String  @default("manual")  // always "manual" today; field exists so the UI/tooltips are honest about provenance rather than implying it came from QuickBooks
+
+  // Manually-set job type (e.g. "roofing", "remodel"), used for cross-job
+  // benchmarking in Profit Intelligence. QBO has no reliable field for this
+  // (see plan §6) so it's a simple optional in-app tag, not synced.
+  category          String?
 
   startDate         DateTime?
   endDate           DateTime?
@@ -99,7 +239,7 @@ model CostEntry {
   qboSourceType String    // "Bill" | "Expense" | "TimeActivity" | "Purchase"
   qboSourceId   String
 
-  category      String    // "labor" | "materials" | "subcontractor" | "overhead" | "other"
+  category      String    // "labor" | "materials" | "subcontractor" | "equipment" | "overhead" | "other"
   description   String?
   amount        Decimal   @db.Decimal(12, 2)
   txnDate       DateTime
@@ -151,6 +291,14 @@ model Subscription {
   stripeCustomerId      String?   @unique
   stripeSubscriptionId  String?   @unique
   status                String    @default("trialing") // "trialing" | "active" | "past_due" | "canceled"
+
+  // Entitlement tier - read exclusively through src/lib/entitlements.ts, never
+  // checked directly elsewhere in the app. Defaults to full Profit Intelligence
+  // access for now since Stripe billing isn't wired up yet (Preston's explicit
+  // beta decision, 2026-08-14) - flipping this default to "profit_monitor" (or
+  // null/no-plan) the day billing goes live is a one-line change here, not a
+  // rearchitecture.
+  plan                  String    @default("profit_intelligence") // "profit_monitor" | "profit_intelligence"
   trialEndsAt           DateTime?
   currentPeriodEnd      DateTime?
 
