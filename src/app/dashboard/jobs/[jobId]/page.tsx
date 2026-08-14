@@ -2,6 +2,7 @@ import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import { getSession } from "@/lib/auth";
 import { getJobProfitData } from "@/lib/profitability";
+import { requireFeature } from "@/lib/entitlements";
 import { formatCurrency, formatPct, formatDate, categoryLabel } from "@/lib/format";
 import { ConfidenceBadge, SeverityBadge } from "@/components/dashboard/Badges";
 import EstimateVsActualChart from "@/components/charts/EstimateVsActualChart";
@@ -14,6 +15,12 @@ export default async function JobDetailPage({ params }: { params: { jobId: strin
 
   const data = await getJobProfitData(params.jobId);
   if (!data || data.connectionUserId !== session.userId) notFound();
+
+  // Forecast-at-Completion is a Profit Intelligence feature (see
+  // src/lib/entitlements.ts) - gated here, not by hiding the underlying
+  // (deterministic, zero-AI) calculation, just its display for accounts
+  // without the entitlement.
+  const canForecast = Boolean(await requireFeature(session.userId, "forecast_at_completion"));
 
   const f = data.financials;
 
@@ -142,7 +149,14 @@ export default async function JobDetailPage({ params }: { params: { jobId: strin
         {f.status === "open" && (
           <div className="mt-6 rounded-lg border border-gray-200 p-4">
             <p className="text-sm font-semibold text-navy">Forecast at Completion</p>
-            {data.forecast.available ? (
+            {!canForecast ? (
+              <p className="mt-2 text-sm text-gray-500">
+                Forecast at Completion is part of Profit Intelligence.{" "}
+                <Link href="/dashboard/settings" className="text-brand hover:underline">
+                  See your plan in Settings.
+                </Link>
+              </p>
+            ) : data.forecast.available ? (
               <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <MiniStat label="Cost to date" value={formatCurrency(data.forecast.actualCostToDate)} />
                 <MiniStat label="Estimated cost" value={formatCurrency(data.forecast.estimatedCost)} />

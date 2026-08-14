@@ -93,7 +93,10 @@ export default async function DashboardPage({
         </div>
       ) : (
         <>
-          {/* Connection status + existing actions - unchanged functionality, Settings page (Phase 5) will relocate this */}
+          {/* Connection status + Sync/Digest actions. Disconnect lives on the
+              Settings page now (see src/app/dashboard/settings) - Sync now
+              and Generate digest stay here since they're the day-to-day
+              actions, per the Phase 5 plan. */}
           <div className="mt-6 rounded-xl border border-gray-200 p-6">
             <p className="text-sm text-gray-500">Connected company</p>
             <p className="text-lg font-semibold text-navy">

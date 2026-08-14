@@ -67,21 +67,6 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
     );
   }
 
-  function disconnect() {
-    if (
-      !window.confirm(
-        "Disconnect this QuickBooks company? You'll need to reconnect to get new digests."
-      )
-    ) {
-      return;
-    }
-    return callApi(
-      "/api/quickbooks/disconnect",
-      "Disconnecting from QuickBooks...",
-      () => "Disconnected."
-    );
-  }
-
   return (
     <div className="mt-4 flex flex-wrap items-center gap-3">
       <button
@@ -95,12 +80,6 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
         className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
       >
         Generate this week&apos;s digest
-      </button>
-      <button
-        onClick={disconnect}
-        className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
-      >
-        Disconnect
       </button>
       {status && <span className="text-sm text-gray-500">{status}</span>}
     </div>
