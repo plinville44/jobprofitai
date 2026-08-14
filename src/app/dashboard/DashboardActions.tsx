@@ -45,7 +45,17 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
     return callApi(
       "/api/quickbooks/sync",
       "Syncing with QuickBooks...",
-      (data) => `Synced ${data.jobsSynced} jobs, ${data.purchasesSynced} cost entries, ${data.invoicesSynced} invoices.`
+      (data) => {
+        const costEntries = (data.purchases ?? 0) + (data.bills ?? 0) + (data.timeActivities ?? 0);
+        const base = `Synced ${data.jobs ?? 0} jobs, ${costEntries} cost entries, ${data.invoices ?? 0} invoices, ${data.estimates ?? 0} estimates.`;
+        // partialErrors means some new-this-phase entity types (Bill/TimeActivity/
+        // Estimate) couldn't be pulled, but everything else synced fine - surfaced
+        // here rather than hidden, so a problem is visible without digging into Neon.
+        if (data.partialErrors && Object.keys(data.partialErrors).length > 0) {
+          return `${base} Note: couldn't sync ${Object.keys(data.partialErrors).join(", ")} this time — everything else synced fine.`;
+        }
+        return base;
+      }
     );
   }
 

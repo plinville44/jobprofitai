@@ -60,18 +60,30 @@ async function runSync(req: NextRequest) {
   const fullSyncDue =
     !connection.lastFullSyncAt ||
     Date.now() - connection.lastFullSyncAt.getTime() > FULL_SYNC_INTERVAL_DAYS * 24 * 60 * 60 * 1000;
-  const mode: "full" | "incremental" = fullSyncDue ? "full" : "incremental";
+  let mode: "full" | "incremental" = fullSyncDue ? "full" : "incremental";
 
   const syncRun = await prisma.syncRun.create({
     data: { connectionId: connection.id, status: "in_progress", mode },
   });
 
-  let counts: Record<string, number>;
+  let counts: Record<string, unknown>;
   try {
-    counts =
-      mode === "full"
-        ? await runFullSync(connection.id, realmId, accessToken)
-        : await runIncrementalSync(connection.id, realmId, accessToken, connection.lastSyncedAt ?? new Date(0));
+    if (mode === "full") {
+      counts = await runFullSync(connection.id, realmId, accessToken);
+    } else {
+      try {
+        counts = await runIncrementalSync(connection.id, realmId, accessToken, connection.lastSyncedAt ?? new Date(0));
+      } catch (cdcErr) {
+        // CDC itself failing (not one of the per-entity steps inside it,
+        // which are already isolated via runStep) is rare but should fall
+        // back to a full sync rather than fail the whole request - the
+        // customer clicking "Sync now" shouldn't get an error just because
+        // the lighter-weight path had a problem.
+        mode = "full";
+        await prisma.syncRun.update({ where: { id: syncRun.id }, data: { mode } });
+        counts = await runFullSync(connection.id, realmId, accessToken);
+      }
+    }
 
     // CompanyInfo is cheap and worth refreshing on every sync, full or incremental.
     try {
@@ -120,11 +132,39 @@ async function runSync(req: NextRequest) {
   return NextResponse.json({ ok: true, mode, ...counts });
 }
 
+/**
+ * Runs one entity's fetch+process step in isolation. A failure here (e.g. a
+ * malformed query against one entity type) is recorded and surfaced in the
+ * sync result instead of aborting the whole sync - Bill/TimeActivity/Estimate
+ * are new this phase and less proven than Customer/Purchase/Invoice, so one
+ * of them having an issue must not take down sync entirely (that's exactly
+ * the regression hit when Phase 2 first shipped: one bad query broke
+ * everything, including the parts that were already working). Every
+ * per-entity error is tagged with the entity name so it's actually
+ * diagnosable from the SyncRun record - no more "status 400" with no
+ * context about which query caused it.
+ */
+async function runStep<T>(label: string, errors: Record<string, string>, fn: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    errors[label] = err instanceof Error ? err.message : "Unknown error";
+    return fallback;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Full sync: pulls everything via the query endpoint, same approach as the
 // original Week 1 implementation, extended to Bill/TimeActivity/Estimate.
+// Customer/Purchase/Invoice are the proven-working Week 1 entities and are
+// NOT wrapped in runStep - if one of those fails, the sync genuinely failed
+// and should report an error, same as before this phase. Bill/TimeActivity/
+// Estimate are new and isolated via runStep so a problem with one of them
+// can't break the rest.
 // ---------------------------------------------------------------------------
-async function runFullSync(connectionId: string, realmId: string, accessToken: string): Promise<Record<string, number>> {
+async function runFullSync(connectionId: string, realmId: string, accessToken: string): Promise<Record<string, unknown>> {
+  const errors: Record<string, string> = {};
+
   const customerResult = await qboQuery(
     realmId,
     accessToken,
@@ -137,18 +177,6 @@ async function runFullSync(connectionId: string, realmId: string, accessToken: s
   const purchases = purchaseResult?.QueryResponse?.Purchase ?? [];
   const purchaseCounts = await upsertCostEntriesFromExpenseTxns(connectionId, purchases, "Purchase");
 
-  const billResult = await qboQuery(realmId, accessToken, "SELECT Id, TxnDate, TotalAmt, Line FROM Bill MAXRESULTS 1000");
-  const bills = billResult?.QueryResponse?.Bill ?? [];
-  const billCounts = await upsertCostEntriesFromExpenseTxns(connectionId, bills, "Bill");
-
-  const timeActivityResult = await qboQuery(
-    realmId,
-    accessToken,
-    "SELECT Id, TxnDate, CustomerRef, Hours, Minutes, HourlyRate, Description FROM TimeActivity MAXRESULTS 1000"
-  );
-  const timeActivities = timeActivityResult?.QueryResponse?.TimeActivity ?? [];
-  const timeCounts = await upsertCostEntriesFromTimeActivities(connectionId, timeActivities);
-
   const invoiceResult = await qboQuery(
     realmId,
     accessToken,
@@ -157,12 +185,41 @@ async function runFullSync(connectionId: string, realmId: string, accessToken: s
   const invoices = invoiceResult?.QueryResponse?.Invoice ?? [];
   await upsertInvoices(connectionId, invoices);
 
-  const estimateResult = await qboQuery(
-    realmId,
-    accessToken,
-    "SELECT Id, TxnDate, TotalAmt, CustomerRef FROM Estimate MAXRESULTS 1000"
+  const bills = await runStep(
+    "Bill",
+    errors,
+    async () => {
+      const result = await qboQuery(realmId, accessToken, "SELECT Id, TxnDate, TotalAmt, Line FROM Bill MAXRESULTS 1000");
+      return result?.QueryResponse?.Bill ?? [];
+    },
+    [] as any[]
   );
-  const estimates = estimateResult?.QueryResponse?.Estimate ?? [];
+  const billCounts = await upsertCostEntriesFromExpenseTxns(connectionId, bills, "Bill");
+
+  const timeActivities = await runStep(
+    "TimeActivity",
+    errors,
+    async () => {
+      // Deliberately SELECT * rather than an explicit column list - some QBO
+      // entities (TimeActivity among them, per community reports) are
+      // pickier about which combinations of columns are projectable, and the
+      // response shape is identical either way (still keyed by field name).
+      const result = await qboQuery(realmId, accessToken, "SELECT * FROM TimeActivity MAXRESULTS 1000");
+      return result?.QueryResponse?.TimeActivity ?? [];
+    },
+    [] as any[]
+  );
+  const timeCounts = await upsertCostEntriesFromTimeActivities(connectionId, timeActivities);
+
+  const estimates = await runStep(
+    "Estimate",
+    errors,
+    async () => {
+      const result = await qboQuery(realmId, accessToken, "SELECT Id, TxnDate, TotalAmt, CustomerRef FROM Estimate MAXRESULTS 1000");
+      return result?.QueryResponse?.Estimate ?? [];
+    },
+    [] as any[]
+  );
   await applyEstimatesToJobs(connectionId, estimates);
 
   return {
@@ -175,6 +232,7 @@ async function runFullSync(connectionId: string, realmId: string, accessToken: s
     unassignedExpenseCount: purchaseCounts.unassignedCount + billCounts.unassignedCount,
     unassignedExpenseAmount: purchaseCounts.unassignedAmount + billCounts.unassignedAmount,
     timeActivitiesSkippedNoRate: timeCounts.skippedNoRate,
+    ...(Object.keys(errors).length > 0 ? { partialErrors: errors } : {}),
   };
 }
 
@@ -195,7 +253,7 @@ async function runIncrementalSync(
   realmId: string,
   accessToken: string,
   changedSince: Date
-): Promise<Record<string, number>> {
+): Promise<Record<string, unknown>> {
   const cdcResult = await qboCdc(realmId, accessToken, CDC_ENTITIES, changedSince);
   const responses: any[] = cdcResult?.CDCResponse?.[0]?.QueryResponse ?? [];
   const byEntity = (name: string): any[] => {
