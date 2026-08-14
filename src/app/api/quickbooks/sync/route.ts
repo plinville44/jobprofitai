@@ -66,7 +66,7 @@ async function runSync(req: NextRequest) {
     data: { connectionId: connection.id, status: "in_progress", mode },
   });
 
-  let counts: Record<string, unknown>;
+  let counts: Record<string, any>;
   try {
     if (mode === "full") {
       counts = await runFullSync(connection.id, realmId, accessToken);
@@ -162,7 +162,7 @@ async function runStep<T>(label: string, errors: Record<string, string>, fn: () 
 // Estimate are new and isolated via runStep so a problem with one of them
 // can't break the rest.
 // ---------------------------------------------------------------------------
-async function runFullSync(connectionId: string, realmId: string, accessToken: string): Promise<Record<string, unknown>> {
+async function runFullSync(connectionId: string, realmId: string, accessToken: string): Promise<Record<string, any>> {
   const errors: Record<string, string> = {};
 
   const customerResult = await qboQuery(
@@ -253,7 +253,7 @@ async function runIncrementalSync(
   realmId: string,
   accessToken: string,
   changedSince: Date
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, any>> {
   const cdcResult = await qboCdc(realmId, accessToken, CDC_ENTITIES, changedSince);
   const responses: any[] = cdcResult?.CDCResponse?.[0]?.QueryResponse ?? [];
   const byEntity = (name: string): any[] => {
