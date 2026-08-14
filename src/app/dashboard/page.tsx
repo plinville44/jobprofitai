@@ -11,6 +11,7 @@ import DashboardActions from "./DashboardActions";
 import JobMarginBarChart from "@/components/charts/JobMarginBarChart";
 import EstimateVsActualChart from "@/components/charts/EstimateVsActualChart";
 import MarginTrendChart from "@/components/charts/MarginTrendChart";
+import DataHealthSummary from "@/components/dashboard/DataHealthSummary";
 
 export default async function DashboardPage({
   searchParams,
@@ -248,8 +249,16 @@ export default async function DashboardPage({
             </div>
           </div>
 
+          {/* Structured Data Health facts come first, with the AI-written
+              digest narrative below as additional plain-English context -
+              never the other way around, per the "structured info primary,
+              AI explanation secondary, never AI alone" product rule. */}
+          <div className="mt-10">
+            <DataHealthSummary dataHealth={profitData.dataHealth} />
+          </div>
+
           {latestDigest && (
-            <div className="mt-10 rounded-xl border border-gray-200 p-6">
+            <div className="mt-6 rounded-xl border border-gray-200 p-6">
               <p className="text-sm text-gray-500">Digest for week of {latestDigest.weekStarting.toLocaleDateString()}</p>
               <pre className="mt-2 whitespace-pre-wrap font-sans text-sm text-navy">{latestDigest.narrative}</pre>
             </div>

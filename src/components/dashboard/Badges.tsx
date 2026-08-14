@@ -32,7 +32,11 @@ export function SeverityBadge({ severity }: { severity: "high" | "medium" | "low
   );
 }
 
-export function StatusDot({ status }: { status: "good" | "warning" | "critical" }) {
-  const color = { good: "#0ca30c", warning: "#fab219", critical: "#d03b3b" }[status];
+// "unmeasured" is distinct from "good" on purpose - a metric QuickBooks
+// hasn't given us data for yet is not the same claim as "checked, zero
+// issues," and conflating the two would be exactly the false precision the
+// whole data-confidence system exists to avoid.
+export function StatusDot({ status }: { status: "good" | "warning" | "critical" | "unmeasured" }) {
+  const color = { good: "#0ca30c", warning: "#fab219", critical: "#d03b3b", unmeasured: "#898781" }[status];
   return <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: color }} aria-hidden />;
 }

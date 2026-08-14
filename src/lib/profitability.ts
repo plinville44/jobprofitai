@@ -499,6 +499,16 @@ export interface DataHealthReport {
   completedJobsWithUnresolvedActivity: { jobId: string; jobName: string }[];
   unassignedExpenseCount: number | null; // null = not yet measured (needs a sync with unassigned-expense tracking, see sync route Phase 2)
   unassignedExpenseAmount: number | null;
+  // Tagged to a real QuickBooks customer, but one that doesn't match any of
+  // your synced jobs (directly or via an unambiguous parent-customer match) -
+  // see resolveJobForCustomerRef in the sync route. null = not yet measured.
+  unresolvedExpenseCount: number | null;
+  unresolvedExpenseAmount: number | null;
+  // Informational, not a problem: matched successfully, but only by falling
+  // back to the job's parent customer rather than the job itself - worth a
+  // quick glance for accuracy, not something to fix. null = not yet measured.
+  costsMatchedViaParentCount: number | null;
+  costsMatchedViaParentAmount: number | null;
   possibleDuplicates: { jobName: string; amount: number; date: string; jobId: string }[];
   overallConfidence: DataConfidence;
 }
@@ -537,14 +547,15 @@ export function computeDataHealth(
     .filter((j) => j.status === "closed" && (j.flags.includes("revenue_no_costs") || j.flags.includes("costs_no_revenue")))
     .map((j) => ({ jobId: j.jobId, jobName: j.jobName }));
 
-  const unassignedExpenseCount =
-    typeof latestSyncEntitiesUpdated?.unassignedExpenseCount === "number"
-      ? (latestSyncEntitiesUpdated.unassignedExpenseCount as number)
-      : null;
-  const unassignedExpenseAmount =
-    typeof latestSyncEntitiesUpdated?.unassignedExpenseAmount === "number"
-      ? (latestSyncEntitiesUpdated.unassignedExpenseAmount as number)
-      : null;
+  const readCount = (key: string): number | null =>
+    typeof latestSyncEntitiesUpdated?.[key] === "number" ? (latestSyncEntitiesUpdated[key] as number) : null;
+
+  const unassignedExpenseCount = readCount("unassignedExpenseCount");
+  const unassignedExpenseAmount = readCount("unassignedExpenseAmount");
+  const unresolvedExpenseCount = readCount("unresolvedExpenseCount");
+  const unresolvedExpenseAmount = readCount("unresolvedExpenseAmount");
+  const costsMatchedViaParentCount = readCount("costsMatchedViaParentCount");
+  const costsMatchedViaParentAmount = readCount("costsMatchedViaParentAmount");
 
   // Possible duplicate: same job, same amount, same date, but we only ever
   // store one CostEntry per (source type, source id) via upsert - so a true
@@ -574,6 +585,10 @@ export function computeDataHealth(
     completedJobsWithUnresolvedActivity,
     unassignedExpenseCount,
     unassignedExpenseAmount,
+    unresolvedExpenseCount,
+    unresolvedExpenseAmount,
+    costsMatchedViaParentCount,
+    costsMatchedViaParentAmount,
     possibleDuplicates,
     overallConfidence,
   };
@@ -700,12 +715,16 @@ export function computeDashboardTotals(
     .filter((i) => i.issueCode === "below_target_margin")
     .reduce((s, i) => s + (i.financialImpact ?? 0), 0);
 
+  // "costsMatchedViaParentCount" is deliberately excluded here - it's a
+  // successful (if judgment-call) match, not a problem, so it doesn't count
+  // as a data issue. It's still shown on the Data Health page for transparency.
   const dataIssues =
     dataHealth.jobsMissingEstimates.length +
     dataHealth.jobsMissingCosts.length +
     dataHealth.staleJobs.length +
     dataHealth.completedJobsWithUnresolvedActivity.length +
     (dataHealth.unassignedExpenseCount ?? 0) +
+    (dataHealth.unresolvedExpenseCount ?? 0) +
     dataHealth.possibleDuplicates.length;
 
   return {

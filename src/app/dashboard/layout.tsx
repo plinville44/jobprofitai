@@ -5,9 +5,9 @@ import LogoutButton from "@/components/LogoutButton";
 
 /**
  * Shared nav across every /dashboard/* page. Only links to pages that
- * actually exist ship here - Data Health, Intelligence, and Settings get
- * added to this nav as their own phases land (see the 4-week-launch-plan
- * project doc), rather than linking to pages that would 404 today.
+ * actually exist ship here - Intelligence and Settings get added to this nav
+ * as their own phases land (see the 4-week-launch-plan project doc), rather
+ * than linking to pages that would 404 today.
  */
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const session = await getSession();
@@ -27,6 +27,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
               </Link>
               <Link href="/dashboard/jobs" className="text-sm font-medium text-gray-600 hover:text-navy">
                 Jobs
+              </Link>
+              <Link href="/dashboard/data-health" className="text-sm font-medium text-gray-600 hover:text-navy">
+                Data Health
               </Link>
             </div>
           </div>
