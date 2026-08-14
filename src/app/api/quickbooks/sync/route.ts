@@ -242,6 +242,17 @@ async function runFullSync(connectionId: string, realmId: string, accessToken: s
     costsMatchedViaParentCount: purchaseCounts.viaParentCount + billCounts.viaParentCount + timeCounts.viaParentCount,
     costsMatchedViaParentAmount: purchaseCounts.viaParentAmount + billCounts.viaParentAmount + timeCounts.viaParentAmount,
     timeActivitiesSkippedNoRate: timeCounts.skippedNoRate,
+    // Diagnostic only - up to 5 unresolved lines (which real QBO customer
+    // they were tagged to) and the full list of your synced Jobs with their
+    // own parent linkage, so a mismatch is visible directly from this
+    // record instead of needing another round of guessing.
+    unresolvedSamples: [...purchaseCounts.unresolvedSamples, ...billCounts.unresolvedSamples, ...timeCounts.unresolvedSamples].slice(0, 5),
+    jobsSummary: projectJobs.map((c: any) => ({
+      id: c.Id,
+      name: c.DisplayName,
+      parentId: c.ParentRef?.value ?? null,
+      parentName: c.ParentRef?.name ?? null,
+    })),
     ...(Object.keys(errors).length > 0 ? { partialErrors: errors } : {}),
   };
 }
@@ -303,6 +314,7 @@ async function runIncrementalSync(
     costsMatchedViaParentCount: purchaseCounts.viaParentCount + billCounts.viaParentCount + timeCounts.viaParentCount,
     costsMatchedViaParentAmount: purchaseCounts.viaParentAmount + billCounts.viaParentAmount + timeCounts.viaParentAmount,
     timeActivitiesSkippedNoRate: timeCounts.skippedNoRate,
+    unresolvedSamples: [...purchaseCounts.unresolvedSamples, ...billCounts.unresolvedSamples, ...timeCounts.unresolvedSamples].slice(0, 5),
   };
 }
 
@@ -374,11 +386,21 @@ async function resolveJobForCustomerRef(
  * implementation only checked AccountBasedExpenseLineDetail, which silently
  * dropped any line item bought against an Item (materials purchased as a
  * product/item rather than posted straight to an expense account). */
-function parseExpenseLine(line: any): { jobQboId: string | null; categoryName: string | null; amount: number; description: string | null } {
+function parseExpenseLine(line: any): {
+  jobQboId: string | null;
+  jobQboName: string | null;
+  categoryName: string | null;
+  amount: number;
+  description: string | null;
+} {
   const acct = line?.AccountBasedExpenseLineDetail;
   const item = line?.ItemBasedExpenseLineDetail;
   return {
     jobQboId: acct?.CustomerRef?.value ?? item?.CustomerRef?.value ?? null,
+    // QBO's own display name for whatever customer/sub-customer the line is
+    // tagged to - kept purely for diagnostics (see unresolvedSamples below),
+    // never used for matching logic itself.
+    jobQboName: acct?.CustomerRef?.name ?? item?.CustomerRef?.name ?? null,
     categoryName: acct?.AccountRef?.name ?? item?.ItemRef?.name ?? null,
     amount: typeof line?.Amount === "number" ? line.Amount : 0,
     description: line?.Description ?? null,
@@ -397,6 +419,7 @@ async function upsertCostEntriesFromExpenseTxns(
   unresolvedAmount: number;
   viaParentCount: number;
   viaParentAmount: number;
+  unresolvedSamples: { source: string; txnId: string; customerId: string; customerName: string | null; amount: number }[];
 }> {
   let unassignedCount = 0;
   let unassignedAmount = 0;
@@ -404,6 +427,7 @@ async function upsertCostEntriesFromExpenseTxns(
   let unresolvedAmount = 0;
   let viaParentCount = 0;
   let viaParentAmount = 0;
+  const unresolvedSamples: { source: string; txnId: string; customerId: string; customerName: string | null; amount: number }[] = [];
 
   for (const txn of txns) {
     for (const line of txn.Line ?? []) {
@@ -424,9 +448,20 @@ async function upsertCostEntriesFromExpenseTxns(
       if (!resolved) {
         // Tagged to a real QBO customer, but not one of your synced Jobs and
         // not unambiguously one of their Projects either - counted here
-        // instead of silently disappearing (see Data Health, Phase 4).
+        // instead of silently disappearing (see Data Health, Phase 4). A
+        // few samples (id + QBO's own display name) are kept so this is
+        // diagnosable from the SyncRun record without guessing.
         unresolvedCount++;
         unresolvedAmount += parsed.amount;
+        if (unresolvedSamples.length < 5) {
+          unresolvedSamples.push({
+            source: sourceType,
+            txnId: txn.Id,
+            customerId: parsed.jobQboId,
+            customerName: parsed.jobQboName,
+            amount: parsed.amount,
+          });
+        }
         continue;
       }
       if (resolved.method === "parent_customer_fallback") {
@@ -457,7 +492,7 @@ async function upsertCostEntriesFromExpenseTxns(
     }
   }
 
-  return { unassignedCount, unassignedAmount, unresolvedCount, unresolvedAmount, viaParentCount, viaParentAmount };
+  return { unassignedCount, unassignedAmount, unresolvedCount, unresolvedAmount, viaParentCount, viaParentAmount, unresolvedSamples };
 }
 
 /** TimeActivity has no Line array - the transaction itself is the cost entry.
@@ -467,12 +502,20 @@ async function upsertCostEntriesFromExpenseTxns(
 async function upsertCostEntriesFromTimeActivities(
   connectionId: string,
   timeActivities: any[]
-): Promise<{ skippedNoRate: number; unresolvedCount: number; unresolvedAmount: number; viaParentCount: number; viaParentAmount: number }> {
+): Promise<{
+  skippedNoRate: number;
+  unresolvedCount: number;
+  unresolvedAmount: number;
+  viaParentCount: number;
+  viaParentAmount: number;
+  unresolvedSamples: { source: string; txnId: string; customerId: string; customerName: string | null; amount: number }[];
+}> {
   let skippedNoRate = 0;
   let unresolvedCount = 0;
   let unresolvedAmount = 0;
   let viaParentCount = 0;
   let viaParentAmount = 0;
+  const unresolvedSamples: { source: string; txnId: string; customerId: string; customerName: string | null; amount: number }[] = [];
 
   for (const ta of timeActivities) {
     const jobQboId = ta.CustomerRef?.value;
@@ -492,6 +535,15 @@ async function upsertCostEntriesFromTimeActivities(
     if (!resolved) {
       unresolvedCount++;
       unresolvedAmount += amount;
+      if (unresolvedSamples.length < 5) {
+        unresolvedSamples.push({
+          source: "TimeActivity",
+          txnId: ta.Id,
+          customerId: jobQboId,
+          customerName: ta.CustomerRef?.name ?? null,
+          amount,
+        });
+      }
       continue;
     }
     if (resolved.method === "parent_customer_fallback") {
@@ -517,7 +569,7 @@ async function upsertCostEntriesFromTimeActivities(
     });
   }
 
-  return { skippedNoRate, unresolvedCount, unresolvedAmount, viaParentCount, viaParentAmount };
+  return { skippedNoRate, unresolvedCount, unresolvedAmount, viaParentCount, viaParentAmount, unresolvedSamples };
 }
 
 async function upsertInvoices(connectionId: string, invoices: any[]) {
