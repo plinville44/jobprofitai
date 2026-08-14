@@ -448,6 +448,50 @@ export function computeForecastAtCompletion(job: JobInput, f: JobFinancials, now
   };
 }
 
+export interface ProfitLeakageStep {
+  label: string;
+  value: number; // isTotal steps: the running total at that point. delta steps: the signed change (positive helps profit, negative hurts it).
+  isTotal: boolean;
+}
+
+/**
+ * Profit Leakage / Variance bridge for one job (Chart 4): the movement from
+ * expected profit to actual/forecast profit. Only includes steps that are
+ * directly computable from real data - per spec ("do not fabricate leakage
+ * categories"), this does NOT break cost variance down by category, because
+ * we only have one total estimatedCost (not a per-category budget) - splitting
+ * that single number across categories would be inventing a breakdown the
+ * data doesn't support. Returns null when there isn't a real estimate to
+ * bridge from (nothing to show instead of a misleading chart).
+ */
+export function computeProfitLeakage(f: JobFinancials, forecast: ForecastResult): ProfitLeakageStep[] | null {
+  if (f.estimatedCost == null || f.estimatedRevenue == null) return null;
+
+  const expectedProfit = f.estimatedRevenue - f.estimatedCost;
+  const revenueVariance = f.revenue - f.estimatedRevenue; // more actual revenue than quoted = helps profit
+  const costVariance = f.estimatedCost - f.costs; // spent less than estimated = helps profit (positive)
+
+  const steps: ProfitLeakageStep[] = [
+    { label: "Expected profit", value: expectedProfit, isTotal: true },
+    { label: "Revenue vs. estimate", value: revenueVariance, isTotal: false },
+    { label: "Cost vs. estimate", value: costVariance, isTotal: false },
+  ];
+
+  if (f.fullyLoadedProfit != null && f.grossProfit != null) {
+    steps.push({ label: "Overhead allocation", value: f.fullyLoadedProfit - f.grossProfit, isTotal: false });
+  }
+
+  const runningTotal = steps.reduce((s, step) => (step.isTotal ? step.value : s + step.value), 0);
+  const endLabel = f.status === "open" && forecast.available ? "Forecast profit" : "Actual profit";
+  const endValue =
+    f.status === "open" && forecast.available && forecast.forecastProfit != null
+      ? forecast.forecastProfit
+      : f.fullyLoadedProfit ?? f.grossProfit ?? runningTotal;
+  steps.push({ label: endLabel, value: endValue, isTotal: true });
+
+  return steps;
+}
+
 export interface DataHealthReport {
   jobsMissingEstimates: { jobId: string; jobName: string }[];
   jobsMissingCosts: { jobId: string; jobName: string }[];
@@ -618,6 +662,65 @@ export function computeProfitOpportunities(jobs: JobFinancials[]): ProfitOpportu
   return opportunities;
 }
 
+export interface DashboardTotals {
+  activeJobs: number;
+  revenue: number;
+  trackedJobCosts: number;
+  jobGrossProfit: number;
+  avgJobMarginPct: number | null;
+  targetMarginPct: number | null;
+  jobsBelowTarget: number;
+  profitAtRisk: number; // sum of the dollar gap between actual and target margin, for jobs below target
+  dataIssues: number;
+}
+
+/**
+ * The KPI row at the top of the Profit Dashboard. Pure aggregation over
+ * already-computed JobFinancials/NeedsAttentionItems/DataHealthReport - every
+ * number here is a sum/average of numbers computed elsewhere, nothing new is
+ * calculated in this function beyond addition and division.
+ */
+export function computeDashboardTotals(
+  jobs: JobFinancials[],
+  needsAttention: NeedsAttentionItem[],
+  dataHealth: DataHealthReport,
+  targetMarginPct: number | null
+): DashboardTotals {
+  const activeJobs = jobs.filter((j) => j.status === "open").length;
+  const revenue = jobs.reduce((s, j) => s + j.revenue, 0);
+  const trackedJobCosts = jobs.reduce((s, j) => s + j.costs, 0);
+  const jobGrossProfit = revenue - trackedJobCosts;
+
+  const withMargin = jobs.filter((j) => j.grossMarginPct != null);
+  const avgJobMarginPct =
+    withMargin.length > 0 ? withMargin.reduce((s, j) => s + j.grossMarginPct!, 0) / withMargin.length : null;
+
+  const jobsBelowTarget = jobs.filter((j) => j.flags.includes("below_target_margin")).length;
+  const profitAtRisk = needsAttention
+    .filter((i) => i.issueCode === "below_target_margin")
+    .reduce((s, i) => s + (i.financialImpact ?? 0), 0);
+
+  const dataIssues =
+    dataHealth.jobsMissingEstimates.length +
+    dataHealth.jobsMissingCosts.length +
+    dataHealth.staleJobs.length +
+    dataHealth.completedJobsWithUnresolvedActivity.length +
+    (dataHealth.unassignedExpenseCount ?? 0) +
+    dataHealth.possibleDuplicates.length;
+
+  return {
+    activeJobs,
+    revenue,
+    trackedJobCosts,
+    jobGrossProfit,
+    avgJobMarginPct,
+    targetMarginPct,
+    jobsBelowTarget,
+    profitAtRisk,
+    dataIssues,
+  };
+}
+
 // ============================================================================
 // ASYNC WRAPPERS - Prisma fetch + call into the pure layer above.
 // ============================================================================
@@ -658,26 +761,73 @@ function findPossibleDuplicateCostEntries(
   return duplicates;
 }
 
+export interface DateRange {
+  from: Date;
+  to: Date;
+}
+
+export type JobStatusFilter = "open" | "closed" | "all";
+
 export interface ConnectionProfitData {
   connectionId: string;
   jobs: JobFinancials[];
+  needsAttention: NeedsAttentionItem[];
   dataHealth: DataHealthReport;
   opportunities: ProfitOpportunity[];
+  totals: DashboardTotals;
   targetMarginPct: number | null;
+}
+
+/**
+ * Reads the last few WeeklyDigest snapshots for this connection and returns,
+ * per job, its margin history oldest-first (excluding the current moment -
+ * this is prior data only). Powers the "margin declining" Needs Attention
+ * rule. Digests are only generated when the user or the weekly cron runs one,
+ * so this is naturally sparse early on - computeNeedsAttentionForJob already
+ * requires >=2 points before the rule fires, so sparse data just means the
+ * rule doesn't fire yet rather than firing on noise.
+ */
+async function getPriorMarginsByJob(connectionId: string, limit = 6): Promise<Record<string, number[]>> {
+  const digests = await prisma.weeklyDigest.findMany({
+    where: { connectionId },
+    orderBy: { weekStarting: "asc" },
+    take: limit,
+  });
+  const byJob: Record<string, number[]> = {};
+  for (const digest of digests) {
+    const metrics = digest.metrics as unknown as { jobs?: { jobId: string; marginPct: number | null }[] };
+    for (const j of metrics?.jobs ?? []) {
+      if (j.marginPct == null) continue;
+      (byJob[j.jobId] ??= []).push(j.marginPct);
+    }
+  }
+  return byJob;
 }
 
 /**
  * The main entry point pages/routes call. Fetches everything needed, builds
  * the FinancialContext, and runs it through the pure calculation layer above.
+ * `dateRange` limits which cost/invoice transactions count toward each job's
+ * totals (for the dashboard's date filter); `statusFilter` limits which jobs
+ * are included at all. Both default to "everything" when omitted.
  */
-export async function getConnectionProfitData(connectionId: string, now: Date = new Date()): Promise<ConnectionProfitData> {
+export async function getConnectionProfitData(
+  connectionId: string,
+  now: Date = new Date(),
+  options: { dateRange?: DateRange; statusFilter?: JobStatusFilter } = {}
+): Promise<ConnectionProfitData> {
+  const { dateRange, statusFilter = "all" } = options;
+
   const connection = await prisma.quickBooksConnection.findUniqueOrThrow({
     where: { id: connectionId },
     include: { marginTargets: true },
   });
 
   const jobs = await prisma.job.findMany({
-    where: { connectionId },
+    where: {
+      connectionId,
+      ...(statusFilter !== "all" ? { status: statusFilter } : {}),
+    },
     include: { costEntries: true, invoices: true },
   });
 
@@ -696,6 +846,8 @@ export async function getConnectionProfitData(connectionId: string, now: Date = 
     lastSyncedAt: connection.lastSyncedAt,
   };
 
+  const inRange = (d: Date) => !dateRange || (d >= dateRange.from && d <= dateRange.to);
+
   const jobInputs: JobInput[] = jobs.map((j) => ({
     id: j.id,
     name: j.name,
@@ -707,8 +859,12 @@ export async function getConnectionProfitData(connectionId: string, now: Date = 
     startDate: j.startDate,
     endDate: j.endDate,
     updatedAt: j.updatedAt,
-    costEntries: j.costEntries.map((c) => ({ category: c.category, amount: toNum(c.amount), txnDate: c.txnDate })),
-    invoices: j.invoices.map((i) => ({ amount: toNum(i.amount), status: i.status, txnDate: i.txnDate })),
+    costEntries: j.costEntries
+      .filter((c) => inRange(c.txnDate))
+      .map((c) => ({ category: c.category, amount: toNum(c.amount), txnDate: c.txnDate })),
+    invoices: j.invoices
+      .filter((i) => inRange(i.txnDate))
+      .map((i) => ({ amount: toNum(i.amount), status: i.status, txnDate: i.txnDate })),
   }));
 
   const financials = jobInputs.map((j) => computeJobFinancials(j, ctx));
@@ -727,12 +883,212 @@ export async function getConnectionProfitData(connectionId: string, now: Date = 
 
   const opportunities = computeProfitOpportunities(financials);
 
+  // Needs Attention: per-job rule evaluation, with prior-margin trend data
+  // and same-category peer costs (completed jobs only) threaded in.
+  const priorMarginsByJob = await getPriorMarginsByJob(connectionId);
+  const completedByCategory: Record<string, JobFinancials[]> = {};
+  for (const f of financials) {
+    if (f.status === "closed" && f.category) (completedByCategory[f.category] ??= []).push(f);
+  }
+  const needsAttention = financials.flatMap((f) => {
+    const peerCompletedCostByCategory: Record<string, number[]> = {};
+    if (f.category && completedByCategory[f.category]) {
+      for (const peer of completedByCategory[f.category]) {
+        if (peer.jobId === f.jobId) continue;
+        for (const [cat, amt] of Object.entries(peer.costByCategory)) {
+          (peerCompletedCostByCategory[cat] ??= []).push(amt);
+        }
+      }
+    }
+    return computeNeedsAttentionForJob(f, {
+      priorMarginPcts: priorMarginsByJob[f.jobId],
+      peerCompletedCostByCategory,
+    });
+  });
+
+  const totals = computeDashboardTotals(financials, needsAttention, dataHealth, ctx.targetMarginPct);
+
   return {
     connectionId,
     jobs: financials,
+    needsAttention,
     dataHealth,
     opportunities,
+    totals,
     targetMarginPct: ctx.targetMarginPct,
+  };
+}
+
+export interface MarginTrendPoint {
+  period: string; // "2026-01" (monthly) or "2026-Q1" (quarterly)
+  revenue: number;
+  costs: number;
+  marginPct: number | null;
+}
+
+/**
+ * Average margin across completed jobs over time (Chart 3). Buckets actual
+ * revenue/cost transactions by the month or quarter they landed in - built
+ * directly from CostEntry/InvoiceSummary transaction dates (data already
+ * being synced), not from any new data source.
+ */
+export async function getMarginTrend(
+  connectionId: string,
+  granularity: "monthly" | "quarterly"
+): Promise<MarginTrendPoint[]> {
+  const jobs = await prisma.job.findMany({
+    where: { connectionId, status: "closed" },
+    include: { costEntries: true, invoices: true },
+  });
+
+  const periodKey = (d: Date): string =>
+    granularity === "monthly"
+      ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+      : `${d.getFullYear()}-Q${Math.floor(d.getMonth() / 3) + 1}`;
+
+  const buckets = new Map<string, { revenue: number; costs: number }>();
+  for (const job of jobs) {
+    for (const inv of job.invoices) {
+      const key = periodKey(inv.txnDate);
+      const b = buckets.get(key) ?? { revenue: 0, costs: 0 };
+      b.revenue += toNum(inv.amount);
+      buckets.set(key, b);
+    }
+    for (const c of job.costEntries) {
+      const key = periodKey(c.txnDate);
+      const b = buckets.get(key) ?? { revenue: 0, costs: 0 };
+      b.costs += toNum(c.amount);
+      buckets.set(key, b);
+    }
+  }
+
+  return Array.from(buckets.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([period, { revenue, costs }]) => ({
+      period,
+      revenue,
+      costs,
+      marginPct: revenue > 0 ? (revenue - costs) / revenue : null,
+    }));
+}
+
+export interface JobProfitData {
+  connectionId: string;
+  connectionUserId: string; // for the caller to verify ownership before returning any of this to a request
+  companyName: string | null;
+  financials: JobFinancials;
+  forecast: ForecastResult;
+  leakage: ProfitLeakageStep[] | null;
+  needsAttention: NeedsAttentionItem[];
+  priorMarginPcts: number[]; // oldest-first, from past WeeklyDigest snapshots - powers the Profit Trend section
+  rawCostEntries: { id: string; category: string; description: string | null; amount: number; txnDate: Date; qboSourceType: string }[];
+  rawInvoices: { id: string; amount: number; status: string; txnDate: Date }[];
+}
+
+/**
+ * Single-job version of getConnectionProfitData, for the Job Detail page -
+ * fetches only what one job's page needs (including raw transaction rows for
+ * the Transactions section) rather than computing the whole connection's
+ * job list and discarding all but one.
+ */
+export async function getJobProfitData(jobId: string, now: Date = new Date()): Promise<JobProfitData | null> {
+  const job = await prisma.job.findUnique({
+    where: { id: jobId },
+    include: {
+      costEntries: { orderBy: { txnDate: "desc" } },
+      invoices: { orderBy: { txnDate: "desc" } },
+      connection: { include: { marginTargets: true } },
+    },
+  });
+  if (!job) return null;
+
+  const connection = job.connection;
+  const categoryTargetMarginPct: Record<string, number> = {};
+  for (const mt of connection.marginTargets) {
+    categoryTargetMarginPct[mt.category] = toNum(mt.targetPct);
+  }
+
+  const ctx: FinancialContext = {
+    now,
+    targetMarginPct: connection.targetMarginPct == null ? null : toNum(connection.targetMarginPct),
+    categoryTargetMarginPct,
+    overheadEnabled: connection.overheadEnabled,
+    overheadMethod: connection.overheadMethod as FinancialContext["overheadMethod"],
+    overheadValue: connection.overheadValue == null ? null : toNum(connection.overheadValue),
+    lastSyncedAt: connection.lastSyncedAt,
+  };
+
+  const jobInput: JobInput = {
+    id: job.id,
+    name: job.name,
+    customerName: job.customerName,
+    status: job.status,
+    category: job.category,
+    estimatedRevenue: job.estimatedRevenue == null ? null : toNum(job.estimatedRevenue),
+    estimatedCost: job.estimatedCost == null ? null : toNum(job.estimatedCost),
+    startDate: job.startDate,
+    endDate: job.endDate,
+    updatedAt: job.updatedAt,
+    costEntries: job.costEntries.map((c) => ({ category: c.category, amount: toNum(c.amount), txnDate: c.txnDate })),
+    invoices: job.invoices.map((i) => ({ amount: toNum(i.amount), status: i.status, txnDate: i.txnDate })),
+  };
+
+  const financials = computeJobFinancials(jobInput, ctx);
+  const forecast = computeForecastAtCompletion(jobInput, financials, now);
+  const leakage = computeProfitLeakage(financials, forecast);
+
+  // Peer costs for the outlier rule: other completed jobs in the same category, same connection.
+  let peerCompletedCostByCategory: Record<string, number[]> = {};
+  if (job.category) {
+    const peers = await prisma.job.findMany({
+      where: { connectionId: connection.id, category: job.category, status: "closed", id: { not: job.id } },
+      include: { costEntries: true, invoices: true },
+    });
+    for (const peer of peers) {
+      const peerInput: JobInput = {
+        id: peer.id,
+        name: peer.name,
+        customerName: peer.customerName,
+        status: peer.status,
+        category: peer.category,
+        estimatedRevenue: peer.estimatedRevenue == null ? null : toNum(peer.estimatedRevenue),
+        estimatedCost: peer.estimatedCost == null ? null : toNum(peer.estimatedCost),
+        startDate: peer.startDate,
+        endDate: peer.endDate,
+        updatedAt: peer.updatedAt,
+        costEntries: peer.costEntries.map((c) => ({ category: c.category, amount: toNum(c.amount), txnDate: c.txnDate })),
+        invoices: peer.invoices.map((i) => ({ amount: toNum(i.amount), status: i.status, txnDate: i.txnDate })),
+      };
+      const peerFinancials = computeJobFinancials(peerInput, ctx);
+      for (const [cat, amt] of Object.entries(peerFinancials.costByCategory)) {
+        (peerCompletedCostByCategory[cat] ??= []).push(amt);
+      }
+    }
+  }
+  const priorMarginsByJob = await getPriorMarginsByJob(connection.id);
+  const needsAttention = computeNeedsAttentionForJob(financials, {
+    priorMarginPcts: priorMarginsByJob[job.id],
+    peerCompletedCostByCategory,
+  });
+
+  return {
+    connectionId: connection.id,
+    connectionUserId: connection.userId,
+    companyName: connection.companyName,
+    financials,
+    forecast,
+    leakage,
+    needsAttention,
+    priorMarginPcts: priorMarginsByJob[job.id] ?? [],
+    rawCostEntries: job.costEntries.map((c) => ({
+      id: c.id,
+      category: c.category,
+      description: c.description,
+      amount: toNum(c.amount),
+      txnDate: c.txnDate,
+      qboSourceType: c.qboSourceType,
+    })),
+    rawInvoices: job.invoices.map((i) => ({ id: i.id, amount: toNum(i.amount), status: i.status, txnDate: i.txnDate })),
   };
 }
 

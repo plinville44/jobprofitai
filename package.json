@@ -25,7 +25,8 @@
     "@anthropic-ai/sdk": "^0.25.0",
     "intuit-oauth": "^4.1.1",
     "node-quickbooks": "^2.0.44",
-    "date-fns": "^3.6.0"
+    "date-fns": "^3.6.0",
+    "recharts": "^2.12.7"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
