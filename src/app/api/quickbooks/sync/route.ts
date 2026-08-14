@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
-import { qboQuery, refreshTokens } from "@/lib/quickbooks";
+import { qboQuery, qboCompanyInfo, qboCdc, refreshTokens } from "@/lib/quickbooks";
 import { encryptToken, decryptToken } from "@/lib/crypto";
 
 /**
@@ -12,10 +12,17 @@ import { encryptToken, decryptToken } from "@/lib/crypto";
  * engine and digest generator can run against local data rather than hitting
  * the QBO API live every time.
  *
- * This is intentionally a manual-trigger endpoint for now (Week 1 scope).
- * Wiring it to a weekly cron (Vercel Cron or similar) is Week 2 work, once
- * this path has been proven against a real Sandbox company.
+ * Every run is recorded as a SyncRun (status/mode/entities-updated/error) so
+ * sync is observable, per the product spec and Intuit's own guidance. The
+ * first sync for a connection (or any sync more than FULL_SYNC_INTERVAL_DAYS
+ * since the last full sync) does a full pull; every other sync uses QBO's
+ * Change Data Capture (CDC) endpoint to pull only what changed, which is
+ * faster and lighter for both us and Intuit's API.
  */
+
+const FULL_SYNC_INTERVAL_DAYS = 30;
+const CDC_ENTITIES = ["Customer", "Purchase", "Bill", "TimeActivity", "Invoice", "Estimate"];
+
 export async function POST(req: NextRequest) {
   try {
     return await runSync(req);
@@ -50,19 +57,193 @@ async function runSync(req: NextRequest) {
   const accessToken = await getValidAccessToken(connection);
   const realmId = decryptToken(connection.realmId);
 
-  // --- 1. Jobs (Projects mode: sub-customers with Job=true) ---
+  const fullSyncDue =
+    !connection.lastFullSyncAt ||
+    Date.now() - connection.lastFullSyncAt.getTime() > FULL_SYNC_INTERVAL_DAYS * 24 * 60 * 60 * 1000;
+  const mode: "full" | "incremental" = fullSyncDue ? "full" : "incremental";
+
+  const syncRun = await prisma.syncRun.create({
+    data: { connectionId: connection.id, status: "in_progress", mode },
+  });
+
+  let counts: Record<string, number>;
+  try {
+    counts =
+      mode === "full"
+        ? await runFullSync(connection.id, realmId, accessToken)
+        : await runIncrementalSync(connection.id, realmId, accessToken, connection.lastSyncedAt ?? new Date(0));
+
+    // CompanyInfo is cheap and worth refreshing on every sync, full or incremental.
+    try {
+      const info = await qboCompanyInfo(realmId, accessToken);
+      const companyName = info?.CompanyInfo?.CompanyName;
+      if (companyName) {
+        await prisma.quickBooksConnection.update({
+          where: { id: connection.id },
+          data: { companyName },
+        });
+      }
+    } catch {
+      // Non-fatal - the dashboard already falls back to the decrypted realm
+      // ID if companyName is never populated. Don't fail the whole sync over it.
+    }
+
+    const now = new Date();
+    await prisma.syncRun.update({
+      where: { id: syncRun.id },
+      data: { status: "success", finishedAt: now, entitiesUpdated: counts },
+    });
+    await prisma.quickBooksConnection.update({
+      where: { id: connection.id },
+      data: {
+        lastSyncedAt: now,
+        lastSyncStatus: "success",
+        lastSyncError: null,
+        lastSyncAttemptAt: now,
+        lastSyncEntitiesUpdated: counts,
+        ...(mode === "full" ? { lastFullSyncAt: now } : {}),
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Sync failed.";
+    await prisma.syncRun.update({
+      where: { id: syncRun.id },
+      data: { status: "error", finishedAt: new Date(), errorMessage: message },
+    });
+    await prisma.quickBooksConnection.update({
+      where: { id: connection.id },
+      data: { lastSyncStatus: "error", lastSyncError: message, lastSyncAttemptAt: new Date() },
+    });
+    throw err; // handled by the outer POST try/catch above
+  }
+
+  return NextResponse.json({ ok: true, mode, ...counts });
+}
+
+// ---------------------------------------------------------------------------
+// Full sync: pulls everything via the query endpoint, same approach as the
+// original Week 1 implementation, extended to Bill/TimeActivity/Estimate.
+// ---------------------------------------------------------------------------
+async function runFullSync(connectionId: string, realmId: string, accessToken: string): Promise<Record<string, number>> {
   const customerResult = await qboQuery(
     realmId,
     accessToken,
     "SELECT Id, DisplayName, Job, ParentRef, Active FROM Customer WHERE Job = true MAXRESULTS 1000"
   );
   const projectJobs = customerResult?.QueryResponse?.Customer ?? [];
+  await upsertJobsFromCustomers(connectionId, projectJobs);
 
-  for (const c of projectJobs) {
+  const purchaseResult = await qboQuery(realmId, accessToken, "SELECT Id, TxnDate, TotalAmt, Line FROM Purchase MAXRESULTS 1000");
+  const purchases = purchaseResult?.QueryResponse?.Purchase ?? [];
+  const purchaseCounts = await upsertCostEntriesFromExpenseTxns(connectionId, purchases, "Purchase");
+
+  const billResult = await qboQuery(realmId, accessToken, "SELECT Id, TxnDate, TotalAmt, Line FROM Bill MAXRESULTS 1000");
+  const bills = billResult?.QueryResponse?.Bill ?? [];
+  const billCounts = await upsertCostEntriesFromExpenseTxns(connectionId, bills, "Bill");
+
+  const timeActivityResult = await qboQuery(
+    realmId,
+    accessToken,
+    "SELECT Id, TxnDate, CustomerRef, Hours, Minutes, HourlyRate, Description FROM TimeActivity MAXRESULTS 1000"
+  );
+  const timeActivities = timeActivityResult?.QueryResponse?.TimeActivity ?? [];
+  const timeCounts = await upsertCostEntriesFromTimeActivities(connectionId, timeActivities);
+
+  const invoiceResult = await qboQuery(
+    realmId,
+    accessToken,
+    "SELECT Id, TxnDate, TotalAmt, Balance, CustomerRef FROM Invoice MAXRESULTS 1000"
+  );
+  const invoices = invoiceResult?.QueryResponse?.Invoice ?? [];
+  await upsertInvoices(connectionId, invoices);
+
+  const estimateResult = await qboQuery(
+    realmId,
+    accessToken,
+    "SELECT Id, TxnDate, TotalAmt, CustomerRef FROM Estimate MAXRESULTS 1000"
+  );
+  const estimates = estimateResult?.QueryResponse?.Estimate ?? [];
+  await applyEstimatesToJobs(connectionId, estimates);
+
+  return {
+    jobs: projectJobs.length,
+    purchases: purchases.length,
+    bills: bills.length,
+    timeActivities: timeActivities.length,
+    invoices: invoices.length,
+    estimates: estimates.length,
+    unassignedExpenseCount: purchaseCounts.unassignedCount + billCounts.unassignedCount,
+    unassignedExpenseAmount: purchaseCounts.unassignedAmount + billCounts.unassignedAmount,
+    timeActivitiesSkippedNoRate: timeCounts.skippedNoRate,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Incremental sync: pulls only what changed since the last sync via QBO's
+// CDC endpoint, and runs the exact same upsert helpers as full sync so the
+// two modes can never drift out of sync with each other's logic.
+//
+// Known simplification: CDC can report deletions (entities with
+// status:"Deleted"), which this does not yet remove locally - a deleted QBO
+// transaction will linger in our tables until the next full sync (at most
+// FULL_SYNC_INTERVAL_DAYS later) cleans it up implicitly via re-upsert of
+// what still exists. Flagged as a known limitation, not silently ignored -
+// worth hardening once this has run against real customer data.
+// ---------------------------------------------------------------------------
+async function runIncrementalSync(
+  connectionId: string,
+  realmId: string,
+  accessToken: string,
+  changedSince: Date
+): Promise<Record<string, number>> {
+  const cdcResult = await qboCdc(realmId, accessToken, CDC_ENTITIES, changedSince);
+  const responses: any[] = cdcResult?.CDCResponse?.[0]?.QueryResponse ?? [];
+  const byEntity = (name: string): any[] => {
+    const match = responses.find((r) => Array.isArray(r?.[name]));
+    return match?.[name] ?? [];
+  };
+
+  const customers = byEntity("Customer").filter((c) => c.Job === true);
+  await upsertJobsFromCustomers(connectionId, customers);
+
+  const purchases = byEntity("Purchase");
+  const purchaseCounts = await upsertCostEntriesFromExpenseTxns(connectionId, purchases, "Purchase");
+
+  const bills = byEntity("Bill");
+  const billCounts = await upsertCostEntriesFromExpenseTxns(connectionId, bills, "Bill");
+
+  const timeActivities = byEntity("TimeActivity");
+  const timeCounts = await upsertCostEntriesFromTimeActivities(connectionId, timeActivities);
+
+  const invoices = byEntity("Invoice");
+  await upsertInvoices(connectionId, invoices);
+
+  const estimates = byEntity("Estimate");
+  await applyEstimatesToJobs(connectionId, estimates);
+
+  return {
+    jobs: customers.length,
+    purchases: purchases.length,
+    bills: bills.length,
+    timeActivities: timeActivities.length,
+    invoices: invoices.length,
+    estimates: estimates.length,
+    unassignedExpenseCount: purchaseCounts.unassignedCount + billCounts.unassignedCount,
+    unassignedExpenseAmount: purchaseCounts.unassignedAmount + billCounts.unassignedAmount,
+    timeActivitiesSkippedNoRate: timeCounts.skippedNoRate,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Shared upsert helpers (used by both full and incremental sync)
+// ---------------------------------------------------------------------------
+
+async function upsertJobsFromCustomers(connectionId: string, customers: any[]) {
+  for (const c of customers) {
     await prisma.job.upsert({
-      where: { connectionId_qboId: { connectionId: connection.id, qboId: c.Id } },
+      where: { connectionId_qboId: { connectionId, qboId: c.Id } },
       create: {
-        connectionId: connection.id,
+        connectionId,
         qboId: c.Id,
         name: c.DisplayName,
         status: c.Active ? "open" : "closed",
@@ -73,55 +254,133 @@ async function runSync(req: NextRequest) {
       },
     });
   }
+}
 
-  // --- 2. Actual costs: Purchases (covers Expense/Check/CreditCard-type spend) ---
-  const purchaseResult = await qboQuery(
-    realmId,
-    accessToken,
-    "SELECT Id, TxnDate, TotalAmt, Line FROM Purchase MAXRESULTS 1000"
-  );
-  const purchases = purchaseResult?.QueryResponse?.Purchase ?? [];
+/** Reads a job reference + category name off an expense line, checking both
+ * account-based and item-based expense line details - the original
+ * implementation only checked AccountBasedExpenseLineDetail, which silently
+ * dropped any line item bought against an Item (materials purchased as a
+ * product/item rather than posted straight to an expense account). */
+function parseExpenseLine(line: any): { jobQboId: string | null; categoryName: string | null; amount: number; description: string | null } {
+  const acct = line?.AccountBasedExpenseLineDetail;
+  const item = line?.ItemBasedExpenseLineDetail;
+  return {
+    jobQboId: acct?.CustomerRef?.value ?? item?.CustomerRef?.value ?? null,
+    categoryName: acct?.AccountRef?.name ?? item?.ItemRef?.name ?? null,
+    amount: typeof line?.Amount === "number" ? line.Amount : 0,
+    description: line?.Description ?? null,
+  };
+}
 
-  for (const purchase of purchases) {
-    for (const line of purchase.Line ?? []) {
-      const jobRef = line?.AccountBasedExpenseLineDetail?.CustomerRef?.value;
-      if (!jobRef) continue; // not tagged to a job - skip, it's overhead
+/** Shared by Purchase and Bill processing - same line shape, same category logic. */
+async function upsertCostEntriesFromExpenseTxns(
+  connectionId: string,
+  txns: any[],
+  sourceType: "Purchase" | "Bill"
+): Promise<{ unassignedCount: number; unassignedAmount: number }> {
+  let unassignedCount = 0;
+  let unassignedAmount = 0;
+
+  for (const txn of txns) {
+    for (const line of txn.Line ?? []) {
+      const parsed = parseExpenseLine(line);
+      if (parsed.amount === 0) continue; // summary/subtotal lines, nothing to record
+
+      if (!parsed.jobQboId) {
+        // Not tagged to a job - either genuine overhead (fine) or a missed
+        // tagging opportunity. We can't tell which from here, so it's
+        // counted for the Data Health "unassigned expenses" surface rather
+        // than silently dropped.
+        unassignedCount++;
+        unassignedAmount += parsed.amount;
+        continue;
+      }
 
       const job = await prisma.job.findUnique({
-        where: { connectionId_qboId: { connectionId: connection.id, qboId: jobRef } },
+        where: { connectionId_qboId: { connectionId, qboId: parsed.jobQboId } },
       });
-      if (!job) continue;
+      if (!job) continue; // tagged to a customer that isn't a Job (Job=true) - not job-costing relevant
 
+      const entryId = `${sourceType}-${txn.Id}-${line.Id ?? "0"}`;
       await prisma.costEntry.upsert({
-        where: { id: `${purchase.Id}-${line.Id}` }, // deterministic id, safe to re-run
+        where: { id: entryId },
         create: {
-          id: `${purchase.Id}-${line.Id}`,
+          id: entryId,
           jobId: job.id,
-          qboSourceType: "Purchase",
-          qboSourceId: purchase.Id,
-          category: categorize(line?.AccountBasedExpenseLineDetail?.AccountRef?.name),
-          description: line?.Description ?? null,
-          amount: line?.Amount ?? 0,
-          txnDate: new Date(purchase.TxnDate),
+          qboSourceType: sourceType,
+          qboSourceId: txn.Id,
+          category: categorize(parsed.categoryName),
+          description: parsed.description,
+          amount: parsed.amount,
+          txnDate: new Date(txn.TxnDate),
         },
         update: {
-          amount: line?.Amount ?? 0,
+          amount: parsed.amount,
+          description: parsed.description,
         },
       });
     }
   }
 
-  // --- 3. Actual revenue: Invoices tagged to a job ---
-  const invoiceResult = await qboQuery(
-    realmId,
-    accessToken,
-    "SELECT Id, TxnDate, TotalAmt, Balance, CustomerRef FROM Invoice MAXRESULTS 1000"
-  );
-  const invoices = invoiceResult?.QueryResponse?.Invoice ?? [];
+  return { unassignedCount, unassignedAmount };
+}
 
-  for (const inv of invoices) {
+/** TimeActivity has no Line array - the transaction itself is the cost entry.
+ * Cost in dollars requires an hourly rate on file; entries without one are
+ * skipped and counted (never guessed at) - see the "not synced today" note
+ * in the plan about labor-cost reliability. */
+async function upsertCostEntriesFromTimeActivities(
+  connectionId: string,
+  timeActivities: any[]
+): Promise<{ skippedNoRate: number }> {
+  let skippedNoRate = 0;
+
+  for (const ta of timeActivities) {
+    const jobQboId = ta.CustomerRef?.value;
+    if (!jobQboId) continue;
+
+    const hourlyRate = typeof ta.HourlyRate === "number" ? ta.HourlyRate : null;
+    if (hourlyRate == null || hourlyRate <= 0) {
+      skippedNoRate++;
+      continue;
+    }
+
+    const hours = (typeof ta.Hours === "number" ? ta.Hours : 0) + (typeof ta.Minutes === "number" ? ta.Minutes / 60 : 0);
+    const amount = Math.round(hours * hourlyRate * 100) / 100;
+    if (amount <= 0) continue;
+
     const job = await prisma.job.findUnique({
-      where: { connectionId_qboId: { connectionId: connection.id, qboId: inv.CustomerRef?.value } },
+      where: { connectionId_qboId: { connectionId, qboId: jobQboId } },
+    });
+    if (!job) continue;
+
+    const entryId = `TimeActivity-${ta.Id}-0`;
+    await prisma.costEntry.upsert({
+      where: { id: entryId },
+      create: {
+        id: entryId,
+        jobId: job.id,
+        qboSourceType: "TimeActivity",
+        qboSourceId: ta.Id,
+        category: "labor",
+        description: ta.Description ?? null,
+        amount,
+        txnDate: new Date(ta.TxnDate),
+      },
+      update: { amount },
+    });
+  }
+
+  return { skippedNoRate };
+}
+
+async function upsertInvoices(connectionId: string, invoices: any[]) {
+  for (const inv of invoices) {
+    const jobQboId = inv.CustomerRef?.value;
+    if (!jobQboId) continue;
+
+    const job = await prisma.job.findUnique({
+      where: { connectionId_qboId: { connectionId, qboId: jobQboId } },
     });
     if (!job) continue;
 
@@ -141,29 +400,43 @@ async function runSync(req: NextRequest) {
       },
     });
   }
-
-  await prisma.quickBooksConnection.update({
-    where: { id: connection.id },
-    data: { lastSyncedAt: new Date(), companyName: connection.companyName },
-  });
-
-  return NextResponse.json({
-    ok: true,
-    jobsSynced: projectJobs.length,
-    purchasesSynced: purchases.length,
-    invoicesSynced: invoices.length,
-  });
 }
 
-/** Maps a QBO expense account name to one of our four cost categories. Loose
+/** Applies the most recent Estimate per job as Job.estimatedRevenue - a
+ * revision history isn't summed, since summing would double-count a job that
+ * simply had its quote revised. Estimated *cost* is intentionally untouched
+ * here (stays manual - see plan §6, QBO Estimates are customer-facing revenue
+ * quotes, not internal cost budgets). */
+async function applyEstimatesToJobs(connectionId: string, estimates: any[]) {
+  const latestByJob = new Map<string, { amount: number; date: Date }>();
+  for (const est of estimates) {
+    const jobQboId = est.CustomerRef?.value;
+    if (!jobQboId) continue;
+    const date = new Date(est.TxnDate);
+    const existing = latestByJob.get(jobQboId);
+    if (!existing || date > existing.date) {
+      latestByJob.set(jobQboId, { amount: est.TotalAmt ?? 0, date });
+    }
+  }
+
+  for (const [jobQboId, { amount }] of latestByJob) {
+    const job = await prisma.job.findUnique({
+      where: { connectionId_qboId: { connectionId, qboId: jobQboId } },
+    });
+    if (!job) continue;
+    await prisma.job.update({ where: { id: job.id }, data: { estimatedRevenue: amount } });
+  }
+}
+
+/** Maps a QBO expense account/item name to one of our cost categories. Loose
  * on purpose - contractors name accounts inconsistently, and a mis-bucketed
- * cost is far less harmful than a missing one. Refine as real data comes in
- * during Week 3 beta testing. */
-function categorize(accountName: string | undefined): string {
-  const name = (accountName ?? "").toLowerCase();
+ * cost is far less harmful than a missing one. */
+function categorize(accountOrItemName: string | null | undefined): string {
+  const name = (accountOrItemName ?? "").toLowerCase();
   if (name.includes("labor") || name.includes("payroll") || name.includes("wage")) return "labor";
   if (name.includes("material") || name.includes("supply") || name.includes("supplies")) return "materials";
   if (name.includes("subcontractor") || name.includes("sub-contractor") || name.includes("sub ")) return "subcontractor";
+  if (name.includes("equipment") || name.includes("rental") || name.includes("lease")) return "equipment";
   if (name.includes("overhead") || name.includes("admin")) return "overhead";
   return "other";
 }

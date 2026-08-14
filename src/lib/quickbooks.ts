@@ -235,6 +235,52 @@ export async function qboQuery(
   return res.json();
 }
 
+/** Shared authenticated GET against an arbitrary Accounting API path (company-scoped). */
+async function qboGet(realmId: string, accessToken: string, pathAndQuery: string): Promise<any> {
+  const url = `${apiBaseUrl()}/v3/company/${realmId}/${pathAndQuery}`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+    },
+  });
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new ReconnectRequiredError();
+    }
+    throw new Error(`QuickBooks API request failed with status ${res.status} (intuit_tid: ${intuitTid(res)})`);
+  }
+  return res.json();
+}
+
+/** Fetches the connected company's display name and basic info (standard Accounting API, no extra scope needed). */
+export async function qboCompanyInfo(realmId: string, accessToken: string): Promise<any> {
+  return qboGet(realmId, accessToken, `companyinfo/${realmId}?minorversion=70`);
+}
+
+/**
+ * Change Data Capture: returns only entities that changed since `changedSince`,
+ * across all requested entity types in one call. Standard Accounting API
+ * endpoint (not a premium/restricted one) - used for incremental sync so a
+ * routine re-sync doesn't have to re-pull a customer's entire transaction
+ * history every time. Falls back to a full query-based sync (see the sync
+ * route) if this fails or if it's been too long since the last full sync.
+ */
+export async function qboCdc(
+  realmId: string,
+  accessToken: string,
+  entities: string[],
+  changedSince: Date
+): Promise<any> {
+  const params = new URLSearchParams({
+    entities: entities.join(","),
+    changedSince: changedSince.toISOString(),
+    minorversion: "70",
+  });
+  return qboGet(realmId, accessToken, `cdc?${params.toString()}`);
+}
+
 /**
  * Step (disconnect): tell Intuit to invalidate this connection's tokens.
  * Revoking the refresh token invalidates its paired access token too, so one
