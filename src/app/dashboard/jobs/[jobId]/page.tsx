@@ -158,9 +158,13 @@ export default async function JobDetailPage({ params }: { params: { jobId: strin
               </p>
             ) : data.forecast.available ? (
               <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <MiniStat label="Cost to date" value={formatCurrency(data.forecast.actualCostToDate)} />
+                <MiniStat label="Actual cost to date" value={formatCurrency(data.forecast.actualCostToDate)} />
                 <MiniStat label="Estimated cost" value={formatCurrency(data.forecast.estimatedCost)} />
-                <MiniStat label="Forecast cost" value={formatCurrency(data.forecast.forecastCostAtCompletion)} />
+                <MiniStat label="Forecast cost at completion" value={formatCurrency(data.forecast.forecastCostAtCompletion)} />
+                <MiniStat
+                  label="Forecast profit"
+                  value={data.forecast.forecastProfit != null ? formatCurrency(data.forecast.forecastProfit) : "—"}
+                />
                 <MiniStat
                   label="Forecast margin"
                   value={data.forecast.forecastMarginPct != null ? formatPct(data.forecast.forecastMarginPct) : "—"}
@@ -168,6 +172,11 @@ export default async function JobDetailPage({ params }: { params: { jobId: strin
                 <div className="col-span-2 sm:col-span-4">
                   <ConfidenceBadge confidence={data.forecast.confidence ?? "low"} />
                 </div>
+                <p className="col-span-2 text-xs text-gray-400 sm:col-span-4">
+                  Forecast assumes the cost overrun observed so far (actual cost ÷ estimated cost) continues at the
+                  same rate through the rest of the job. Confidence rises as more of the estimated cost has actually
+                  been spent.
+                </p>
               </div>
             ) : (
               <p className="mt-2 text-sm text-gray-500">{data.forecast.reason}</p>
