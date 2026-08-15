@@ -51,11 +51,22 @@ export async function GET(req: NextRequest) {
 
   const results: { connectionId: string; status: string; detail?: string }[] = [];
 
+  // Every connection considered gets an entry in `results`, including ones
+  // that simply aren't due this hour - a hovering cron with no output for
+  // 167 out of every 168 runs (correct behavior) looks identical to "this is
+  // broken and finding nothing" from the outside otherwise. Same "never
+  // silently drop a gap" rule this project has applied everywhere else (see
+  // Data Health), just applied to the cron's own diagnostics.
   for (const connection of connections) {
     try {
       const { day, hour } = getLocalDayHour(now, connection.emailTimezone);
       if (day !== connection.emailDay || hour !== connection.emailHour) {
-        continue; // not this connection's send time this hour
+        results.push({
+          connectionId: connection.id,
+          status: "not_due",
+          detail: `configured for day ${connection.emailDay}, hour ${connection.emailHour} in ${connection.emailTimezone} - right now it's day ${day}, hour ${hour} there`,
+        });
+        continue;
       }
       if (connection.emailRecipients.length === 0) {
         results.push({ connectionId: connection.id, status: "skipped", detail: "no recipients configured" });
@@ -140,5 +151,10 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: true, checkedAt: now.toISOString(), results });
+  return NextResponse.json({
+    ok: true,
+    checkedAt: now.toISOString(),
+    connectionsConsidered: connections.length, // 0 here means no connection has the weekly email turned on at all - different from "found some, none due this hour" (see per-connection results below)
+    results,
+  });
 }
