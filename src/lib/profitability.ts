@@ -754,7 +754,11 @@ const toNum = (d: Prisma.Decimal | null | undefined): number => (d == null ? 0 :
  * worth a human glance rather than an automatic merge (per spec: flag, don't
  * auto-merge).
  */
-function findPossibleDuplicateCostEntries(
+// Exported (was module-private) so Phase 8's Vitest suite can test the
+// duplicate-detection logic directly - it's already a pure function (no
+// Prisma calls of its own, just operates on already-fetched rows), it just
+// hadn't needed an export yet since only getConnectionProfitData called it.
+export function findPossibleDuplicateCostEntries(
   jobs: {
     id: string;
     name: string;
