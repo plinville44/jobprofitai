@@ -289,6 +289,12 @@ model WeeklyDigest {
   weekStarting   DateTime
   metrics        Json      // structured profitability data the narrative is grounded in
   narrative      String    @db.Text
+  // "narrative" = Claude-written digest (normal case). "data_health" = the
+  // AI narrative was skipped entirely and `narrative` holds a deterministic,
+  // plain-text explanation of what's missing instead - used when company-wide
+  // Data Confidence is too low to trust an AI-written take on profitability
+  // (see src/lib/digest.ts). Never AI-written when kind = "data_health".
+  kind           String    @default("narrative")
   emailedAt      DateTime?
 
   createdAt      DateTime  @default(now())

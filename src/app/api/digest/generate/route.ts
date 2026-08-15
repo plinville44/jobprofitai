@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { startOfWeek } from "date-fns";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
-import { computeConnectionMetrics } from "@/lib/profitability";
-import { generateWeeklyDigest } from "@/lib/digest";
+import { generateWeeklyDigestForConnection } from "@/lib/digest";
 
 /**
  * POST /api/digest/generate  { connectionId }
@@ -26,9 +25,9 @@ export async function POST(req: NextRequest) {
 
     const weekStarting = startOfWeek(new Date(), { weekStartsOn: 1 }); // Monday
 
-    const metrics = await computeConnectionMetrics(connection.id, weekStarting);
-    const narrative = await generateWeeklyDigest(
-      metrics,
+    const { narrative, kind, metrics } = await generateWeeklyDigestForConnection(
+      connection.id,
+      weekStarting,
       connection.companyName ?? "your company"
     );
 
@@ -39,14 +38,16 @@ export async function POST(req: NextRequest) {
         weekStarting,
         metrics: metrics as any,
         narrative,
+        kind,
       },
       update: {
         metrics: metrics as any,
         narrative,
+        kind,
       },
     });
 
-    return NextResponse.json({ id: digest.id, narrative, metrics });
+    return NextResponse.json({ id: digest.id, narrative, kind, metrics });
   } catch (err) {
     // Without this, an unhandled exception here returns Vercel's HTML error
     // page instead of JSON, and the dashboard button's fetch call gets stuck

@@ -23,7 +23,7 @@ export default function HomePage() {
           For contractors on QuickBooks Online
         </p>
         <h1 className="mx-auto max-w-3xl text-4xl font-bold leading-tight text-navy sm:text-5xl">
-          Know which jobs are bleeding margin — every Monday, before it&apos;s too late.
+          Know which jobs are bleeding margin, every Monday, before it&apos;s too late.
         </h1>
         <p className="mx-auto mt-6 max-w-2xl text-lg text-gray-600">
           Connect QuickBooks in two minutes. Every week, get a plain-English digest

@@ -1145,6 +1145,11 @@ export interface ConnectionMetrics {
     totalActualRevenue: number;
     blendedMarginPct: number | null;
   };
+  // Added so the digest generator (src/lib/digest.ts) can decide whether the
+  // synced data is complete enough to trust an AI-written narrative about it,
+  // and so the AI narrative itself (when it does run) has the same Data
+  // Health context already shown on the dashboard.
+  dataHealth: DataHealthReport;
 }
 
 export async function computeConnectionMetrics(connectionId: string, weekStarting: Date): Promise<ConnectionMetrics> {
@@ -1188,5 +1193,6 @@ export async function computeConnectionMetrics(connectionId: string, weekStartin
     jobs: jobMetrics,
     topConcerns,
     totals: { activeJobs, totalActualCost, totalActualRevenue, blendedMarginPct },
+    dataHealth: data.dataHealth,
   };
 }

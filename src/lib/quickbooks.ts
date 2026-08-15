@@ -170,7 +170,7 @@ export async function exchangeCodeForTokens(
 
 /**
  * Access tokens expire after ~1 hour - call this before any API request once
- * expired (see getValidAccessToken in api/quickbooks/sync/route.ts, which
+ * expired (see getValidAccessToken in src/lib/quickbooksSync.ts, which
  * refreshes proactively ~5 minutes before expiry rather than waiting for a
  * request to actually fail).
  *

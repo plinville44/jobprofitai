@@ -262,7 +262,14 @@ export default async function DashboardPage({
 
           {latestDigest && (
             <div className="mt-6 rounded-xl border border-gray-200 p-6">
-              <p className="text-sm text-gray-500">Digest for week of {latestDigest.weekStarting.toLocaleDateString()}</p>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm text-gray-500">Digest for week of {latestDigest.weekStarting.toLocaleDateString()}</p>
+                {latestDigest.kind === "narrative" ? (
+                  <span className="text-xs font-semibold uppercase tracking-wide text-brand">AI Analysis</span>
+                ) : (
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">Data Health notice</span>
+                )}
+              </div>
               <pre className="mt-2 whitespace-pre-wrap font-sans text-sm text-navy">{latestDigest.narrative}</pre>
             </div>
           )}
