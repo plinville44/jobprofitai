@@ -1,0 +1,102 @@
+JobProfitAI - How to run the sandbox seed script
+==================================================
+
+This script fills your QuickBooks SANDBOX company with the full test-data
+set from JobProfitAI_Sandbox_Test_Data.xlsx automatically, so you don't have
+to type in ~50 transactions by hand.
+
+STEP 0 - Apply the small app update this needs first
+-----------------------------------------------------------------------
+This kit includes one small change to the app itself (a temporary page that
+hands you a token straight from JobProfitAI, so you don't have to go
+hunting through Intuit's Developer Portal for it). Apply and deploy it the
+same way as always:
+
+  git add src/app/api/debug/qbo-token/route.ts src/lib/quickbooksSync.ts
+  git commit -m "Add temporary sandbox-token helper for the seed script"
+  git push
+
+Wait for Vercel to finish deploying before continuing.
+
+STEP 1 - Get a temporary sandbox access token (takes 10 seconds)
+-----------------------------------------------------------------------
+1. Log into JobProfitAI in your browser like normal.
+2. Go to this address (replace with your real domain if different):
+
+     https://jobprofitai.vercel.app/api/debug/qbo-token
+
+3. Your browser will show a small block of text like this:
+
+     {"accessToken":"eyJ...long string...","realmId":"1234567890",...}
+
+   Copy the whole "accessToken" value (the long string between the quotes,
+   NOT including the quotes) and the "realmId" value. You'll paste both into
+   the next step.
+
+IMPORTANT: This access token expires about 60 minutes after you load that
+page. Do step 2 right after copying it. If it expires partway through, just
+reload that page for a fresh one and re-run the script - it's safe to run
+more than once (see below).
+
+(If that page shows an error instead: make sure you're logged into
+JobProfitAI and that your QuickBooks Sandbox connection is still active -
+check the dashboard first.)
+
+STEP 2 - Run the script
+-----------------------------------------------------------------------
+Open your terminal in the JobProfitAI project folder (the same one you've
+used for npm test / git commands) and run:
+
+  QBO_ACCESS_TOKEN="paste-your-access-token-here" QBO_REALM_ID="paste-your-realm-id-here" node scripts/seed-sandbox.js
+
+On Windows PowerShell, do it as three lines instead:
+
+  $env:QBO_ACCESS_TOKEN="paste-your-access-token-here"
+  $env:QBO_REALM_ID="paste-your-realm-id-here"
+  node scripts/seed-sandbox.js
+
+Watch the console - it prints a numbered progress line for each of the 8
+phases (accounts, customers, jobs, estimates, invoices, expenses, bills,
+time activity + closing out completed jobs), and will finish with:
+
+  "All done. Now go into JobProfitAI and click 'Sync now'..."
+
+If something errors out partway through, copy me the exact error text and
+I'll fix that part of the script - re-running it afterward is safe, since
+it looks up everything by name first rather than re-creating duplicates.
+
+IF YOU ALREADY RAN THIS ONCE AND IT GOT PARTWAY THROUGH:
+-----------------------------------------------------------------------
+Check your console output from that run. If phases 4 through 8a (estimates,
+invoices, expenses, bills, time activity) all said "Done." and it only
+failed on the very last close-out step, your data already exists in
+QuickBooks - do NOT just re-run the plain command, or you'll create a
+second copy of every estimate/invoice/expense/bill and double all the
+dollar amounts. Instead, run it with the --finish-only flag, which skips
+straight to paying off invoices and closing jobs:
+
+  node scripts\seed-sandbox.js --finish-only
+
+(Grab a fresh token first per Step 1 if it's been a while.)
+
+STEP 3 - Back in JobProfitAI
+-----------------------------------------------------------------------
+1. Click "Sync now" in the app.
+2. Go through tab "1. Jobs to Create" in the workbook and, on each job's
+   detail page, fill in Job Type and Estimated Cost (this part still has
+   to be done in the app itself - see the note in the workbook's Read Me
+   tab about why).
+3. Work through tab "6. Verification Checklist" to confirm everything
+   shows up correctly.
+4. Once you're done seeding for good, it's fine to delete
+   src/app/api/debug/qbo-token/route.ts and remove the "export" on
+   getValidAccessToken in src/lib/quickbooksSync.ts - it's not linked from
+   anywhere in the app, just a URL you visit directly, but there's no need
+   to leave it around once you don't need it anymore.
+
+ALTERNATIVE - Intuit's own OAuth Playground
+-----------------------------------------------------------------------
+If you'd rather not deploy the Step 0 change, Intuit does have its own tool
+for this (search "OAuth 2.0 Playground" from the Documentation menu at
+developer.intuit.com), but it's moved around their site before and can be
+hard to find - the app-based method above is the one I'd recommend.

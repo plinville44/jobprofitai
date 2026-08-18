@@ -144,21 +144,25 @@ const ESTIMATES = [
   { ref: "P3", amount: 4000, daysAgo: 20 },
 ];
 
+// paid: true means a Payment gets recorded against the invoice for its full
+// amount right after it's created, zeroing its balance - QBO won't allow a
+// Customer with an open balance (or unbilled charges) to be deactivated, and
+// most of the "closed" jobs below need to end up deactivated.
 const INVOICES = [
-  { ref: "R1", amount: 14000, daysAgo: 40 },
-  { ref: "R2", amount: 11000, daysAgo: 35 },
-  { ref: "R3", amount: 20000, daysAgo: 45 },
-  { ref: "M1", amount: 10500, daysAgo: 30 },
-  { ref: "M2", amount: 11000, daysAgo: 28 },
-  { ref: "M3", amount: 10200, daysAgo: 32 },
-  { ref: "M4", amount: 8000, daysAgo: 10 },
-  { ref: "P1", amount: 6000, daysAgo: 15 },
-  { ref: "P2", amount: 5000, daysAgo: 12 },
-  { ref: "P3", amount: 4000, daysAgo: 10 },
-  { ref: "Z2", amount: 5000, daysAgo: 7 },
-  { ref: "Z5", amount: 5800, daysAgo: 18 },
-  { ref: "Z6", amount: 2000, daysAgo: 14 },
-  { ref: "Z7", amount: 3000, daysAgo: 10 },
+  { ref: "R1", amount: 14000, daysAgo: 40, paid: true },
+  { ref: "R2", amount: 11000, daysAgo: 35, paid: true },
+  { ref: "R3", amount: 20000, daysAgo: 45, paid: true },
+  { ref: "M1", amount: 10500, daysAgo: 30, paid: true },
+  { ref: "M2", amount: 11000, daysAgo: 28, paid: true },
+  { ref: "M3", amount: 10200, daysAgo: 32, paid: true },
+  { ref: "M4", amount: 8000, daysAgo: 10, paid: false }, // deposit invoice, job still open
+  { ref: "P1", amount: 6000, daysAgo: 15, paid: true },
+  { ref: "P2", amount: 5000, daysAgo: 12, paid: true },
+  { ref: "P3", amount: 4000, daysAgo: 10, paid: true },
+  { ref: "Z2", amount: 5000, daysAgo: 7, paid: false },
+  { ref: "Z5", amount: 5800, daysAgo: 18, paid: true },
+  { ref: "Z6", amount: 2000, daysAgo: 14, paid: true },
+  { ref: "Z7", amount: 3000, daysAgo: 10, paid: false },
 ];
 
 // account: "materials" | "labor" | "equipment" | "subcontractor"
@@ -387,6 +391,44 @@ async function createInvoices(jobIdByRef, itemId) {
       ],
     },
   }));
+  const invoiceIdByRef = {};
+  for (const group of chunk(items, 30)) {
+    const results = await batch(group);
+    for (const r of results) {
+      if (r.Invoice) invoiceIdByRef[r.bId.replace("inv", "")] = r.Invoice.Id;
+    }
+  }
+  return invoiceIdByRef; // numeric-string bId suffix -> QBO Invoice Id, indexed same as INVOICES
+}
+
+// Records a full-amount Payment against every invoice marked paid:true, so
+// those customers don't carry an open balance (see the INVOICES comment).
+// Safe to call again later: it re-queries each invoice's current Balance
+// first and skips anything already at zero, so a second run won't double-pay.
+async function payInvoices(jobIdByRef) {
+  const res = await query(`SELECT Id, Balance, CustomerRef FROM Invoice MAXRESULTS 1000`);
+  const invoicesByCustomerId = new Map();
+  for (const inv of res?.QueryResponse?.Invoice ?? []) {
+    invoicesByCustomerId.set(inv.CustomerRef?.value, inv);
+  }
+
+  const items = [];
+  INVOICES.forEach((inv, i) => {
+    if (!inv.paid) return;
+    const custId = jobIdByRef[inv.ref];
+    const qboInvoice = invoicesByCustomerId.get(custId);
+    if (!qboInvoice || Number(qboInvoice.Balance) <= 0) return; // already paid or not found
+    items.push({
+      bId: `pay${i}`,
+      entity: "Payment",
+      operation: "create",
+      data: {
+        CustomerRef: { value: custId },
+        TotalAmt: inv.amount,
+        Line: [{ Amount: inv.amount, LinkedTxn: [{ TxnId: qboInvoice.Id, TxnType: "Invoice" }] }],
+      },
+    });
+  });
   for (const group of chunk(items, 30)) await batch(group);
 }
 
@@ -438,9 +480,33 @@ async function createTimeActivities(jobIdByRef, vendorId) {
       HourlyRate: t.rate,
       Hours: t.hours,
       Minutes: 0,
-      BillableStatus: "Billable",
+      // NotBillable, not Billable - a billable-but-never-invoiced time entry
+      // counts as an "unbilled charge" and blocks deactivating the customer
+      // later in closeCompletedJobs(). The app's own cost tracking doesn't
+      // care about billable status either way, so there's no downside.
+      BillableStatus: "NotBillable",
     });
   }
+}
+
+// Recovery helper: if time activities were already created against an
+// earlier version of this script (which marked them Billable), find and fix
+// them instead of creating duplicates. Safe to call any number of times.
+async function fixBillableTimeActivities(jobIdByRef) {
+  const res = await query(`SELECT Id, SyncToken, CustomerRef, BillableStatus FROM TimeActivity MAXRESULTS 1000`);
+  const items = [];
+  for (const ta of res?.QueryResponse?.TimeActivity ?? []) {
+    if (ta.BillableStatus !== "Billable") continue;
+    const matches = TIME_ACTIVITIES.some((t) => jobIdByRef[t.ref] === ta.CustomerRef?.value);
+    if (!matches) continue;
+    items.push({
+      bId: ta.Id,
+      entity: "TimeActivity",
+      operation: "update",
+      data: { Id: ta.Id, SyncToken: ta.SyncToken, BillableStatus: "NotBillable", sparse: true },
+    });
+  }
+  for (const group of chunk(items, 30)) await batch(group);
 }
 
 async function closeCompletedJobs(jobIdByRef) {
@@ -464,6 +530,20 @@ async function closeCompletedJobs(jobIdByRef) {
 // ============================================================
 // MAIN
 // ============================================================
+//
+// Two modes:
+//   node scripts/seed-sandbox.js               - full run, from scratch
+//   node scripts/seed-sandbox.js --finish-only  - skips straight to paying
+//     off invoices, fixing time activity billable status, and closing jobs.
+//     Use this if a previous full run already got through creating
+//     estimates/invoices/expenses/bills/time activities (check the console
+//     output from that run - phases 4-8's first half all said "Done.") and
+//     only failed at the very last step. Re-running the full script at that
+//     point would create a second copy of every estimate/invoice/expense/
+//     bill, doubling all the dollar amounts - --finish-only avoids that by
+//     only touching the close-out step, which is safe to repeat.
+const FINISH_ONLY = process.argv.includes("--finish-only");
+
 async function main() {
   console.log(`Seeding sandbox company ${REALM_ID}...\n`);
 
@@ -487,24 +567,39 @@ async function main() {
   const jobIdByRef = await ensureJobs(parentId);
   console.log("  Done.\n");
 
-  console.log("4/8 Creating estimates...");
-  await createEstimates(jobIdByRef, itemId);
+  if (!FINISH_ONLY) {
+    console.log("4/8 Creating estimates...");
+    await createEstimates(jobIdByRef, itemId);
+    console.log("  Done.\n");
+
+    console.log("5/8 Creating invoices...");
+    await createInvoices(jobIdByRef, itemId);
+    console.log("  Done.\n");
+
+    console.log("6/8 Creating expenses...");
+    await createExpenses(jobIdByRef, accountIdByKey, paymentAccountId, unresolvedCustomerId);
+    console.log("  Done.\n");
+
+    console.log("7/8 Creating bills...");
+    await createBills(jobIdByRef, accountIdByKey, vendorId);
+    console.log("  Done.\n");
+
+    console.log("8/8a Creating time activity...");
+    await createTimeActivities(jobIdByRef, vendorId);
+    console.log("  Done.\n");
+  } else {
+    console.log("(--finish-only: skipping estimate/invoice/expense/bill/time-activity creation - already done.)\n");
+  }
+
+  console.log("8/8b Paying off invoices so their customers can be closed...");
+  await payInvoices(jobIdByRef);
   console.log("  Done.\n");
 
-  console.log("5/8 Creating invoices...");
-  await createInvoices(jobIdByRef, itemId);
+  console.log("8/8c Making sure the time activity isn't marked billable (it blocks closing R1)...");
+  await fixBillableTimeActivities(jobIdByRef);
   console.log("  Done.\n");
 
-  console.log("6/8 Creating expenses...");
-  await createExpenses(jobIdByRef, accountIdByKey, paymentAccountId, unresolvedCustomerId);
-  console.log("  Done.\n");
-
-  console.log("7/8 Creating bills...");
-  await createBills(jobIdByRef, accountIdByKey, vendorId);
-  console.log("  Done.\n");
-
-  console.log("8/8 Creating time activity, then marking completed jobs as closed...");
-  await createTimeActivities(jobIdByRef, vendorId);
+  console.log("8/8d Marking completed jobs as closed...");
   await closeCompletedJobs(jobIdByRef);
   console.log("  Done.\n");
 
@@ -516,5 +611,7 @@ main().catch((err) => {
   console.error("\nStopped with an error:");
   console.error(err.message);
   console.error("\nIt's safe to fix and re-run - jobs/accounts already created will be reused, not duplicated.");
+  console.error("If estimates/invoices/expenses/bills already got created in an earlier run, re-run with");
+  console.error("--finish-only instead of plain, to avoid creating a second copy of everything.");
   process.exit(1);
 });
