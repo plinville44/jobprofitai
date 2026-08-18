@@ -29,7 +29,7 @@ import { encryptToken, decryptToken } from "@/lib/crypto";
 const FULL_SYNC_INTERVAL_DAYS = 30;
 const CDC_ENTITIES = ["Customer", "Purchase", "Bill", "TimeActivity", "Invoice", "Estimate"];
 
-export async function runSyncForConnection(connectionId: string): Promise<Record<string, any>> {
+async function runSyncForConnection(connectionId: string): Promise<Record<string, any>> {
   const connection = await prisma.quickBooksConnection.findUniqueOrThrow({
     where: { id: connectionId },
   });
