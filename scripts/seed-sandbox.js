@@ -308,8 +308,15 @@ async function ensureCustomer(displayName, extra = {}) {
 // deactivated at the very end, in closeCompletedJobs().
 // ============================================================
 async function ensureJobs(parentId) {
-  const existingRes = await query(`SELECT Id, DisplayName FROM Customer WHERE ParentRef = '${parentId}' MAXRESULTS 1000`);
-  const existingByName = new Map((existingRes?.QueryResponse?.Customer ?? []).map((c) => [c.DisplayName, c.Id]));
+  // QBO's query language doesn't allow filtering on ParentRef directly
+  // ("property 'ParentRef' is not queryable") - pull every customer and
+  // filter client-side instead. Fine at this scale (well under 1000 rows).
+  const existingRes = await query(`SELECT Id, DisplayName, ParentRef FROM Customer MAXRESULTS 1000`);
+  const existingByName = new Map(
+    (existingRes?.QueryResponse?.Customer ?? [])
+      .filter((c) => c.ParentRef?.value === parentId)
+      .map((c) => [c.DisplayName, c.Id])
+  );
 
   const jobIdByRef = {};
   const toCreate = [];
