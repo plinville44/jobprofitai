@@ -21,31 +21,39 @@ import { getValidAccessToken } from "@/lib/quickbooksSync";
  *
  * Safe to delete once you're done seeding - it's not linked from anywhere
  * in the app, just a URL you visit directly.
+ *
+ * Returns plain text, not JSON, and deliberately formatted as two literal
+ * `set` commands - the first version of this route returned JSON and asked
+ * the person to manually select just the token out of a 600-character
+ * quoted string, which is exactly the kind of copy-paste a browser or
+ * terminal can silently corrupt (a dropped character breaks the token
+ * completely - QuickBooks' API returns a generic "Could not decrypt JWT"
+ * error either way, so a corrupted paste and an expired token look
+ * identical from here). Selecting the *entire* page and pasting it
+ * straight into Command Prompt removes that failure mode - see the chat
+ * where this got added for the debugging story.
  */
 export async function GET() {
+  const plain = (body: string, status = 200) =>
+    new NextResponse(body, { status, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+
   try {
     const session = await getSession();
-    if (!session) return NextResponse.json({ error: "Not authenticated - log into JobProfitAI first, then reload this page." }, { status: 401 });
+    if (!session) return plain("Not authenticated - log into JobProfitAI first, then reload this page.", 401);
 
     const connection = await prisma.quickBooksConnection.findFirst({
       where: { userId: session.userId, disconnectedAt: null },
     });
-    if (!connection) return NextResponse.json({ error: "No connected QuickBooks company found for this account." }, { status: 404 });
+    if (!connection) return plain("No connected QuickBooks company found for this account.", 404);
 
     const accessToken = await getValidAccessToken(connection);
     const realmId = decryptToken(connection.realmId);
 
-    return NextResponse.json({
-      accessToken,
-      realmId,
-      companyName: connection.companyName,
-      note: "This access token is valid for about 60 minutes from now. Run scripts/seed-sandbox.js right away.",
-    });
+    // Exactly two lines, nothing else - select-all + copy this whole page,
+    // then paste directly into Command Prompt. It runs as two commands.
+    return plain(`set QBO_ACCESS_TOKEN=${accessToken}\nset QBO_REALM_ID=${realmId}`);
   } catch (err) {
     console.error("debug/qbo-token failed:", err instanceof Error ? err.message : "Unknown error");
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Couldn't get a token." },
-      { status: 500 }
-    );
+    return plain(err instanceof Error ? err.message : "Couldn't get a token.", 500);
   }
 }
