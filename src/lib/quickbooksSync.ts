@@ -634,7 +634,11 @@ function categorize(accountOrItemName: string | null | undefined): string {
   return "other";
 }
 
-async function getValidAccessToken(connection: {
+// Exported (was module-private) so the temporary sandbox-token debug route
+// (src/app/api/debug/qbo-token/route.ts) can reuse the exact same
+// refresh-if-needed logic the sync engine already relies on, instead of
+// duplicating it - see that route's comment for why it exists.
+export async function getValidAccessToken(connection: {
   id: string;
   accessToken: string;
   refreshToken: string;
