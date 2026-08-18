@@ -29,7 +29,7 @@ import { encryptToken, decryptToken } from "@/lib/crypto";
 const FULL_SYNC_INTERVAL_DAYS = 30;
 const CDC_ENTITIES = ["Customer", "Purchase", "Bill", "TimeActivity", "Invoice", "Estimate"];
 
-async function runSyncForConnection(connectionId: string): Promise<Record<string, any>> {
+export async function runSyncForConnection(connectionId: string): Promise<Record<string, any>> {
   const connection = await prisma.quickBooksConnection.findUniqueOrThrow({
     where: { id: connectionId },
   });
@@ -638,7 +638,7 @@ function categorize(accountOrItemName: string | null | undefined): string {
 // (src/app/api/debug/qbo-token/route.ts) can reuse the exact same
 // refresh-if-needed logic the sync engine already relies on, instead of
 // duplicating it - see that route's comment for why it exists.
-export async function getValidAccessToken(connection: {
+async function getValidAccessToken(connection: {
   id: string;
   accessToken: string;
   refreshToken: string;
