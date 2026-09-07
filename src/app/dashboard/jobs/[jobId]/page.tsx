@@ -2,9 +2,10 @@ import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import { getSession } from "@/lib/auth";
 import { getJobProfitData } from "@/lib/profitability";
-import { requireFeature } from "@/lib/entitlements";
+import { getEntitlements, requireFeature } from "@/lib/entitlements";
+import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
 import { formatCurrency, formatPct, formatDate, categoryLabel } from "@/lib/format";
-import { ConfidenceBadge, SeverityBadge } from "@/components/dashboard/Badges";
+import { ConfidenceBadge, DataQualityBadge, SeverityBadge } from "@/components/dashboard/Badges";
 import EstimateVsActualChart from "@/components/charts/EstimateVsActualChart";
 import ProfitLeakageChart from "@/components/charts/ProfitLeakageChart";
 import MarginTrendChart from "@/components/charts/MarginTrendChart";
@@ -13,6 +14,15 @@ import JobEditForm from "@/components/dashboard/JobEditForm";
 export default async function JobDetailPage({ params }: { params: { jobId: string } }) {
   const session = await getSession();
   if (!session) redirect("/login");
+
+  // Server-side entitlement gate. An expired trial gets a proper "choose a
+  // plan" screen rather than an authorization error - and because the check
+  // happens here, before any financial data is loaded, a lapsed account
+  // never has its numbers computed and sent to the browser either.
+  const entitlements = await getEntitlements(session.userId);
+  if (!entitlements.active) {
+    return <UpgradeRequired access={entitlements.access} />;
+  }
 
   const data = await getJobProfitData(params.jobId);
   if (!data || data.connectionUserId !== session.userId) notFound();
@@ -37,13 +47,13 @@ export default async function JobDetailPage({ params }: { params: { jobId: strin
           <h1 className="text-2xl font-bold text-navy">{f.jobName}</h1>
           <p className="text-sm text-gray-500">{f.customerName ?? "No customer on file"}</p>
         </div>
-        <ConfidenceBadge confidence={f.dataConfidence} />
+        <DataQualityBadge confidence={f.dataConfidence} />
       </div>
       <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <MiniStat label="Status" value={f.status === "open" ? "Active" : "Completed"} />
         <MiniStat label="Revenue" value={formatCurrency(f.revenue)} />
-        <MiniStat label="Gross Profit" value={f.profitabilityAvailable ? formatCurrency(f.grossProfit) : "—"} />
-        <MiniStat label="Gross Margin" value={f.profitabilityAvailable ? formatPct(f.grossMarginPct) : "—"} />
+        <MiniStat label="Gross Profit" value={f.profitabilityAvailable ? formatCurrency(f.grossProfit) : ", "} />
+        <MiniStat label="Gross Margin" value={f.profitabilityAvailable ? formatPct(f.grossMarginPct) : ", "} />
       </div>
       {f.targetMarginPct != null && (
         <p className="mt-2 text-xs text-gray-400">Target margin: {f.targetMarginPct}%</p>
@@ -166,11 +176,11 @@ export default async function JobDetailPage({ params }: { params: { jobId: strin
                 <MiniStat label="Forecast cost at completion" value={formatCurrency(data.forecast.forecastCostAtCompletion)} />
                 <MiniStat
                   label="Forecast profit"
-                  value={data.forecast.forecastProfit != null ? formatCurrency(data.forecast.forecastProfit) : "—"}
+                  value={data.forecast.forecastProfit != null ? formatCurrency(data.forecast.forecastProfit) : ", "}
                 />
                 <MiniStat
                   label="Forecast margin"
-                  value={data.forecast.forecastMarginPct != null ? formatPct(data.forecast.forecastMarginPct) : "—"}
+                  value={data.forecast.forecastMarginPct != null ? formatPct(data.forecast.forecastMarginPct) : ", "}
                 />
                 <div className="col-span-2 sm:col-span-4">
                   <ConfidenceBadge confidence={data.forecast.confidence ?? "low"} />
@@ -216,7 +226,7 @@ export default async function JobDetailPage({ params }: { params: { jobId: strin
                   <td className="px-3 py-2 text-gray-500">{formatDate(c.txnDate)}</td>
                   <td className="px-3 py-2 text-gray-500">{c.qboSourceType}</td>
                   <td className="px-3 py-2 text-gray-600">{categoryLabel(c.category)}</td>
-                  <td className="px-3 py-2 text-gray-600">{c.description ?? "—"}</td>
+                  <td className="px-3 py-2 text-gray-600">{c.description ?? ", "}</td>
                   <td className="px-3 py-2 text-right text-navy">{formatCurrency(c.amount)}</td>
                 </tr>
               ))}
@@ -225,7 +235,7 @@ export default async function JobDetailPage({ params }: { params: { jobId: strin
                   <td className="px-3 py-2 text-gray-500">{formatDate(i.txnDate)}</td>
                   <td className="px-3 py-2 text-gray-500">Invoice ({i.status})</td>
                   <td className="px-3 py-2 text-gray-600">Revenue</td>
-                  <td className="px-3 py-2 text-gray-600">—</td>
+                  <td className="px-3 py-2 text-gray-600">, </td>
                   <td className="px-3 py-2 text-right text-green-700">{formatCurrency(i.amount)}</td>
                 </tr>
               ))}
@@ -251,7 +261,7 @@ export default async function JobDetailPage({ params }: { params: { jobId: strin
       {/* 7. Data Quality */}
       <Section title="Data Quality">
         <div className="flex items-center gap-2">
-          <ConfidenceBadge confidence={f.dataConfidence} />
+          <DataQualityBadge confidence={f.dataConfidence} />
         </div>
         {f.confidenceReasons.length > 0 ? (
           <ul className="mt-3 list-inside list-disc text-sm text-gray-600">
@@ -280,7 +290,7 @@ function MiniStat({ label, value }: { label: string; value: string | undefined }
   return (
     <div>
       <p className="text-xs text-gray-500">{label}</p>
-      <p className="text-base font-semibold text-navy">{value ?? "—"}</p>
+      <p className="text-base font-semibold text-navy">{value ?? ", "}</p>
     </div>
   );
 }

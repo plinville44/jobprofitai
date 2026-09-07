@@ -2,7 +2,8 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { requireFeature } from "@/lib/entitlements";
+import { getEntitlements, requireFeature } from "@/lib/entitlements";
+import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
 import { getConnectionProfitData } from "@/lib/profitability";
 import { formatCurrency } from "@/lib/format";
 import { ConfidenceBadge } from "@/components/dashboard/Badges";
@@ -11,10 +12,11 @@ import RefreshAnalysisButton from "./RefreshAnalysisButton";
 function UpgradeNotice({ feature }: { feature: string }) {
   return (
     <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 p-6 text-sm text-gray-600">
-      {feature} is part of Profit Intelligence.{" "}
-      <Link href="/dashboard/settings" className="text-brand hover:underline">
-        See your plan in Settings.
+      {feature} is part of Profit Intelligence Pro.{" "}
+      <Link href="/dashboard/billing" className="font-medium text-brand hover:underline">
+        See plans and upgrade
       </Link>
+      .
     </div>
   );
 }
@@ -22,6 +24,15 @@ function UpgradeNotice({ feature }: { feature: string }) {
 export default async function IntelligencePage() {
   const session = await getSession();
   if (!session) redirect("/login");
+
+  // Server-side entitlement gate. An expired trial gets a proper "choose a
+  // plan" screen rather than an authorization error - and because the check
+  // happens here, before any financial data is loaded, a lapsed account
+  // never has its numbers computed and sent to the browser either.
+  const entitlements = await getEntitlements(session.userId);
+  if (!entitlements.active) {
+    return <UpgradeRequired access={entitlements.access} />;
+  }
 
   const connection = await prisma.quickBooksConnection.findFirst({
     where: { userId: session.userId, disconnectedAt: null },

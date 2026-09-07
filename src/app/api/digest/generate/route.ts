@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { startOfWeek } from "date-fns";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
+import { tryMarkFirstAnalysis } from "@/lib/trial";
+import { getEntitlements } from "@/lib/entitlements";
 import { generateWeeklyDigestForConnection } from "@/lib/digest";
 
 /**
@@ -14,6 +16,22 @@ export async function POST(req: NextRequest) {
   try {
     const session = await getSession();
     if (!session) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+
+    // Entitlement enforced server-side. Hiding the button in the browser is
+    // not a control - this route generates paid value (a QuickBooks sync, an
+    // Anthropic call) and must refuse a lapsed account regardless of what
+    // the client sends.
+    const entitlements = await getEntitlements(session.userId);
+    if (!entitlements.active) {
+      return NextResponse.json(
+        {
+          error:
+            "Your JobProfitAI trial has ended. Choose a plan to continue.",
+          code: "entitlement_required",
+        },
+        { status: 402 }
+      );
+    }
 
     const { connectionId } = await req.json();
     const connection = await prisma.quickBooksConnection.findUnique({
@@ -46,6 +64,11 @@ export async function POST(req: NextRequest) {
         kind,
       },
     });
+
+    // Completes trial activation the first time a customer actually gets
+    // an analysis out of the product. Best-effort - a growth metric must
+    // never fail the customer's real request.
+    await tryMarkFirstAnalysis(session.userId);
 
     return NextResponse.json({ id: digest.id, narrative, kind, metrics });
   } catch (err) {

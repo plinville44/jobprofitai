@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { startOfWeek } from "date-fns";
-import { Resend } from "resend";
 import { prisma } from "@/lib/prisma";
 import { generateWeeklyDigestForConnection } from "@/lib/digest";
 import { runSyncForConnection } from "@/lib/quickbooksSync";
+import { authorizeCron } from "@/lib/cronAuth";
+import { sendEmail } from "@/lib/email/client";
 
 // Vercel Cron Jobs send a GET request on the configured schedule (see
 // vercel.json - hourly, "0 * * * *"). This route runs once per hour and, for
@@ -31,15 +32,14 @@ function getLocalDayHour(date: Date, timeZone: string): { day: number; hour: num
 }
 
 export async function GET(req: NextRequest) {
-  // Vercel automatically sends `Authorization: Bearer $CRON_SECRET` on its
-  // own scheduled invocations once CRON_SECRET is set as an env var - this
-  // is the documented Vercel Cron protection pattern, so a request without
-  // the right secret is rejected rather than letting anyone trigger emails.
-  if (process.env.CRON_SECRET) {
-    const auth = req.headers.get("authorization");
-    if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  // Shared cron authorization (see src/lib/cronAuth.ts). Replaces an
+  // earlier inline check that only enforced the secret when CRON_SECRET
+  // happened to be set - meaning a missing env var in production silently
+  // made this endpoint public, and anyone could trigger customer emails and
+  // paid Anthropic calls on demand. authorizeCron fails closed in production.
+  const auth = authorizeCron(req);
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
   const now = new Date();
@@ -110,27 +110,28 @@ export async function GET(req: NextRequest) {
         update: { metrics: metrics as any, narrative, kind },
       });
 
-      let emailed = false;
-      if (process.env.RESEND_API_KEY) {
-        try {
-          const resend = new Resend(process.env.RESEND_API_KEY);
-          await resend.emails.send({
-            from: process.env.DIGEST_FROM_EMAIL ?? "JobProfitAI <digest@jobprofitai.com>",
-            to: connection.emailRecipients,
-            subject:
-              kind === "narrative"
-                ? `${companyName} - Job Profitability Digest, week of ${weekStarting.toLocaleDateString()}`
-                : `${companyName} - Data Health notice, week of ${weekStarting.toLocaleDateString()}`,
-            text: narrative,
-          });
-          emailed = true;
-        } catch (emailErr) {
-          console.error(
-            `weekly-email: send failed for connection ${connection.id}:`,
-            emailErr instanceof Error ? emailErr.message : "Unknown error"
-          );
-        }
-      }
+      // Routed through the shared email client rather than calling Resend
+      // directly. That matters here specifically: the Resend v3 SDK RESOLVES
+      // with `{ data: null, error }` on a rejected send instead of throwing,
+      // so the previous try/catch around resend.emails.send() marked failed
+      // digests as successfully emailed - and then stamped emailedAt, which
+      // permanently suppressed the retry. sendEmail() checks the returned
+      // error as well as catching thrown ones.
+      const subject =
+        kind === "narrative"
+          ? `${companyName} - Job Profitability Digest, week of ${weekStarting.toLocaleDateString()}`
+          : `${companyName} - Data Health notice, week of ${weekStarting.toLocaleDateString()}`;
+
+      const sendResult = await sendEmail({
+        to: connection.emailRecipients,
+        subject,
+        text: narrative,
+        html: `<pre style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;white-space:pre-wrap;color:#1F2937;">${narrative
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")}</pre>`,
+      });
+      const emailed = sendResult.ok;
 
       if (emailed) {
         await prisma.weeklyDigest.update({ where: { id: digest.id }, data: { emailedAt: new Date() } });
@@ -139,7 +140,9 @@ export async function GET(req: NextRequest) {
       results.push({
         connectionId: connection.id,
         status: emailed ? "sent" : "generated_not_sent",
-        detail: emailed ? kind : "RESEND_API_KEY not configured or send failed - digest saved, not emailed",
+        detail: emailed
+          ? kind
+          : `digest saved, not emailed (${sendResult.error ?? "unknown reason"})`,
       });
     } catch (err) {
       // One connection's failure must never take down the rest of the run.

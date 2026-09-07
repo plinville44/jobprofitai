@@ -1,51 +1,108 @@
 # JobProfitAI
 
-Weekly AI-generated job-cost & profitability digest for contractors, built on top of QuickBooks Online.
+**Profit Intelligence for QuickBooks.** Job-level profitability, margin leak detection and
+actionable recommendations for contractors running on QuickBooks Online.
 
-## What's built (Week 1 scaffold)
+Next.js 14 (App Router) · TypeScript · Tailwind · Prisma · Neon Postgres · Stripe ·
+Resend · Anthropic Claude · deployed on Vercel.
 
-- Next.js 14 (App Router, TypeScript, Tailwind)
-- Prisma data model: users, QuickBooks connections, jobs, cost entries, invoices, weekly digests, subscriptions (`prisma/schema.prisma`)
-- Email/password auth with signed session cookies (`src/lib/auth.ts`)
-- QuickBooks OAuth2 flow: connect → callback → token storage, encrypted at rest (`src/lib/quickbooks.ts`, `src/app/api/quickbooks/*`)
-- Data sync from QBO into local tables (`src/app/api/quickbooks/sync/route.ts`)
-- Job-profitability engine (`src/lib/profitability.ts`)
-- AI digest generator via the Claude API, grounded strictly in computed metrics (`src/lib/digest.ts`)
-- Marketing home page + How It Works page, login/signup, and a minimal dashboard
+---
 
-## Important: this was hand-written, not yet installed or run
+## What's here
 
-This code was written in a sandboxed environment without access to the npm
-registry, so `npm install` has **not** been run and the app has **not** been
-built or tested yet. Before you rely on it, run it locally or push it to
-Vercel (see below) and fix whatever the first `npm install` / `npm run build`
-surfaces — treat this as a strong first draft, not verified-working code.
+### Product
+- **QuickBooks Online integration**. OAuth 2.0 via Intuit's discovery document, tokens
+  and realm IDs encrypted at rest (AES-256-GCM), incremental sync, disconnect with token
+  revocation (`src/lib/quickbooks.ts`, `src/lib/quickbooksSync.ts`)
+- **Profitability engine**. Revenue, cost, gross profit and margin per job; needs-attention
+  rules; forecast at completion; profit leakage; cross-job opportunities; data health
+  (`src/lib/profitability.ts`, pure and unit-tested)
+- **Profit intelligence**. Claude writes the explanation around numbers the application
+  computes; every figure is replaced with the deterministic value before storage
+  (`src/lib/intelligence.ts`, `src/lib/digest.ts`)
+- **Weekly Profit Brief**, per-customer day/hour/timezone, sent by an hourly cron
 
-## Running it locally
+### Commercial systems
+- **Plan catalog** (`src/lib/plans.ts`), the single source of truth for pricing, limits and
+  marketing copy, read by both the app and the marketing site so they cannot drift apart
+- **Entitlements** (`src/lib/entitlements.ts`). Server-side access control across trial,
+  active, past-due, canceled and expired states, plus plan limits
+- **Trial system** (`src/lib/trial.ts`). Card-free 14-day trial, activation tracking, and a
+  one-time +14 day extension earned by a feedback survey (never a testimonial)
+- **Stripe billing** (`src/lib/stripe/`). Hosted Checkout and Billing Portal, signature-verified
+  and idempotent webhooks, no card data on our infrastructure
+- **Customer referrals** (`src/lib/referrals.ts`), one free month of the referrer's plan,
+  earned after 30 days of sustained payment, issued as a stacking Stripe balance credit
+- **Partner program** (`src/lib/partners.ts`), 20/25/30% recurring commission for accounting
+  firms on each client's first 12 paid months, with a full commission ledger
+- **Lifecycle email** (`src/lib/email/`). Branded templates and a send-once ledger enforced
+  by a database unique constraint, so an hourly cron can retry freely
 
-1. Install Node.js 20+ if you don't have it.
-2. `npm install`
-3. Copy `.env.example` to `.env` and fill in:
-   - `DATABASE_URL` — a Postgres connection string (Supabase or Neon both have free tiers; easiest is to create a project there and paste the connection string)
-   - `AUTH_SECRET` and `TOKEN_ENCRYPTION_KEY` — generate each with `openssl rand -base64 32`
-   - `QBO_CLIENT_ID` / `QBO_CLIENT_SECRET` — from your Intuit Developer app (Sandbox keys first)
-   - `ANTHROPIC_API_KEY` — from console.anthropic.com
-4. `npm run db:push` — creates the tables in your database from `prisma/schema.prisma`
-5. `npm run dev` — starts the app at http://localhost:3000
+### Marketing site
+Public pages under `src/app/(marketing)/`: home, pricing, how it works, security, partners,
+contact, privacy, terms, plus sitemap, robots and social metadata.
 
-## Deploying (recommended path, since this sandbox can't build it directly)
+---
 
-1. Push this folder to a new GitHub repository.
-2. Import that repo into Vercel (vercel.com) — Vercel runs its own `npm install`
-   and build on its servers, which sidesteps this sandbox's network
-   restrictions entirely.
-3. Add the same environment variables from `.env` in the Vercel project settings.
-4. Set `APP_URL` and `QBO_REDIRECT_URI` to your real Vercel domain once deployed.
+## Running locally
 
-## What's intentionally not done yet (later in Week 1 / Week 2)
+```bash
+npm install
+cp .env.example .env      # then fill it in. See the comments in that file
+npx prisma generate
+npx prisma db push        # creates tables from prisma/schema.prisma
+npm run dev               # http://localhost:3000
+```
 
-- Stripe billing (Week 3 per the launch plan)
-- Weekly digest email delivery via Resend + SPF/DKIM/DMARC (Week 2)
-- Pricing / Privacy Policy / Terms of Service pages (Week 2 — Privacy/Terms need real legal review, not placeholder text)
-- Automated weekly sync (cron) — sync and digest generation are manually triggered from the dashboard for now, so you can test against a real Sandbox company first
-- Classes-based job costing (currently only Projects/sub-customer mode is implemented in the sync route — flagged as a TODO in `src/app/api/quickbooks/sync/route.ts`)
+Minimum to get the app running: `DATABASE_URL`, `AUTH_SECRET`, `TOKEN_ENCRYPTION_KEY`.
+Add `QBO_*` for QuickBooks, `ANTHROPIC_API_KEY` for insights, `STRIPE_*` for billing and
+`RESEND_API_KEY` for email. Anything missing degrades gracefully with a clear message
+rather than crashing.
+
+```bash
+npm run test              # vitest
+npm run build             # production build + type check
+```
+
+---
+
+## Architecture notes worth knowing
+
+**Entitlements are enforced on the server, always.** Every gated page and API route calls
+`getEntitlements()` / `requireFeature()`. Hiding a button in the browser is not a control,
+and gated pages check before loading any financial data, a lapsed account never has its
+numbers computed and sent to the browser.
+
+**Idempotency is enforced by database constraints, not by code paths.** Retries are the
+normal case (Stripe redelivers, cron re-runs), so correctness rests on unique indexes that
+a race cannot slip past:
+
+| Guarantee | Enforced by |
+|---|---|
+| A webhook event is processed once | `StripeEvent.id` primary key |
+| A lifecycle email is sent once | `EmailEvent.dedupeKey` |
+| A trial is extended once | `TrialFeedback.userId` |
+| An account is referred once | `Referral.referredUserId` |
+| A referral earns one reward | `ReferralReward.referralId` |
+| An invoice commissions once | `PartnerCommission.stripeInvoiceId` |
+
+**Referral partners get no access to customer data.** Partner status grants a referral code
+and a commission ledger. Nothing more. Contractor financial data requires that contractor's
+explicit invitation, which is an unrelated system.
+
+**AI never produces a number.** Dollar amounts, percentages, confidence levels and the jobs
+behind each finding are all computed by application code and re-applied after the model
+responds. The model writes prose only.
+
+---
+
+## Deploying
+
+Push to GitHub; Vercel builds from `main`. Before the first production release, work through
+[`PRODUCTION_CUTOVER.md`](./PRODUCTION_CUTOVER.md). It lists every external action needed in
+Vercel, Stripe, Intuit, Resend and Neon, and the smoke test to run afterwards.
+
+---
+
+QuickBooks is a trademark of Intuit Inc. JobProfitAI is an independent product and is not
+affiliated with or endorsed by Intuit. A product of PWL Solutions LLC.

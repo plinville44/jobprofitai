@@ -1,81 +1,49 @@
-"use client";
-
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense } from "react";
+import type { Metadata } from "next";
 import Link from "next/link";
+import { LogoLink } from "@/components/marketing/Logo";
+import SignupForm from "./SignupForm";
 
+export const metadata: Metadata = {
+  title: "Start your free trial",
+  description:
+    "Create a JobProfitAI account and start a 14-day free trial. No credit card required.",
+  robots: { index: false, follow: true },
+};
+
+/**
+ * The form is a separate client component because it reads search params
+ * (`?ref=1`, `?partner=1`). Next.js requires a Suspense boundary around
+ * useSearchParams, or the whole route is forced out of static rendering.
+ */
 export default function SignupPage() {
-  const router = useRouter();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setLoading(true);
-    try {
-      const res = await fetch("/api/auth/signup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error?.formErrors?.[0] ?? data.error ?? "Signup failed");
-      }
-      router.push("/dashboard");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
-    } finally {
-      setLoading(false);
-    }
-  }
-
   return (
-    <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6">
-      <h1 className="text-2xl font-bold text-navy">Start your free trial</h1>
-      <p className="mt-2 text-sm text-gray-600">14 days free. No card required to start.</p>
-
-      <form onSubmit={handleSubmit} className="mt-8 space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-navy">Email</label>
-          <input
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"
-          />
+    <main className="flex min-h-screen flex-col bg-jp-surface">
+      <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-5 py-12">
+        <div className="mb-8 flex justify-center">
+          <LogoLink width={200} priority />
         </div>
-        <div>
-          <label className="block text-sm font-medium text-navy">Password</label>
-          <input
-            type="password"
-            required
-            minLength={8}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"
-          />
-        </div>
-        {error && <p className="text-sm text-red-700">{error}</p>}
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full rounded-lg bg-brand px-4 py-2 font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-        >
-          {loading ? "Creating account..." : "Create account"}
-        </button>
-      </form>
 
-      <p className="mt-6 text-center text-sm text-gray-600">
-        Already have an account?{" "}
-        <Link href="/login" className="font-medium text-brand">
-          Log in
-        </Link>
-      </p>
+        <div className="rounded-xl border border-jp-line bg-white p-7 sm:p-8">
+          <Suspense
+            fallback={
+              <div className="space-y-4" aria-hidden="true">
+                <div className="h-7 w-2/3 animate-pulse rounded bg-jp-surface-2" />
+                <div className="h-4 w-1/2 animate-pulse rounded bg-jp-surface-2" />
+                <div className="h-24 animate-pulse rounded bg-jp-surface-2" />
+              </div>
+            }
+          >
+            <SignupForm />
+          </Suspense>
+        </div>
+
+        <p className="mt-6 text-center text-xs text-jp-muted">
+          <Link href="/" className="hover:text-jp-blue">
+            &larr; Back to jobprofitai.com
+          </Link>
+        </p>
+      </div>
     </main>
   );
 }

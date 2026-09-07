@@ -1,21 +1,44 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getSession } from "@/lib/auth";
+import { getEntitlements } from "@/lib/entitlements";
+import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
 import { prisma } from "@/lib/prisma";
 import { getConnectionProfitData, type DataHealthReport } from "@/lib/profitability";
 import { formatCurrency } from "@/lib/format";
-import { ConfidenceBadge, StatusDot } from "@/components/dashboard/Badges";
+import { DataQualityBadge, StatusDot } from "@/components/dashboard/Badges";
 
-const CONFIDENCE_EXPLANATION: Record<string, string> = {
-  high: "Most of your jobs have complete revenue and cost data. The numbers on your dashboard should be reliable.",
-  medium: "Some of your jobs are missing cost data or estimates. Treat totals as directionally right, but double-check individual jobs before making decisions on them.",
-  low: "More than half of your jobs are missing revenue or cost data. Company-wide totals may be misleading until this is fixed.",
-  insufficient_data: "There isn't enough synced data yet to say anything reliable about your job profitability.",
+/**
+ * What each data-completeness level actually means for the customer's
+ * numbers, in terms of what they should do about it.
+ *
+ * This replaced a set of "Medium confidence" style labels. The problem with
+ * a confidence grade is that it reads as the software hedging about itself,
+ * when what it really describes is a gap in the customer's QuickBooks data
+ * that they can go and fix. So the banner now leads with the count, names
+ * the consequence, and points at the lists below.
+ */
+const COMPLETENESS_EXPLANATION: Record<string, string> = {
+  high: "Your dashboard totals are built on complete data, so you can act on them directly.",
+  medium:
+    "Company totals are still directionally right, but check an individual job below before making a decision on it.",
+  low: "More than half your jobs are missing revenue or cost data, so company totals may be misleading until that is filled in.",
+  insufficient_data:
+    "There is not enough synced data yet to say anything reliable about job profitability.",
 };
 
 export default async function DataHealthPage() {
   const session = await getSession();
   if (!session) redirect("/login");
+
+  // Server-side entitlement gate. An expired trial gets a proper "choose a
+  // plan" screen rather than an authorization error - and because the check
+  // happens here, before any financial data is loaded, a lapsed account
+  // never has its numbers computed and sent to the browser either.
+  const entitlements = await getEntitlements(session.userId);
+  if (!entitlements.active) {
+    return <UpgradeRequired access={entitlements.access} />;
+  }
 
   const connection = await prisma.quickBooksConnection.findFirst({
     where: { userId: session.userId, disconnectedAt: null },
@@ -45,9 +68,52 @@ export default async function DataHealthPage() {
         about your numbers is a surprise.
       </p>
 
-      <div className="mt-6 flex items-center gap-3 rounded-xl border border-gray-200 p-5">
-        <ConfidenceBadge confidence={h.overallConfidence} />
-        <p className="text-sm text-gray-600">{CONFIDENCE_EXPLANATION[h.overallConfidence]}</p>
+      <div className="mt-6 rounded-xl border border-gray-200 p-5">
+        <div className="flex flex-wrap items-center gap-3">
+          <h2 className="text-lg font-semibold text-navy">
+            {h.totalJobs === 0
+              ? "No jobs synced from QuickBooks yet"
+              : h.jobsMissingData === 0
+                ? `All ${h.totalJobs} of your jobs have what we need to calculate profit`
+                : `${h.jobsWithEnoughData} of your ${h.totalJobs} jobs have what we need to calculate profit`}
+          </h2>
+          <DataQualityBadge confidence={h.overallConfidence} />
+        </div>
+
+        {h.totalJobs > 0 ? (
+          <div
+            className="mt-3 h-2 w-full overflow-hidden rounded-full bg-gray-100"
+            role="img"
+            aria-label={`${h.jobsWithEnoughData} of ${h.totalJobs} jobs have complete data`}
+          >
+            <div
+              className="h-full rounded-full bg-status-good"
+              style={{ width: `${Math.round((h.jobsWithEnoughData / h.totalJobs) * 100)}%` }}
+            />
+          </div>
+        ) : null}
+
+        <p className="mt-3 text-sm leading-relaxed text-gray-600">
+          {h.jobsMissingData > 0 ? (
+            <>
+              <strong className="text-navy">
+                {h.jobsMissingData} {h.jobsMissingData === 1 ? "job is" : "jobs are"} missing
+                revenue or cost data
+              </strong>
+              , so {h.jobsMissingData === 1 ? "it is" : "they are"} left out of your company
+              totals rather than counted as zero.{" "}
+            </>
+          ) : null}
+          {COMPLETENESS_EXPLANATION[h.overallConfidence]}
+        </p>
+
+        {h.jobsMissingData > 0 ? (
+          <p className="mt-2 text-sm text-gray-500">
+            The lists below show exactly which jobs, and what each one is missing. Most of it is
+            fixed in QuickBooks by tagging costs to the right job, or by adding a cost estimate in
+            Settings.
+          </p>
+        ) : null}
       </div>
 
       <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">

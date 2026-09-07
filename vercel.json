@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/weekly-email",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/lifecycle",
+      "schedule": "0 * * * *"
     }
   ]
 }

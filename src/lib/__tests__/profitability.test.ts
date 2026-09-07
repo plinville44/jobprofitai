@@ -148,14 +148,14 @@ describe("computeJobFinancials", () => {
   it("marks profitability unavailable for revenue with zero costs (never divides by an incomplete picture)", () => {
     const f = computeJobFinancials(makeJob({ invoices: [inv(5000)] }), makeCtx());
     expect(f.profitabilityAvailable).toBe(false);
-    expect(f.unavailableReason).toBe("Profitability unavailable — cost data incomplete.");
+    expect(f.unavailableReason).toBe("Profitability unavailable. Cost data incomplete.");
     expect(f.flags).toContain("revenue_no_costs");
   });
 
   it("marks profitability unavailable for costs with zero revenue", () => {
     const f = computeJobFinancials(makeJob({ costEntries: [cost("materials", 3000)] }), makeCtx());
     expect(f.profitabilityAvailable).toBe(false);
-    expect(f.unavailableReason).toBe("Costs recorded but no revenue yet — profitability unavailable.");
+    expect(f.unavailableReason).toBe("Costs recorded but no revenue yet. Profitability unavailable.");
     expect(f.flags).toContain("costs_no_revenue");
   });
 
@@ -751,6 +751,61 @@ describe("computeDataHealth", () => {
     expect(measuredNonZero.unassignedExpenseAmount).toBe(750);
     expect(measuredNonZero.unresolvedExpenseCount).toBe(2);
     expect(measuredNonZero.costsMatchedViaParentCount).toBe(1);
+  });
+
+  /**
+   * The Data Health page leads with these counts rather than a "Medium
+   * confidence" grade, because a contractor can act on "6 of your 24 jobs are
+   * missing data" and cannot act on an abstract confidence level. The counts
+   * therefore have to agree with the grade, and with each other.
+   */
+  describe("data completeness counts", () => {
+    it("counts jobs with and without enough data to compute profit", () => {
+      const jobs = [
+        makeFinancials({ jobId: "a", dataConfidence: "high" }),
+        makeFinancials({ jobId: "b", dataConfidence: "medium" }),
+        makeFinancials({ jobId: "c", dataConfidence: "insufficient_data" }),
+        makeFinancials({ jobId: "d", dataConfidence: "insufficient_data" }),
+      ];
+      const health = computeDataHealth(jobs, NOW, null);
+
+      expect(health.totalJobs).toBe(4);
+      expect(health.jobsMissingData).toBe(2);
+      expect(health.jobsWithEnoughData).toBe(2);
+      // The two always account for every job, so the headline never misleads.
+      expect(health.jobsWithEnoughData + health.jobsMissingData).toBe(health.totalJobs);
+    });
+
+    it("reports all zeros with no jobs synced", () => {
+      const health = computeDataHealth([], NOW, null);
+      expect(health.totalJobs).toBe(0);
+      expect(health.jobsWithEnoughData).toBe(0);
+      expect(health.jobsMissingData).toBe(0);
+      expect(health.overallConfidence).toBe("insufficient_data");
+    });
+
+    it("reports no missing jobs when every job has enough data", () => {
+      const jobs = [
+        makeFinancials({ jobId: "a", dataConfidence: "high" }),
+        makeFinancials({ jobId: "b", dataConfidence: "high" }),
+      ];
+      const health = computeDataHealth(jobs, NOW, null);
+      expect(health.jobsMissingData).toBe(0);
+      expect(health.jobsWithEnoughData).toBe(2);
+      expect(health.overallConfidence).toBe("high");
+    });
+
+    it("keeps the counts consistent with the grade they summarise", () => {
+      // Over half missing is "low", and the counts must say the same thing.
+      const jobs = [
+        makeFinancials({ jobId: "a", dataConfidence: "insufficient_data" }),
+        makeFinancials({ jobId: "b", dataConfidence: "insufficient_data" }),
+        makeFinancials({ jobId: "c", dataConfidence: "high" }),
+      ];
+      const health = computeDataHealth(jobs, NOW, null);
+      expect(health.overallConfidence).toBe("low");
+      expect(health.jobsMissingData).toBeGreaterThan(health.jobsWithEnoughData);
+    });
   });
 
   it("never populates possibleDuplicates itself (that's merged in separately by the async wrapper)", () => {

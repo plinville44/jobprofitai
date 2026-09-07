@@ -1,11 +1,13 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getSession } from "@/lib/auth";
+import { getEntitlements } from "@/lib/entitlements";
+import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
 import { prisma } from "@/lib/prisma";
 import { getConnectionProfitData, type JobFinancials } from "@/lib/profitability";
 import { resolveStatusFilter, STATUS_OPTIONS } from "@/lib/dateRange";
 import { formatCurrency, formatPct, formatDate } from "@/lib/format";
-import { ConfidenceBadge } from "@/components/dashboard/Badges";
+import { DataQualityBadge } from "@/components/dashboard/Badges";
 import SortSelect from "@/components/dashboard/SortSelect";
 
 type SortKey =
@@ -63,6 +65,15 @@ export default async function JobsPage({
 }) {
   const session = await getSession();
   if (!session) redirect("/login");
+
+  // Server-side entitlement gate. An expired trial gets a proper "choose a
+  // plan" screen rather than an authorization error - and because the check
+  // happens here, before any financial data is loaded, a lapsed account
+  // never has its numbers computed and sent to the browser either.
+  const entitlements = await getEntitlements(session.userId);
+  if (!entitlements.active) {
+    return <UpgradeRequired access={entitlements.access} />;
+  }
 
   const connection = await prisma.quickBooksConnection.findFirst({
     where: { userId: session.userId, disconnectedAt: null },
@@ -135,7 +146,7 @@ export default async function JobsPage({
                 <th className="px-4 py-2 font-medium">Gross Margin</th>
                 <th className="px-4 py-2 font-medium">Target</th>
                 <th className="px-4 py-2 font-medium">Variance</th>
-                <th className="px-4 py-2 font-medium">Confidence</th>
+                <th className="px-4 py-2 font-medium">Data</th>
                 <th className="px-4 py-2 font-medium">Last Activity</th>
               </tr>
             </thead>
@@ -147,23 +158,23 @@ export default async function JobsPage({
                       {j.jobName}
                     </Link>
                   </td>
-                  <td className="px-4 py-3 text-gray-600">{j.customerName ?? "—"}</td>
+                  <td className="px-4 py-3 text-gray-600">{j.customerName ?? ", "}</td>
                   <td className="px-4 py-3 text-gray-600 capitalize">{j.status}</td>
                   <td className="px-4 py-3 text-gray-600">{formatCurrency(j.revenue)}</td>
                   <td className="px-4 py-3 text-gray-600">{formatCurrency(j.estimatedCost)}</td>
                   <td className="px-4 py-3 text-gray-600">{formatCurrency(j.costs)}</td>
                   <td className="px-4 py-3 text-gray-600">
-                    {j.profitabilityAvailable ? formatCurrency(j.grossProfit) : "—"}
+                    {j.profitabilityAvailable ? formatCurrency(j.grossProfit) : ", "}
                   </td>
                   <td className="px-4 py-3 text-gray-600">
                     {j.profitabilityAvailable ? formatPct(j.grossMarginPct) : "Unavailable"}
                   </td>
-                  <td className="px-4 py-3 text-gray-600">{j.targetMarginPct != null ? `${j.targetMarginPct}%` : "—"}</td>
+                  <td className="px-4 py-3 text-gray-600">{j.targetMarginPct != null ? `${j.targetMarginPct}%` : ", "}</td>
                   <td className="px-4 py-3 text-gray-600">
-                    {j.varianceVsEstimate != null ? formatCurrency(j.varianceVsEstimate) : "—"}
+                    {j.varianceVsEstimate != null ? formatCurrency(j.varianceVsEstimate) : ", "}
                   </td>
                   <td className="px-4 py-3">
-                    <ConfidenceBadge confidence={j.dataConfidence} />
+                    <DataQualityBadge confidence={j.dataConfidence} />
                   </td>
                   <td className="px-4 py-3 text-gray-500">{formatDate(j.lastFinancialActivity)}</td>
                 </tr>

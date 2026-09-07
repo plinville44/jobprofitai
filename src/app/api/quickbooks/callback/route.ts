@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 import { prisma } from "@/lib/prisma";
-import { exchangeCodeForTokens, detectCostTrackingMode } from "@/lib/quickbooks";
+import {
+  exchangeCodeForTokens,
+  detectCostTrackingMode,
+  qboCompanyInfo,
+} from "@/lib/quickbooks";
 import { encryptToken, hashRealmId } from "@/lib/crypto";
+import { tryMarkQuickBooksConnected } from "@/lib/trial";
 
 /**
  * GET /api/quickbooks/callback?code=...&state=...&realmId=...
@@ -84,6 +89,31 @@ export async function GET(req: NextRequest) {
   } catch {
     // Non-fatal - sync will re-detect on first run if this lookup failed.
   }
+
+  // Pull the company's real display name. Without this the dashboard falls
+  // back to showing a decrypted realm ID, which is meaningless to a
+  // contractor looking at their own company. Non-fatal: a naming nicety must
+  // never fail an otherwise successful connection.
+  try {
+    const info = await qboCompanyInfo(realmId, tokens.access_token);
+    const companyName: string | undefined =
+      info?.CompanyInfo?.CompanyName ?? info?.CompanyInfo?.LegalName;
+    if (companyName) {
+      await prisma.quickBooksConnection.update({
+        where: { id: connection.id },
+        data: { companyName },
+      });
+    }
+  } catch (err) {
+    console.error(
+      "quickbooks/callback: could not fetch company name:",
+      err instanceof Error ? err.message : "Unknown error"
+    );
+  }
+
+  // Half of trial "activation" (the other half is running a first analysis).
+  // Recorded server-side from the real product event, never from the client.
+  await tryMarkQuickBooksConnected(userId);
 
   return NextResponse.redirect(
     new URL("/dashboard?qbo_connected=1", process.env.APP_URL)

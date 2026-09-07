@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { runSyncForConnection } from "@/lib/quickbooksSync";
+import { getEntitlements } from "@/lib/entitlements";
 
 /**
  * POST /api/quickbooks/sync  { connectionId }
@@ -34,6 +35,16 @@ export async function POST(req: NextRequest) {
 async function runSync(req: NextRequest) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+
+  // Server-side entitlement check - a lapsed account must not be able to
+  // keep pulling fresh QuickBooks data by calling the API directly.
+  const entitlements = await getEntitlements(session.userId);
+  if (!entitlements.active) {
+    return NextResponse.json(
+      { error: "Your JobProfitAI trial has ended. Choose a plan to continue.", code: "entitlement_required" },
+      { status: 402 }
+    );
+  }
 
   const { connectionId } = await req.json();
   const connection = await prisma.quickBooksConnection.findUnique({

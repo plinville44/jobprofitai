@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { DataHealthReport } from "@/lib/profitability";
 import { formatCurrency } from "@/lib/format";
-import { ConfidenceBadge, StatusDot } from "@/components/dashboard/Badges";
+import { DataQualityBadge, StatusDot } from "@/components/dashboard/Badges";
 
 /**
  * The compact, structured Data Health card shown on the main dashboard,
@@ -27,7 +27,7 @@ export default function DataHealthSummary({ dataHealth }: { dataHealth: DataHeal
         <div className="flex items-center gap-2">
           <StatusDot status={flagged.length === 0 ? "good" : "warning"} />
           <h3 className="text-sm font-semibold text-navy">Data Health</h3>
-          <ConfidenceBadge confidence={dataHealth.overallConfidence} />
+          <DataQualityBadge confidence={dataHealth.overallConfidence} />
         </div>
         <Link href="/dashboard/data-health" className="text-sm text-brand hover:underline">
           View full Data Health report →

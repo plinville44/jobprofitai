@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 export const metadata = {
-  title: "Terms of Service — JobProfitAI",
+  title: "Terms of Service. JobProfitAI",
 };
 
 export default function TermsPage() {

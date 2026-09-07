@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Resend } from "resend";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { getEntitlements } from "@/lib/entitlements";
+import { sendEmail, SUPPORT_EMAIL } from "@/lib/email/client";
 
 const CATEGORIES = new Set(["Feature Request", "Report", "Integration", "Bug/Problem", "Other"]);
 
@@ -59,23 +59,36 @@ export async function POST(req: NextRequest) {
     });
 
     // Best-effort notification - logged, never allowed to fail the request.
-    // Skips cleanly (no throw, no crash) when RESEND_API_KEY isn't set yet,
-    // same as the weekly-email send path will need to (Phase 7).
-    if (process.env.RESEND_API_KEY) {
-      try {
-        const resend = new Resend(process.env.RESEND_API_KEY);
-        await resend.emails.send({
-          from: process.env.FEEDBACK_FROM_EMAIL ?? "JobProfitAI Feedback <feedback@jobprofitai.com>",
-          to: process.env.FEEDBACK_TO_EMAIL ?? "plinvill@gmail.com",
-          subject: `[Feedback] ${category} from ${user.email}`,
-          text: `Category: ${category}\nPlan: ${entitlements.plan}\nPage: ${page}\nUser: ${user.email}\n\n${message}`,
-        });
-      } catch (emailErr) {
-        console.error(
-          "feedback notification email failed (feedback row was still saved):",
-          emailErr instanceof Error ? emailErr.message : "Unknown error"
-        );
-      }
+    // Goes to the support inbox, not a personal address: this used to default
+    // to a founder's personal Gmail, which doesn't survive the business
+    // growing past one person and isn't where customer mail belongs.
+    // Reply-To is the customer, so replying reaches them directly.
+    // Named notificationText rather than `body`, which is already taken by
+    // the parsed request body at the top of this handler.
+    const notificationText = [
+      `Category: ${category}`,
+      `Plan: ${entitlements.plan}`,
+      `Page: ${page}`,
+      `User: ${user.email}`,
+      "",
+      message,
+    ].join("\n");
+
+    const notification = await sendEmail({
+      to: process.env.FEEDBACK_TO_EMAIL?.trim() || process.env.CONTACT_TO_EMAIL?.trim() || SUPPORT_EMAIL,
+      replyTo: user.email,
+      subject: `[Feedback] ${category} from ${user.email}`,
+      text: notificationText,
+      html: `<pre style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;white-space:pre-wrap;">${notificationText
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")}</pre>`,
+    });
+
+    if (!notification.ok) {
+      console.error(
+        `feedback ${feedback.id} saved but notification not delivered: ${notification.error}`
+      );
     }
 
     return NextResponse.json({ ok: true, id: feedback.id });

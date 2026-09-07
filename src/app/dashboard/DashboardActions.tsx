@@ -52,7 +52,7 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
         // Estimate) couldn't be pulled, but everything else synced fine - surfaced
         // here rather than hidden, so a problem is visible without digging into Neon.
         if (data.partialErrors && Object.keys(data.partialErrors).length > 0) {
-          return `${base} Note: couldn't sync ${Object.keys(data.partialErrors).join(", ")} this time — everything else synced fine.`;
+          return `${base} Note: couldn't sync ${Object.keys(data.partialErrors).join(", ")} this time. Everything else synced fine.`;
         }
         return base;
       }

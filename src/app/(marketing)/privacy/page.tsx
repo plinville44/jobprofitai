@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 export const metadata = {
-  title: "Privacy Policy — JobProfitAI",
+  title: "Privacy Policy. JobProfitAI",
 };
 
 export default function PrivacyPage() {
@@ -46,7 +46,7 @@ export default function PrivacyPage() {
           </li>
           <li>
             <strong>Billing information</strong>, handled by our payment processor
-            (Stripe) once billing is enabled — we do not store your full card
+            (Stripe) once billing is enabled. We do not store your full card
             number on our own servers.
           </li>
         </ul>
@@ -65,7 +65,7 @@ export default function PrivacyPage() {
           from your QuickBooks data are sent to Anthropic&apos;s Claude API, which
           writes the narrative summary. We do not use your data to train any
           third-party AI model, and we instruct the model to work only from the
-          specific numbers we provide it — it does not have general access to
+          specific numbers we provide it. It does not have general access to
           your QuickBooks account.
         </p>
 

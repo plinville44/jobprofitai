@@ -1,0 +1,64 @@
+JobProfitAI - How to run the sandbox seed script
+==================================================
+
+This script fills your QuickBooks SANDBOX company with the full test-data
+set from JobProfitAI_Sandbox_Test_Data.xlsx automatically, so you don't have
+to type in ~50 transactions by hand. It talks directly to QuickBooks' API
+using a temporary access token you copy from Intuit's own developer tools -
+no new account or app needed, since you already have a QuickBooks developer
+app connected to JobProfitAI.
+
+STEP 1 - Get a temporary sandbox access token (takes about 2 minutes)
+-----------------------------------------------------------------------
+1. Go to https://developer.intuit.com and log in with the same account you
+   used to set up JobProfitAI's QuickBooks connection.
+2. Click "Your Apps" (top nav) and open your JobProfitAI app.
+3. Look for a link/tab called "OAuth Playground" or "Test connect to app"
+   on your app's page - if you don't see it immediately, check the app's
+   "Keys & OAuth" or "Development Settings" section for it.
+4. On the Playground page:
+   - Your app should already be selected (Client ID/Secret auto-filled).
+   - Check the box for scope: com.intuit.quickbooks.accounting
+   - Click "Get authorization code" (or "Connect to QuickBooks").
+   - A popup opens - log into your SANDBOX company (the same one already
+     connected to JobProfitAI) and click Connect.
+5. Back on the Playground page, click "Get tokens."
+6. You'll now see an Access Token and a Realm ID (also called Company ID).
+   Copy both somewhere handy - you'll paste them in the next step.
+
+IMPORTANT: This access token expires in 60 minutes. Do step 2 right after
+getting it. If it expires partway through, just repeat step 1 and re-run
+the script - it's safe to run more than once (see below).
+
+STEP 2 - Run the script
+-----------------------------------------------------------------------
+Open your terminal in the JobProfitAI project folder (the same one you've
+used for npm test / git commands) and run:
+
+  QBO_ACCESS_TOKEN="paste-your-access-token-here" QBO_REALM_ID="paste-your-realm-id-here" node scripts/seed-sandbox.js
+
+On Windows PowerShell, do it as three lines instead:
+
+  $env:QBO_ACCESS_TOKEN="paste-your-access-token-here"
+  $env:QBO_REALM_ID="paste-your-realm-id-here"
+  node scripts/seed-sandbox.js
+
+Watch the console - it prints a numbered progress line for each of the 8
+phases (accounts, customers, jobs, estimates, invoices, expenses, bills,
+time activity + closing out completed jobs), and will finish with:
+
+  "All done. Now go into JobProfitAI and click 'Sync now'..."
+
+If something errors out partway through, copy me the exact error text and
+I'll fix that part of the script - re-running it afterward is safe, since
+it looks up everything by name first rather than re-creating duplicates.
+
+STEP 3 - Back in JobProfitAI
+-----------------------------------------------------------------------
+1. Click "Sync now" in the app.
+2. Go through tab "1. Jobs to Create" in the workbook and, on each job's
+   detail page, fill in Job Type and Estimated Cost (this part still has
+   to be done in the app itself - see the note in the workbook's Read Me
+   tab about why).
+3. Work through tab "6. Verification Checklist" to confirm everything
+   shows up correctly.

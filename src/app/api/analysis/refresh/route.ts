@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
+import { tryMarkFirstAnalysis } from "@/lib/trial";
+import { getEntitlements } from "@/lib/entitlements";
 import { getConnectionProfitData } from "@/lib/profitability";
 import { generateProfitInsights } from "@/lib/intelligence";
 
@@ -25,6 +27,22 @@ export async function POST(req: NextRequest) {
   try {
     const session = await getSession();
     if (!session) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+
+    // Entitlement enforced server-side. Hiding the button in the browser is
+    // not a control - this route generates paid value (a QuickBooks sync, an
+    // Anthropic call) and must refuse a lapsed account regardless of what
+    // the client sends.
+    const entitlements = await getEntitlements(session.userId);
+    if (!entitlements.active) {
+      return NextResponse.json(
+        {
+          error:
+            "Your JobProfitAI trial has ended. Choose a plan to continue.",
+          code: "entitlement_required",
+        },
+        { status: 402 }
+      );
+    }
 
     const { connectionId, force } = await req.json();
     if (!connectionId || typeof connectionId !== "string") {
@@ -86,6 +104,8 @@ export async function POST(req: NextRequest) {
         data: { connectionId, dataSnapshotAt: connection.lastSyncedAt ?? new Date(), kind: "intelligence" },
       }),
     ]);
+
+    await tryMarkFirstAnalysis(session.userId);
 
     return NextResponse.json({ ok: true, refreshed: true, count: drafts.length });
   } catch (err) {

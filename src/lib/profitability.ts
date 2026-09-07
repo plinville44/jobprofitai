@@ -134,11 +134,11 @@ export function computeJobFinancials(job: JobInput, ctx: FinancialContext): JobF
     unavailableReason = "No revenue or cost data recorded for this job yet.";
   } else if (revenue > 0 && costs === 0) {
     profitabilityAvailable = false;
-    unavailableReason = "Profitability unavailable — cost data incomplete.";
+    unavailableReason = "Profitability unavailable. Cost data incomplete.";
     flags.push("revenue_no_costs");
   } else if (revenue === 0 && costs > 0) {
     profitabilityAvailable = false;
-    unavailableReason = "Costs recorded but no revenue yet — profitability unavailable.";
+    unavailableReason = "Costs recorded but no revenue yet. Profitability unavailable.";
     flags.push("costs_no_revenue");
   }
 
@@ -300,7 +300,7 @@ export function computeNeedsAttentionForJob(
       jobId: f.jobId,
       jobName: f.jobName,
       issueCode: "no_estimate_on_file",
-      issue: "No cost estimate on file — can't track budget variance",
+      issue: "No cost estimate on file. Can't track budget variance",
       financialImpact: null,
       severity: "low",
       confidence: "high",
@@ -511,6 +511,13 @@ export interface DataHealthReport {
   costsMatchedViaParentAmount: number | null;
   possibleDuplicates: { jobName: string; amount: number; date: string; jobId: string }[];
   overallConfidence: DataConfidence;
+  // The raw counts behind overallConfidence. Exposed so the UI can state the
+  // plain fact ("6 of your 24 jobs are missing data we need") rather than
+  // showing a grade like "Medium confidence", which tells a contractor
+  // nothing actionable and invites them to distrust the whole page.
+  totalJobs: number;
+  jobsWithEnoughData: number;
+  jobsMissingData: number;
 }
 
 /**
@@ -569,6 +576,9 @@ export function computeDataHealth(
   const possibleDuplicates: DataHealthReport["possibleDuplicates"] = [];
 
   const insufficientCount = jobs.filter((j) => j.dataConfidence === "insufficient_data").length;
+  const totalJobs = jobs.length;
+  const jobsMissingData = insufficientCount;
+  const jobsWithEnoughData = totalJobs - insufficientCount;
   const overallConfidence: DataConfidence =
     jobs.length === 0
       ? "insufficient_data"
@@ -591,6 +601,9 @@ export function computeDataHealth(
     costsMatchedViaParentAmount,
     possibleDuplicates,
     overallConfidence,
+    totalJobs,
+    jobsWithEnoughData,
+    jobsMissingData,
   };
 }
 

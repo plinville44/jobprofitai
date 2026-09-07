@@ -22,6 +22,19 @@ model User {
 
   connections   QuickBooksConnection[]
   subscription  Subscription?
+
+  // --- Growth systems (trial, referrals, partners, lifecycle email) ---
+  // Every relation here is optional or one-to-many, so adding them doesn't
+  // change a single existing User row. The ReferralCode in particular is
+  // created lazily (first time the user opens their referral dashboard, see
+  // src/lib/referrals.ts) rather than at signup, so no backfill is needed.
+  trialFeedback     TrialFeedback?
+  referralCode      ReferralCode?
+  referralsMade     Referral[]       @relation("ReferrerUser")
+  referralReceived  Referral?        @relation("ReferredUser")
+  referralRewards   ReferralReward[]
+  partner           Partner?
+  emailEvents       EmailEvent[]
 }
 
 // One per connected QuickBooks Online company file ("realm").
@@ -310,18 +323,345 @@ model Subscription {
 
   stripeCustomerId      String?   @unique
   stripeSubscriptionId  String?   @unique
-  status                String    @default("trialing") // "trialing" | "active" | "past_due" | "canceled"
+  stripePriceId         String?
 
-  // Entitlement tier - read exclusively through src/lib/entitlements.ts, never
-  // checked directly elsewhere in the app. Defaults to full Profit Intelligence
-  // access for now since Stripe billing isn't wired up yet (Preston's explicit
-  // beta decision, 2026-08-14) - flipping this default to "profit_monitor" (or
-  // null/no-plan) the day billing goes live is a one-line change here, not a
-  // rearchitecture.
-  plan                  String    @default("profit_intelligence") // "profit_monitor" | "profit_intelligence"
+  // Mirrors Stripe's own subscription status while a paid subscription
+  // exists, plus two states Stripe has no concept of: "trialing" (our own
+  // card-free 14-day trial, which is NOT a Stripe trial - no Stripe object
+  // exists until they subscribe) and "trial_expired". Stripe remains the
+  // source of truth for anything paid; this column exists so entitlement
+  // checks don't have to call Stripe on every request.
+  status                String    @default("trialing")
+  // "trialing" | "trial_expired" | "active" | "past_due" | "canceled" | "incomplete" | "unpaid"
+
+  // Entitlement tier - read exclusively through src/lib/entitlements.ts,
+  // never checked directly elsewhere in the app.
+  //   "profit_intelligence"     = $149/mo  (Profit Intelligence)
+  //   "profit_intelligence_pro" = $299/mo  (Profit Intelligence Pro)
+  //   "profit_monitor"          = legacy pre-launch tier, no longer sold;
+  //                               mapped for entitlement purposes only.
+  // Trialing accounts get full Profit Intelligence feature access without a
+  // paid plan - that's what `status` is for. `plan` describes what they'd be
+  // entitled to; `status` decides whether the entitlement is currently live.
+  plan                  String    @default("profit_intelligence")
+
+  // --- Trial lifecycle (server-side source of truth; never trust client dates) ---
+  trialStartedAt        DateTime  @default(now())
   trialEndsAt           DateTime?
+
+  // Trial "activation" = connected QuickBooks AND generated a first analysis.
+  // Both timestamps are recorded independently so we can tell a user who
+  // connected but never ran anything (needs a nudge email) apart from one
+  // who never connected at all (needs a different nudge).
+  quickbooksConnectedAt DateTime?
+  firstAnalysisAt       DateTime?
+  activatedAt           DateTime?
+
+  // The one-time +14 day feedback extension. `trialExtendedAt` is the audit
+  // trail; TrialFeedback.userId being @unique is what actually makes the
+  // extension unrepeatable at the database level.
+  trialExtendedAt       DateTime?
+
+  // --- Paid lifecycle ---
   currentPeriodEnd      DateTime?
+  cancelAtPeriodEnd     Boolean   @default(false)
+  canceledAt            DateTime?
+  // First time this account ever had a subscription invoice paid. Drives the
+  // referral program's "paid for 30 days" qualification clock.
+  firstPaidAt           DateTime?
 
   createdAt             DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
+  updatedAt             DateTime  @updatedAt
+
+  @@index([status])
+  @@index([trialEndsAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// GROWTH SYSTEMS
+// Billing idempotency, trial extension, referrals, partners, lifecycle email.
+// Everything below is new and additive - no existing table is modified
+// destructively, so `prisma db push` applies it without data loss.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Every Stripe webhook event we've already finished processing. The Stripe
+// event id is the primary key, so a retried delivery of the same event hits
+// a unique-constraint violation on insert and is skipped rather than
+// re-applied. This is the single mechanism that stops retries from
+// double-issuing referral credits, partner commissions or emails - see
+// src/lib/stripe/webhookHandlers.ts, which inserts this row inside the same
+// transaction as the side effects it guards.
+model StripeEvent {
+  id          String   @id // Stripe's own `evt_...` id
+  type        String
+  apiVersion  String?
+  processedAt DateTime @default(now())
+
+  @@index([type])
+}
+
+// Send-once ledger for every lifecycle email. `dedupeKey` encodes the
+// user + email type + the specific lifecycle instant it belongs to (e.g.
+// "trial_ending_soon:<userId>:<trialEndsAt ISO>"), so a cron job that runs
+// every hour, or is retried, can call sendLifecycleEmail() freely and the
+// unique constraint guarantees exactly one send. See src/lib/email/send.ts.
+model EmailEvent {
+  id                String   @id @default(cuid())
+  userId            String?
+  user              User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  emailType         String   // e.g. "trial_welcome", "referral_reward_earned"
+  dedupeKey         String   @unique
+  toEmail           String
+  subject           String?
+
+  status            String   @default("sent") // "sent" | "failed" | "skipped"
+  providerMessageId String?  // Resend's message id, when the send succeeded
+  errorMessage      String?  // message only, never a full provider error object
+
+  sentAt            DateTime @default(now())
+
+  @@index([userId, emailType])
+  @@index([emailType, sentAt])
+}
+
+// The 5-minute feedback survey that earns exactly one +14 day trial
+// extension. userId is @unique: that constraint - not application logic - is
+// what makes the extension unrepeatable, so concurrent double-submits can't
+// both succeed. Testimonials are deliberately NOT collected here; a
+// testimonial is a separate, later, entirely optional ask (see
+// src/lib/email/lifecycle.ts) and is never a condition of the extension.
+model TrialFeedback {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  mostValuable   String   @db.Text
+  confusing      String   @db.Text
+  wishItShowed   String   @db.Text
+  worthPayingFor String   @db.Text
+  anythingElse   String?  @db.Text
+
+  // Recorded on the row rather than assumed, so the admin view can show
+  // exactly what each account was granted even if the policy changes later.
+  daysGranted    Int      @default(14)
+  newTrialEndsAt DateTime
+
+  createdAt      DateTime @default(now())
+}
+
+// A referral code belongs to EITHER a customer (free-month program) or a
+// partner firm (recurring commission program) - never both. Both kinds share
+// one code space and one /r/[code] landing route so attribution has a single
+// code path; `kind` decides which reward system the resulting Referral runs
+// through.
+model ReferralCode {
+  id        String   @id @default(cuid())
+  code      String   @unique // short, unambiguous, case-insensitive (stored uppercase)
+  kind      String   // "customer" | "partner"
+
+  userId    String?  @unique
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  partnerId String?  @unique
+  partner   Partner? @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  referrals Referral[]
+
+  @@index([kind])
+}
+
+// One row per referred account. `referredUserId` is @unique, which is the
+// core anti-fraud constraint: a given JobProfitAI account can be attributed
+// to exactly one referrer, ever, no matter how many referral links it
+// touches. Self-referral is rejected at attribution time (see
+// src/lib/referrals.ts).
+model Referral {
+  id             String       @id @default(cuid())
+  referralCodeId String
+  referralCode   ReferralCode @relation(fields: [referralCodeId], references: [id], onDelete: Cascade)
+  kind           String       // "customer" | "partner" - copied from the code at attribution time
+
+  referrerUserId String?
+  referrer       User?        @relation("ReferrerUser", fields: [referrerUserId], references: [id], onDelete: SetNull)
+
+  partnerId      String?
+  partner        Partner?     @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+
+  // Nullable + SetNull rather than Cascade, deliberately. If a referred
+  // contractor deletes their JobProfitAI account, the Referral row (and the
+  // PartnerCommission rows hanging off it) must SURVIVE - otherwise deleting
+  // a client account would silently erase a partner's earned, possibly
+  // unpaid, commission history. The account goes; the financial record of
+  // what was earned stays. Postgres allows multiple NULLs under a unique
+  // constraint, so "one referral per referred account" is still enforced for
+  // every live account.
+  referredUserId String?      @unique
+  referredUser   User?        @relation("ReferredUser", fields: [referredUserId], references: [id], onDelete: SetNull)
+
+  // "signed_up" -> "paid" (first invoice paid) -> "qualified" (customer
+  // program only: 30 days paid, no refund/chargeback). "disqualified" is
+  // terminal and set on refund/chargeback/fraud.
+  status             String    @default("signed_up")
+  signedUpAt         DateTime  @default(now())
+  firstPaidAt        DateTime?
+  qualifiedAt        DateTime?
+  disqualifiedAt     DateTime?
+  disqualifiedReason String?
+
+  reward         ReferralReward?
+  commissions    PartnerCommission[]
+
+  @@index([referrerUserId, status])
+  @@index([partnerId, status])
+  @@index([status])
+}
+
+// Customer program reward: one free month of the referrer's CURRENT plan,
+// issued as a Stripe customer balance credit so it automatically reduces the
+// next invoice(s). `referralId` is @unique - one reward per qualifying
+// referral, enforced by the database rather than by a code path that a
+// webhook retry could run twice.
+model ReferralReward {
+  id             String   @id @default(cuid())
+  referralId     String   @unique
+  referral       Referral @relation(fields: [referralId], references: [id], onDelete: Cascade)
+
+  referrerUserId String
+  referrer       User     @relation(fields: [referrerUserId], references: [id], onDelete: Cascade)
+
+  // Amount is resolved from the referrer's active base plan at the moment
+  // the reward qualifies ($149 plan -> 14900, $299 plan -> 29900), then
+  // frozen here. A later plan change never retroactively re-prices an
+  // already-earned reward.
+  amountCents    Int
+  plan           String
+
+  status         String   @default("pending") // "pending" | "applied" | "voided"
+
+  // Stripe's customer balance transaction id, set once the credit is
+  // actually on the customer's balance. Null while pending (e.g. the
+  // referrer has no Stripe customer yet because they're still on trial).
+  stripeBalanceTxnId String? @unique
+
+  earnedAt       DateTime @default(now())
+  appliedAt      DateTime?
+  voidedAt       DateTime?
+  voidReason     String?
+
+  @@index([referrerUserId, status])
+}
+
+// An accounting/bookkeeping firm in the partner program. Deliberately a
+// separate entity from the customer referral program: partners earn a
+// recurring percentage commission, not free months.
+//
+// SECURITY: a Partner row grants NO access whatsoever to any referred
+// contractor's QuickBooks or financial data. Partner status and data access
+// are entirely unrelated systems - a contractor must explicitly invite an
+// accountant through normal account access controls for that. Nothing in
+// this model or the partner dashboard reads another account's financials.
+model Partner {
+  id                  String    @id @default(cuid())
+  userId              String    @unique
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  firmName            String
+  contactName         String
+  phone               String?
+  website             String?
+  clientCountEstimate String?   // free text from the application form
+
+  status              String    @default("pending") // "pending" | "approved" | "rejected" | "suspended"
+  approvedAt          DateTime?
+  rejectedAt          DateTime?
+
+  // Around 3 active paying clients a partner qualifies for a complimentary
+  // JobProfitAI account for their own firm. Recorded here when granted.
+  freeAccountGrantedAt DateTime?
+
+  // Where commissions get paid. Payouts are an admin-run ledger workflow
+  // today (no Stripe Connect yet) - see PartnerCommission.status and
+  // PRODUCTION_CUTOVER.md. Kept as plain contact detail, never bank details.
+  payoutEmail         String?
+  adminNotes          String?   @db.Text
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  referralCode        ReferralCode?
+  referrals           Referral[]
+  commissions         PartnerCommission[]
+
+  @@index([status])
+}
+
+// One row per commissionable paid invoice. `stripeInvoiceId` is @unique
+// across the whole table, so a Stripe webhook retry - or two concurrent
+// deliveries of the same invoice.paid event - can never produce two
+// commissions for one payment.
+model PartnerCommission {
+  id             String   @id @default(cuid())
+  partnerId      String
+  partner        Partner  @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+
+  referralId     String
+  referral       Referral @relation(fields: [referralId], references: [id], onDelete: Cascade)
+  referredUserId String
+
+  stripeInvoiceId      String  @unique
+  stripeSubscriptionId String?
+  stripeCustomerId     String?
+
+  // Subscription line revenue only - tax is excluded before this is stored
+  // (see src/lib/partners.ts), so commission is never paid on sales tax.
+  subscriptionRevenueCents Int
+  // Basis points (2000 = 20%, 2500 = 25%, 3000 = 30%), frozen at the rate
+  // that applied when this invoice was paid. A later tier upgrade changes
+  // the rate on SUBSEQUENT invoices only - it never retroactively re-prices
+  // commissions already earned.
+  commissionRateBps        Int
+  commissionCents          Int
+
+  // 1-12. Commission eligibility ends after the 12th successfully paid
+  // subscription month for this referred customer.
+  monthNumber    Int
+
+  status         String   @default("earned") // "earned" | "paid" | "voided"
+  earnedAt       DateTime @default(now())
+  paidAt         DateTime?
+  paidNote       String?
+  voidedAt       DateTime?
+  voidReason     String?
+
+  @@index([partnerId, status])
+  @@index([referralId])
+}
+
+// Marketing-site contact form submissions. Stored as well as emailed, so a
+// Resend outage never loses a sales lead - the email send result is recorded
+// on the row itself (emailDeliveredAt / emailError) so an admin can spot and
+// re-send anything that failed.
+model ContactSubmission {
+  id               String    @id @default(cuid())
+  name             String
+  company          String?
+  email            String
+  phone            String?
+  reason           String
+  message          String    @db.Text
+
+  // Hashed, never the raw IP - used only for rate limiting and abuse review.
+  ipHash           String?
+  userAgent        String?
+
+  emailDeliveredAt DateTime?
+  emailError       String?
+
+  createdAt        DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([reason])
 }

@@ -1,11 +1,13 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getSession } from "@/lib/auth";
+import { getEntitlements } from "@/lib/entitlements";
+import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
 import { prisma } from "@/lib/prisma";
 import { decryptToken } from "@/lib/crypto";
 import { getConnectionProfitData, getMarginTrend } from "@/lib/profitability";
 import { resolveDateRange, resolveStatusFilter, RANGE_OPTIONS, STATUS_OPTIONS } from "@/lib/dateRange";
-import { formatCurrency, formatPct } from "@/lib/format";
+import { confidenceLabel, formatCurrency, formatPct } from "@/lib/format";
 import { SeverityBadge } from "@/components/dashboard/Badges";
 import DashboardActions from "./DashboardActions";
 import JobMarginBarChart from "@/components/charts/JobMarginBarChart";
@@ -28,6 +30,15 @@ export default async function DashboardPage({
 }) {
   const session = await getSession();
   if (!session) redirect("/login");
+
+  // Server-side entitlement gate. An expired trial gets a proper "choose a
+  // plan" screen rather than an authorization error - and because the check
+  // happens here, before any financial data is loaded, a lapsed account
+  // never has its numbers computed and sent to the browser either.
+  const entitlements = await getEntitlements(session.userId);
+  if (!entitlements.active) {
+    return <UpgradeRequired access={entitlements.access} />;
+  }
 
   const connections = await prisma.quickBooksConnection.findMany({
     where: { userId: session.userId, disconnectedAt: null },
@@ -174,7 +185,7 @@ export default async function DashboardPage({
                       <th className="px-4 py-2 font-medium">Issue</th>
                       <th className="px-4 py-2 font-medium">Financial Impact</th>
                       <th className="px-4 py-2 font-medium">Severity</th>
-                      <th className="px-4 py-2 font-medium">Confidence</th>
+                      <th className="px-4 py-2 font-medium">Evidence</th>
                       <th className="px-4 py-2 font-medium"></th>
                     </tr>
                   </thead>
@@ -187,12 +198,12 @@ export default async function DashboardPage({
                           <td className="px-4 py-3 font-medium text-navy">{item.jobName}</td>
                           <td className="px-4 py-3 text-gray-600">{item.issue}</td>
                           <td className="px-4 py-3 text-gray-600">
-                            {item.financialImpact != null ? formatCurrency(item.financialImpact) : "—"}
+                            {item.financialImpact != null ? formatCurrency(item.financialImpact) : ", "}
                           </td>
                           <td className="px-4 py-3">
                             <SeverityBadge severity={item.severity} />
                           </td>
-                          <td className="px-4 py-3 text-gray-500 capitalize">{item.confidence}</td>
+                          <td className="px-4 py-3 text-gray-500">{confidenceLabel(item.confidence)}</td>
                           <td className="px-4 py-3">
                             <Link href={`/dashboard/jobs/${item.jobId}`} className="text-brand hover:underline">
                               View job
