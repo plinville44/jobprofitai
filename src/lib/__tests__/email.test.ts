@@ -24,7 +24,10 @@ vi.mock("resend", () => ({
           nextError = null;
           return { data: null, error: err };
         }
-        sent.push({ to: payload.to, subject: payload.subject, replyTo: payload.replyTo });
+        // The wire field is `reply_to` in the v3 SDK; asserting on the
+        // provider's spelling is the point, since that is what a wrong name
+        // would silently break.
+        sent.push({ to: payload.to, subject: payload.subject, replyTo: payload.reply_to });
         return { data: { id: `msg_${sent.length}` }, error: null };
       },
     };

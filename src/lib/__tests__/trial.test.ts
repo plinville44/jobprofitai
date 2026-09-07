@@ -24,6 +24,18 @@ import {
 const DAY = 86_400_000;
 const START = new Date("2026-03-01T09:00:00Z");
 
+/**
+ * A trialing subscription always has a trialEndsAt, but the column is nullable
+ * in the schema because an account that converted to paying no longer has one.
+ * This narrows the type and fails with a readable message if that invariant is
+ * ever broken, which a bare `!` would quietly hide behind a
+ * "cannot read properties of null" further down the test.
+ */
+function trialEnd(sub: { trialEndsAt: Date | null }): Date {
+  if (!sub.trialEndsAt) throw new Error("expected this subscription to have a trialEndsAt");
+  return sub.trialEndsAt;
+}
+
 /** A trialing subscription row, `daysAgo` into its 14-day trial. */
 function trialSub(overrides: Record<string, unknown> = {}) {
   return {
@@ -53,7 +65,7 @@ describe("trial state", () => {
     const sub = await ensureSubscription("u1", START);
 
     expect(sub.status).toBe("trialing");
-    expect(sub.trialEndsAt.getTime() - START.getTime()).toBe(14 * DAY);
+    expect(trialEnd(sub).getTime() - START.getTime()).toBe(14 * DAY);
     // No card, no Stripe object exists at signup.
     expect(sub.stripeCustomerId).toBeNull();
     expect(sub.stripeSubscriptionId).toBeNull();
@@ -65,7 +77,7 @@ describe("trial state", () => {
     const second = await ensureSubscription("u1", new Date(START.getTime() + 5 * DAY));
 
     expect(second.id).toBe(first.id);
-    expect(second.trialEndsAt.getTime()).toBe(first.trialEndsAt.getTime());
+    expect(trialEnd(second).getTime()).toBe(trialEnd(first).getTime());
     expect(await fake.client.subscription.count()).toBe(1);
   });
 

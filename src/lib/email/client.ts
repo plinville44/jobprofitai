@@ -75,7 +75,13 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
       subject: redirect ? `[dev->${asString(input.to)}] ${input.subject}` : input.subject,
       html: input.html,
       text: input.text,
-      replyTo: input.replyTo ?? SUPPORT_EMAIL,
+      // snake_case on purpose. Resend renamed this option between SDK
+      // majors: v3's CreateEmailOptions calls it `reply_to`, v4 calls it
+      // `replyTo`. package.json pins ^3.5.0, so `reply_to` is the name the
+      // installed SDK accepts. Our own SendEmailInput keeps the camelCase
+      // `replyTo` so callers aren't exposed to the provider's spelling, and
+      // this is the single line that has to change on a Resend upgrade.
+      reply_to: input.replyTo ?? SUPPORT_EMAIL,
       tags: input.tags,
     });
 

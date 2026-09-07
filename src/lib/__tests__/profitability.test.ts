@@ -962,6 +962,12 @@ describe("computeDashboardTotals", () => {
     costsMatchedViaParentAmount: 999,
     possibleDuplicates: [{ jobId: "d", jobName: "D", amount: 100, date: "2026-06-01" }],
     overallConfidence: "medium",
+    // The plain counts the Data Health page states in words. Kept consistent
+    // with the fixture above (4 jobs, of which a, b and c each have a gap)
+    // so the object stays a believable report rather than filler.
+    totalJobs: 4,
+    jobsWithEnoughData: 1,
+    jobsMissingData: 3,
   };
 
   it("sums revenue/costs/profit and computes the below-target and profit-at-risk figures", () => {
