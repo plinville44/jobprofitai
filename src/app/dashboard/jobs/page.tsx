@@ -6,7 +6,7 @@ import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
 import { prisma } from "@/lib/prisma";
 import { getConnectionProfitData, type JobFinancials } from "@/lib/profitability";
 import { resolveStatusFilter, STATUS_OPTIONS } from "@/lib/dateRange";
-import { formatCurrency, formatPct, formatDate } from "@/lib/format";
+import { NO_VALUE, formatCurrency, formatPct, formatDate } from "@/lib/format";
 import { DataQualityBadge } from "@/components/dashboard/Badges";
 import SortSelect from "@/components/dashboard/SortSelect";
 
@@ -158,20 +158,20 @@ export default async function JobsPage({
                       {j.jobName}
                     </Link>
                   </td>
-                  <td className="px-4 py-3 text-gray-600">{j.customerName ?? ", "}</td>
+                  <td className="px-4 py-3 text-gray-600">{j.customerName ?? NO_VALUE}</td>
                   <td className="px-4 py-3 text-gray-600 capitalize">{j.status}</td>
                   <td className="px-4 py-3 text-gray-600">{formatCurrency(j.revenue)}</td>
                   <td className="px-4 py-3 text-gray-600">{formatCurrency(j.estimatedCost)}</td>
                   <td className="px-4 py-3 text-gray-600">{formatCurrency(j.costs)}</td>
                   <td className="px-4 py-3 text-gray-600">
-                    {j.profitabilityAvailable ? formatCurrency(j.grossProfit) : ", "}
+                    {j.profitabilityAvailable ? formatCurrency(j.grossProfit) : NO_VALUE}
                   </td>
                   <td className="px-4 py-3 text-gray-600">
                     {j.profitabilityAvailable ? formatPct(j.grossMarginPct) : "Unavailable"}
                   </td>
-                  <td className="px-4 py-3 text-gray-600">{j.targetMarginPct != null ? `${j.targetMarginPct}%` : ", "}</td>
+                  <td className="px-4 py-3 text-gray-600">{j.targetMarginPct != null ? `${j.targetMarginPct}%` : NO_VALUE}</td>
                   <td className="px-4 py-3 text-gray-600">
-                    {j.varianceVsEstimate != null ? formatCurrency(j.varianceVsEstimate) : ", "}
+                    {j.varianceVsEstimate != null ? formatCurrency(j.varianceVsEstimate) : NO_VALUE}
                   </td>
                   <td className="px-4 py-3">
                     <DataQualityBadge confidence={j.dataConfidence} />

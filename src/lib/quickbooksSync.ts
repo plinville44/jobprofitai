@@ -634,10 +634,12 @@ function categorize(accountOrItemName: string | null | undefined): string {
   return "other";
 }
 
-// Exported (was module-private) so the temporary sandbox-token debug route
-// (src/app/api/debug/qbo-token/route.ts) can reuse the exact same
-// refresh-if-needed logic the sync engine already relies on, instead of
-// duplicating it - see that route's comment for why it exists.
+// Module-private on purpose. This was briefly exported for a temporary
+// sandbox-token debug route (src/app/api/debug/qbo-token). That route is
+// gone, and nothing outside this module should be able to obtain a decrypted
+// customer access token, so the export went with it. Anything that needs
+// QuickBooks data goes through the sync functions below rather than getting
+// a raw token to use however it likes.
 async function getValidAccessToken(connection: {
   id: string;
   accessToken: string;

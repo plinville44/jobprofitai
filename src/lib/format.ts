@@ -3,7 +3,10 @@
 // House style note: no em dashes anywhere in customer-facing copy. A plain
 // hyphen stands in for "no value" in tables, and prose uses commas, colons
 // or separate sentences instead.
-const NO_VALUE = "-";
+// Exported so pages render the same placeholder as the formatters do. A page
+// that writes its own literal drifts from this the moment the house style
+// changes, which is exactly how a stray ", " ended up in a dozen tables.
+export const NO_VALUE = "-";
 
 export function formatCurrency(value: number | null | undefined): string {
   if (value == null) return NO_VALUE;

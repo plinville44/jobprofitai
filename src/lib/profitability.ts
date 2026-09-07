@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
+import { requireFeature } from "./entitlements";
 
 // ============================================================================
 // PURE CALCULATION LAYER
@@ -921,6 +922,18 @@ export async function getConnectionProfitData(
 
   // Needs Attention: per-job rule evaluation, with prior-margin trend data
   // and same-category peer costs (completed jobs only) threaded in.
+  //
+  // Comparing one job's costs against its peers is the "cross-job
+  // benchmarking" the Pro plan is sold on, so it is gated here rather than at
+  // each of the six pages that call this function. A page that forgot to pass
+  // a flag would hand a $149 account a Pro finding and nobody would notice;
+  // gating at the single place peer data is assembled makes that impossible.
+  // Everything else in Needs Your Attention is per-job and stays on both
+  // plans.
+  const canBenchmark = Boolean(
+    await requireFeature(connection.userId, "cross_job_benchmarking")
+  );
+
   const priorMarginsByJob = await getPriorMarginsByJob(connectionId);
   const completedByCategory: Record<string, JobFinancials[]> = {};
   for (const f of financials) {
@@ -928,7 +941,7 @@ export async function getConnectionProfitData(
   }
   const needsAttention = financials.flatMap((f) => {
     const peerCompletedCostByCategory: Record<string, number[]> = {};
-    if (f.category && completedByCategory[f.category]) {
+    if (canBenchmark && f.category && completedByCategory[f.category]) {
       for (const peer of completedByCategory[f.category]) {
         if (peer.jobId === f.jobId) continue;
         for (const [cat, amt] of Object.entries(peer.costByCategory)) {
@@ -1073,9 +1086,16 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
   const forecast = computeForecastAtCompletion(jobInput, financials, now);
   const leakage = computeProfitLeakage(financials, forecast);
 
-  // Peer costs for the outlier rule: other completed jobs in the same category, same connection.
-  let peerCompletedCostByCategory: Record<string, number[]> = {};
-  if (job.category) {
+  // Peer costs for the outlier rule: other completed jobs in the same
+  // category, same connection. Gated on the Pro cross-job benchmarking
+  // feature, same as the connection-level path above. Skipping it also skips
+  // the peer query entirely, so a $149 account doesn't pay the database cost
+  // of an analysis it isn't shown.
+  const canBenchmark = Boolean(
+    await requireFeature(connection.userId, "cross_job_benchmarking")
+  );
+  const peerCompletedCostByCategory: Record<string, number[]> = {};
+  if (canBenchmark && job.category) {
     const peers = await prisma.job.findMany({
       where: { connectionId: connection.id, category: job.category, status: "closed", id: { not: job.id } },
       include: { costEntries: true, invoices: true },

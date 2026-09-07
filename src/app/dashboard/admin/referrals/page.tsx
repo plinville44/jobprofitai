@@ -1,11 +1,11 @@
 import { prisma } from "@/lib/prisma";
-import { formatDate } from "@/lib/format";
+import { NO_VALUE, formatDate } from "@/lib/format";
 import { AdminSection, AdminTable, Pill, Td } from "@/components/dashboard/AdminTable";
 
 export const dynamic = "force-dynamic";
 
 function money(cents: number | null | undefined): string {
-  if (cents == null) return ", ";
+  if (cents == null) return NO_VALUE;
   return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 }
 
@@ -51,12 +51,12 @@ export default async function AdminReferralsPage() {
               {r.kind === "partner" ? <Pill tone="info">Partner</Pill> : <Pill>Customer</Pill>}
             </Td>
             <Td className="whitespace-nowrap">
-              {r.kind === "partner" ? (r.partner?.firmName ?? ", ") : (r.referrer?.email ?? ", ")}
+              {r.kind === "partner" ? (r.partner?.firmName ?? NO_VALUE) : (r.referrer?.email ?? NO_VALUE)}
             </Td>
             <Td className="whitespace-nowrap">
               {r.referredUser?.email ?? <span className="text-gray-400">account deleted</span>}
             </Td>
-            <Td>{r.referredUser?.subscription?.plan ?? ", "}</Td>
+            <Td>{r.referredUser?.subscription?.plan ?? NO_VALUE}</Td>
             <Td>
               <Pill tone={TONE[r.status] ?? "neutral"}>{r.status}</Pill>
               {r.disqualifiedReason ? (
@@ -72,7 +72,7 @@ export default async function AdminReferralsPage() {
               ) : r.reward?.status === "voided" ? (
                 <Pill tone="bad">voided</Pill>
               ) : (
-                ", "
+                NO_VALUE
               )}
             </Td>
           </tr>

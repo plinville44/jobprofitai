@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { computeTrialState } from "@/lib/trial";
-import { formatDate } from "@/lib/format";
+import { NO_VALUE, formatDate } from "@/lib/format";
 import { AdminSection, AdminTable, Pill, Td } from "@/components/dashboard/AdminTable";
 
 export const dynamic = "force-dynamic";
@@ -45,7 +45,7 @@ export default async function AdminTrialsPage() {
           return (
             <tr key={sub.id}>
               <Td className="whitespace-nowrap font-medium text-navy">
-                {user?.email ?? ", "}
+                {user?.email ?? NO_VALUE}
                 {user?.name ? (
                   <span className="block text-xs font-normal text-gray-500">{user.name}</span>
                 ) : null}
@@ -80,15 +80,15 @@ export default async function AdminTrialsPage() {
                 )}
               </Td>
               <Td className="whitespace-nowrap">
-                {sub.firstAnalysisAt ? formatDate(sub.firstAnalysisAt) : ", "}
+                {sub.firstAnalysisAt ? formatDate(sub.firstAnalysisAt) : NO_VALUE}
               </Td>
               <Td>
                 {sub.activatedAt ? <Pill tone="good">Yes</Pill> : <Pill>No</Pill>}
               </Td>
               <Td className="whitespace-nowrap">
-                {sub.trialExtendedAt ? formatDate(sub.trialExtendedAt) : ", "}
+                {sub.trialExtendedAt ? formatDate(sub.trialExtendedAt) : NO_VALUE}
               </Td>
-              <Td>{feedbackUserIds.has(sub.userId) ? <Pill tone="good">Yes</Pill> : ", "}</Td>
+              <Td>{feedbackUserIds.has(sub.userId) ? <Pill tone="good">Yes</Pill> : NO_VALUE}</Td>
             </tr>
           );
         })}

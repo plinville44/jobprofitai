@@ -4,7 +4,7 @@ import { getSession } from "@/lib/auth";
 import { getEntitlements } from "@/lib/entitlements";
 import { getReferralHistory, getReferralSummary } from "@/lib/referrals";
 import { REFERRAL_QUALIFY_DAYS, priceCentsForStoredPlan } from "@/lib/plans";
-import { formatDate } from "@/lib/format";
+import { NO_VALUE, formatDate } from "@/lib/format";
 import CopyLinkButton from "@/components/dashboard/CopyLinkButton";
 
 export const dynamic = "force-dynamic";
@@ -158,10 +158,10 @@ export default async function ReferralsPage() {
                         ) : null}
                       </td>
                       <td className="px-6 py-3.5 font-medium text-navy">
-                        {row.rewardAmountCents != null ? money(row.rewardAmountCents) : ", "}
+                        {row.rewardAmountCents != null ? money(row.rewardAmountCents) : NO_VALUE}
                       </td>
                       <td className="px-6 py-3.5 text-gray-600">
-                        {row.rewardAppliedAt ? formatDate(row.rewardAppliedAt) : ", "}
+                        {row.rewardAppliedAt ? formatDate(row.rewardAppliedAt) : NO_VALUE}
                       </td>
                     </tr>
                   );

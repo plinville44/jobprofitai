@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { countPayingClients } from "@/lib/partners";
 import { partnerTierFor } from "@/lib/plans";
-import { formatDate } from "@/lib/format";
+import { NO_VALUE, formatDate } from "@/lib/format";
 import { AdminSection, AdminTable, Pill, Td } from "@/components/dashboard/AdminTable";
 import { MarkPaidButton, PartnerStatusActions } from "./PartnerAdminActions";
 
@@ -101,7 +101,7 @@ export default async function AdminPartnersPage() {
                   ) : null}
                 </Td>
                 <Td className="whitespace-nowrap font-mono text-xs">
-                  {p.referralCode?.code ?? ", "}
+                  {p.referralCode?.code ?? NO_VALUE}
                 </Td>
                 <Td>{p._count.referrals}</Td>
                 <Td>{paying}</Td>

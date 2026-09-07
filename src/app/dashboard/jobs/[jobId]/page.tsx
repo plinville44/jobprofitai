@@ -4,7 +4,7 @@ import { getSession } from "@/lib/auth";
 import { getJobProfitData } from "@/lib/profitability";
 import { getEntitlements, requireFeature } from "@/lib/entitlements";
 import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
-import { formatCurrency, formatPct, formatDate, categoryLabel } from "@/lib/format";
+import { NO_VALUE, formatCurrency, formatPct, formatDate, categoryLabel } from "@/lib/format";
 import { ConfidenceBadge, DataQualityBadge, SeverityBadge } from "@/components/dashboard/Badges";
 import EstimateVsActualChart from "@/components/charts/EstimateVsActualChart";
 import ProfitLeakageChart from "@/components/charts/ProfitLeakageChart";
@@ -52,8 +52,8 @@ export default async function JobDetailPage({ params }: { params: { jobId: strin
       <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <MiniStat label="Status" value={f.status === "open" ? "Active" : "Completed"} />
         <MiniStat label="Revenue" value={formatCurrency(f.revenue)} />
-        <MiniStat label="Gross Profit" value={f.profitabilityAvailable ? formatCurrency(f.grossProfit) : ", "} />
-        <MiniStat label="Gross Margin" value={f.profitabilityAvailable ? formatPct(f.grossMarginPct) : ", "} />
+        <MiniStat label="Gross Profit" value={f.profitabilityAvailable ? formatCurrency(f.grossProfit) : NO_VALUE} />
+        <MiniStat label="Gross Margin" value={f.profitabilityAvailable ? formatPct(f.grossMarginPct) : NO_VALUE} />
       </div>
       {f.targetMarginPct != null && (
         <p className="mt-2 text-xs text-gray-400">Target margin: {f.targetMarginPct}%</p>
@@ -176,11 +176,11 @@ export default async function JobDetailPage({ params }: { params: { jobId: strin
                 <MiniStat label="Forecast cost at completion" value={formatCurrency(data.forecast.forecastCostAtCompletion)} />
                 <MiniStat
                   label="Forecast profit"
-                  value={data.forecast.forecastProfit != null ? formatCurrency(data.forecast.forecastProfit) : ", "}
+                  value={data.forecast.forecastProfit != null ? formatCurrency(data.forecast.forecastProfit) : NO_VALUE}
                 />
                 <MiniStat
                   label="Forecast margin"
-                  value={data.forecast.forecastMarginPct != null ? formatPct(data.forecast.forecastMarginPct) : ", "}
+                  value={data.forecast.forecastMarginPct != null ? formatPct(data.forecast.forecastMarginPct) : NO_VALUE}
                 />
                 <div className="col-span-2 sm:col-span-4">
                   <ConfidenceBadge confidence={data.forecast.confidence ?? "low"} />
@@ -226,7 +226,7 @@ export default async function JobDetailPage({ params }: { params: { jobId: strin
                   <td className="px-3 py-2 text-gray-500">{formatDate(c.txnDate)}</td>
                   <td className="px-3 py-2 text-gray-500">{c.qboSourceType}</td>
                   <td className="px-3 py-2 text-gray-600">{categoryLabel(c.category)}</td>
-                  <td className="px-3 py-2 text-gray-600">{c.description ?? ", "}</td>
+                  <td className="px-3 py-2 text-gray-600">{c.description ?? NO_VALUE}</td>
                   <td className="px-3 py-2 text-right text-navy">{formatCurrency(c.amount)}</td>
                 </tr>
               ))}
@@ -290,7 +290,7 @@ function MiniStat({ label, value }: { label: string; value: string | undefined }
   return (
     <div>
       <p className="text-xs text-gray-500">{label}</p>
-      <p className="text-base font-semibold text-navy">{value ?? ", "}</p>
+      <p className="text-base font-semibold text-navy">{value ?? NO_VALUE}</p>
     </div>
   );
 }

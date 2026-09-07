@@ -68,9 +68,18 @@ const PROFIT_MONITOR_FEATURES: Feature[] = [
 const PROFIT_INTELLIGENCE_FEATURES: Feature[] = [...PROFIT_MONITOR_FEATURES, "ai_insights"];
 
 /**
- * $299 Pro adds forward-looking and cross-job analysis - both of which are
- * real, shipped calculations (computeForecastAtCompletion and
- * computeProfitOpportunities in src/lib/profitability.ts), not placeholders.
+ * $299 Pro adds forward-looking and cross-job analysis. All three are real,
+ * shipped calculations in src/lib/profitability.ts, not placeholders:
+ *
+ *   forecast_at_completion  -> computeForecastAtCompletion
+ *   profit_opportunities    -> computeProfitOpportunities
+ *   cross_job_benchmarking  -> the peer cost-outlier rule inside
+ *                              computeNeedsAttentionForJob, gated where the
+ *                              peer data is assembled in
+ *                              getConnectionProfitData / getJobProfitData
+ *
+ * Every one of these is enforced server-side. If you add a fourth, gate it
+ * before it ships, not after: the pricing page treats this list as the truth.
  */
 const PROFIT_INTELLIGENCE_PRO_FEATURES: Feature[] = [
   ...PROFIT_INTELLIGENCE_FEATURES,

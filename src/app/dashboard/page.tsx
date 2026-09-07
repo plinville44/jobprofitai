@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { decryptToken } from "@/lib/crypto";
 import { getConnectionProfitData, getMarginTrend } from "@/lib/profitability";
 import { resolveDateRange, resolveStatusFilter, RANGE_OPTIONS, STATUS_OPTIONS } from "@/lib/dateRange";
-import { confidenceLabel, formatCurrency, formatPct } from "@/lib/format";
+import { NO_VALUE, confidenceLabel, formatCurrency, formatPct } from "@/lib/format";
 import { SeverityBadge } from "@/components/dashboard/Badges";
 import DashboardActions from "./DashboardActions";
 import JobMarginBarChart from "@/components/charts/JobMarginBarChart";
@@ -198,7 +198,7 @@ export default async function DashboardPage({
                           <td className="px-4 py-3 font-medium text-navy">{item.jobName}</td>
                           <td className="px-4 py-3 text-gray-600">{item.issue}</td>
                           <td className="px-4 py-3 text-gray-600">
-                            {item.financialImpact != null ? formatCurrency(item.financialImpact) : ", "}
+                            {item.financialImpact != null ? formatCurrency(item.financialImpact) : NO_VALUE}
                           </td>
                           <td className="px-4 py-3">
                             <SeverityBadge severity={item.severity} />

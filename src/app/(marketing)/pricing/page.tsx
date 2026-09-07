@@ -89,9 +89,9 @@ const COMPARISON: { label: string; standard: string; pro: string }[] = [
   { label: "AI profit insights & recommended actions", standard: "Included", pro: "Included" },
   { label: "Data Health checks", standard: "Included", pro: "Included" },
   { label: "Weekly Profit Brief", standard: "Included", pro: "Included" },
-  { label: "Forecast at completion on open jobs", standard: ", ", pro: "Included" },
-  { label: "Cross-job benchmarking & pattern analysis", standard: ", ", pro: "Included" },
-  { label: "Company-wide profit opportunity findings", standard: ", ", pro: "Included" },
+  { label: "Forecast at completion on open jobs", standard: "-", pro: "Included" },
+  { label: "Cross-job benchmarking & pattern analysis", standard: "-", pro: "Included" },
+  { label: "Company-wide profit opportunity findings", standard: "-", pro: "Included" },
   { label: "Support", standard: "Email support", pro: "Priority support" },
 ];
 

@@ -7,7 +7,7 @@ import { getTrialState } from "@/lib/trial";
 import { getReferralSummary } from "@/lib/referrals";
 import { PLANS, PLAN_LIST, type PlanId } from "@/lib/plans";
 import { isStripeConfigured } from "@/lib/stripe/client";
-import { formatDate } from "@/lib/format";
+import { NO_VALUE, formatDate } from "@/lib/format";
 import { CheckoutButton, ManageBillingButton } from "./BillingActions";
 
 export const dynamic = "force-dynamic";
@@ -207,12 +207,12 @@ export default async function BillingPage({
                 ? "$0 during trial"
                 : isPaid && currentPlan
                   ? `${PLANS[currentPlan].priceLabel}/month`
-                  : ", "
+                  : NO_VALUE
             }
           />
           <Row
             label="Status"
-            value={STATUS_LABELS[subscription?.status ?? ""] ?? subscription?.status ?? ", "}
+            value={STATUS_LABELS[subscription?.status ?? ""] ?? subscription?.status ?? NO_VALUE}
           />
           {entitlements.currentPeriodEnd ? (
             <Row
