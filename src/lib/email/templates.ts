@@ -52,7 +52,11 @@ function escapeHtml(value: string): string {
 
 /** Full HTML document for one email. */
 export function renderHtml(content: EmailContent): string {
-  const logo = appUrl("/jobprofitai-logo@1x.png");
+  // Wordmark, not the full lockup. At the 190px this header renders, the
+  // tagline baked into the lockup art is about 4px tall: unreadable, and it
+  // shrinks the name itself to make room. Email clients have no responsive
+  // image handling, so this is a fixed 600px asset rather than next/image.
+  const logo = appUrl("/jobprofitai-wordmark@1x.png");
 
   const bodyHtml = content.body
     .map(
@@ -104,7 +108,7 @@ export function renderHtml(content: EmailContent): string {
   <tr><td align="center">
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid ${BORDER};border-radius:12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
       <tr><td style="padding:28px 32px 0;">
-        <a href="${appUrl()}"><img src="${logo}" alt="JobProfitAI" width="190" style="display:block;border:0;width:190px;max-width:60%;height:auto;"></a>
+        <a href="${appUrl()}"><img src="${logo}" alt="JobProfitAI" width="190" height="34" style="display:block;border:0;width:190px;max-width:60%;height:auto;"></a>
       </td></tr>
       <tr><td style="padding:24px 32px 8px;">
         <h1 style="margin:0 0 16px;font-size:23px;line-height:1.3;font-weight:700;color:${NAVY};">${escapeHtml(content.heading)}</h1>

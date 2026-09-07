@@ -27,7 +27,7 @@ export default function SiteHeader() {
   return (
     <header className="sticky top-0 z-40 border-b border-jp-line bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
       <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4 px-5 py-3.5 sm:px-6">
-        <LogoLink width={172} priority />
+        <LogoLink width={200} priority />
 
         <nav aria-label="Main" className="hidden items-center gap-7 lg:flex">
           {NAV.map((item) => {

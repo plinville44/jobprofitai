@@ -32,7 +32,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-6 py-3">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <Link href="/dashboard" aria-label="JobProfitAI dashboard" className="inline-flex">
-              <Logo width={150} priority />
+              <Logo width={176} priority />
             </Link>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <NavLink href="/dashboard">Dashboard</NavLink>

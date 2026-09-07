@@ -21,7 +21,7 @@ export default function SignupPage() {
     <main className="flex min-h-screen flex-col bg-jp-surface">
       <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-5 py-12">
         <div className="mb-8 flex justify-center">
-          <LogoLink width={200} priority />
+          <LogoLink width={220} priority />
         </div>
 
         <div className="rounded-xl border border-jp-line bg-white p-7 sm:p-8">
