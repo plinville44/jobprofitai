@@ -29,8 +29,18 @@ export function Section({
     ink: "bg-jp-ink text-white",
   } as const;
   return (
-    <section id={id} className={`${tones[tone]} ${className}`}>
-      <div className="mx-auto w-full max-w-6xl px-5 py-16 sm:px-6 sm:py-20 lg:py-24">{children}</div>
+    <section id={id} className={tones[tone]}>
+      {/*
+       * The caller's className goes on this inner container, not on the outer
+       * <section>. Every override in the app is a padding tweak (!pb-8,
+       * !pt-4, !pt-0) and the padding lives here - the <section> element has
+       * none of its own. Putting them on the <section> silently did nothing,
+       * so a hero and the block beneath it each kept their full py-24 and the
+       * page showed roughly 190px of empty space between them.
+       */}
+      <div className={`mx-auto w-full max-w-6xl px-5 py-16 sm:px-6 sm:py-20 lg:py-24 ${className}`}>
+        {children}
+      </div>
     </section>
   );
 }
