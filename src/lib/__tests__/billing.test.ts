@@ -59,6 +59,56 @@ describe("subscription revenue used for commission", () => {
     expect(result).toBe(4_900);
   });
 
+  /**
+   * Stripe's 2025 API versions removed `type` from invoice lines and replaced
+   * `price` with `pricing`, moving the subscription link to
+   * `parent.subscription_item_details`. New accounts cannot select an older
+   * version, so this is the shape production actually receives.
+   *
+   * Miss it and nothing errors: the filter matches no lines, the total is 0,
+   * and every partner commission is calculated as 20% of nothing.
+   */
+  it("recognises subscription lines in the newer invoice shape", () => {
+    const result = subscriptionRevenueCents({
+      lines: {
+        data: [
+          {
+            amount: 14_900,
+            parent: {
+              type: "subscription_item_details",
+              subscription_item_details: { subscription: "sub_abc" },
+            },
+            pricing: { type: "price_details", price_details: { price: "price_149" } },
+          },
+        ],
+      },
+      amount_paid: 14_900,
+    } as never);
+
+    expect(result).toBe(14_900);
+  });
+
+  it("still ignores one-off lines in the newer invoice shape", () => {
+    const result = subscriptionRevenueCents({
+      lines: {
+        data: [
+          {
+            amount: 14_900,
+            parent: {
+              type: "subscription_item_details",
+              subscription_item_details: { subscription: "sub_abc" },
+            },
+          },
+          // A manual invoice item: no subscription parent, so not commissionable.
+          { amount: 5_000, parent: { type: "invoice_item_details" } },
+        ],
+      },
+      amount_paid: 19_900,
+    } as never);
+
+    expect(result).toBe(14_900);
+  });
+
   it("returns zero for an invoice fully covered by credit", () => {
     const result = subscriptionRevenueCents(
       invoice({ lines: [{ type: "subscription", amount: 14_900 }], amountPaid: 0 })

@@ -75,7 +75,24 @@ so deleting a contractor's account no longer destroys a partner's commission his
 
 4. **Clean up the test accounts** (`test@`, `test2@`, `test3@`, `admin@jobprofitai.com`)
    before real customers arrive. They will otherwise appear in the new admin trial and
-   referral views and distort every conversion number you look at.
+   referral views and distort every conversion number you look at. More than cosmetic:
+   the hourly lifecycle cron finds their long-expired trials on every run and tries to
+   send trial-expired mail to addresses that do not exist. Once `RESEND_API_KEY` is set,
+   that is repeated hard bounces on a brand-new sending domain, which is the fastest way
+   to damage deliverability before the first real customer email goes out. Delete them
+   before verifying the Resend domain, not after.
+
+   **Check which branch the SQL editor is pointed at before running a delete or trusting
+   a verification query.** Neon's editor remembers a branch selection, and a snapshot
+   branch taken after a delete returns exactly the zeros that a successful delete would.
+   A count alone cannot tell the two apart. Verify with something that names what is
+   actually there:
+
+   ```sql
+   select current_database(),
+          (select count(*) from "User") as users,
+          (select string_agg(email, ', ') from "User") as remaining_emails;
+   ```
 
 ---
 
@@ -113,10 +130,38 @@ Stripe Dashboard → **Developers → Webhooks → Add endpoint**.
   - `invoice.payment_failed`
   - `charge.refunded`
   - `charge.dispute.created`
+- **Payload style: Snapshot.** The default. "Thin" payloads send only identifiers, and
+  the handlers read `event.data.object` directly, so a thin payload would arrive nearly
+  empty and every handler would quietly do nothing.
+- **API version:** whatever Stripe offers. As of September 2026 a new account can only
+  select `2026-08-26.dahlia` or a preview; `2024-06-20` is no longer available. The
+  handlers read every version-sensitive field from both the old and new locations
+  (`invoiceSubscriptionId`, `invoiceMetadataUserId`, `subscriptionPeriodEnd` in
+  `webhookHandlers.ts`, `isSubscriptionLine` in `billing.ts`), so either works. Do not
+  "simplify" those helpers back to a single shape. Three fields moved between versions
+  and all three failed silently: two produced no error at all, and the third wrote a
+  partner commission of $0 on a real payment.
 - Copy the **Signing secret** (`whsec_...`) into `STRIPE_WEBHOOK_SECRET`.
 
 Create a **separate** endpoint in test mode with its own signing secret. The two secrets
 are not interchangeable.
+
+### 2b-i. Business name and statement descriptor
+
+Two different fields, and they take different values.
+
+| Field | Where | Value |
+|---|---|---|
+| Legal business name | Settings → Business details | `PWL Solutions LLC` |
+| Public business name | Settings → Public details | `JobProfitAI` |
+| Statement descriptor | Settings → Business details | `JOBPROFITAI` |
+| Shortened descriptor | Settings → Business details | `JOBPROFIT` |
+
+The legal name must match the EIN and the payout bank account or activation stalls. The
+descriptor is what a contractor sees on their card statement; `PWL SOLUTIONS` would not
+be recognised and unrecognised descriptors are a leading cause of chargebacks. Set the
+shortened descriptor explicitly: left blank, Stripe truncates the main one to ten
+characters for card charges, giving `JOBPROFITA`.
 
 ### 2c. Customer Portal
 

@@ -177,11 +177,47 @@ export async function getCustomerBalanceCents(customerId: string): Promise<numbe
  */
 export function subscriptionRevenueCents(invoice: Stripe.Invoice): number {
   const lineTotal = invoice.lines.data
-    .filter((line) => line.type === "subscription" || line.price?.type === "recurring")
+    .filter(isSubscriptionLine)
     .reduce((sum, line) => sum + (line.amount ?? 0), 0);
 
   const collected = invoice.amount_paid ?? 0;
   return Math.max(0, Math.min(lineTotal, collected));
+}
+
+/**
+ * Is this invoice line subscription revenue, across Stripe API versions?
+ *
+ * Through 2024-06-20 a line carried `type: "subscription"` and a `price`
+ * object. The 2025 versions removed `type` outright and replaced `price` with
+ * `pricing`, moving the subscription link to
+ * `parent.subscription_item_details`. New Stripe accounts can no longer select
+ * 2024-06-20, so the newer shape is what production receives.
+ *
+ * Checking only the old fields would quietly match nothing. lineTotal would be
+ * 0, subscriptionRevenueCents would return 0, and every partner commission
+ * would be calculated as 20% of nothing. The invoice still pays, the
+ * commission row is still written, it is just written for $0 - which is the
+ * kind of bug you discover from an angry email rather than an error log.
+ *
+ * `amount` is pre-tax in both shapes, which is what keeps "no commission on
+ * sales tax" true.
+ */
+interface InvoiceLineCompat {
+  type?: string;
+  price?: { type?: string } | null;
+  parent?: { type?: string; subscription_item_details?: unknown } | null;
+}
+
+function isSubscriptionLine(line: Stripe.InvoiceLineItem): boolean {
+  const compat = line as Stripe.InvoiceLineItem & InvoiceLineCompat;
+
+  if (compat.type === "subscription") return true;
+  if (compat.price?.type === "recurring") return true;
+
+  return (
+    compat.parent?.type === "subscription_item_details" ||
+    compat.parent?.subscription_item_details != null
+  );
 }
 
 /** The plan a subscription is currently on, from its first recurring price. */

@@ -509,7 +509,10 @@ export function contactNotificationEmail(input: {
   reason: string;
   message: string;
 }): RenderedEmail {
-  return buildEmail(`[Contact] ${input.reason}, ${input.name}`, {
+  // "from" rather than a comma: a comma reads as a list of two topics in an
+  // inbox, and this matches the [Feedback] subject the feedback route sends,
+  // so both internal notifications sort and scan the same way.
+  return buildEmail(`[Contact] ${input.reason} from ${input.name}`, {
     preheader: `${input.reason} enquiry from ${input.email}`,
     heading: `New contact form submission`,
     body: [input.message],
