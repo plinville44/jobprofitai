@@ -127,6 +127,81 @@ function idOf(value: string | { id: string } | null | undefined): string | null 
 }
 
 /**
+ * The invoice -> subscription link, read in a way that survives Stripe's API
+ * version change.
+ *
+ * Through 2024-06-20 an Invoice carried `subscription` and
+ * `subscription_details` at the top level. From the 2025 versions onward both
+ * moved under `parent.subscription_details`. Which shape arrives is decided by
+ * the API version set on the WEBHOOK ENDPOINT - a dropdown in the Stripe
+ * dashboard, not anything in this repository.
+ *
+ * That matters more than it looks. If only the old shape were read and a newer
+ * payload arrived, these would return null, the handler would return early,
+ * and the payment would still succeed - so a customer gets charged while the
+ * referral reward and partner commission for that payment silently never fire.
+ * No error, no alert, just money owed to someone that never gets recorded.
+ *
+ * Reading both shapes costs a few lines and removes the dependency on a
+ * setting nobody in this codebase controls. The cast is needed because
+ * stripe-node 16.x only types the older shape.
+ */
+interface InvoiceParentShape {
+  parent?: {
+    subscription_details?: {
+      subscription?: string | { id: string } | null;
+      metadata?: Record<string, string> | null;
+    } | null;
+  } | null;
+}
+
+function invoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
+  const legacy = idOf(invoice.subscription);
+  if (legacy) return legacy;
+  const nested = (invoice as Stripe.Invoice & InvoiceParentShape).parent?.subscription_details
+    ?.subscription;
+  return idOf(nested ?? null);
+}
+
+/**
+ * Subscription period end, read across API versions.
+ *
+ * `current_period_end` sat on the Subscription through 2024-06-20. The 2025
+ * versions moved it onto each subscription ITEM, since a subscription can now
+ * carry items on different billing cycles. Stripe no longer offers 2024-06-20
+ * to new accounts, so the newer shape is what actually arrives.
+ *
+ * This one is not cosmetic. Reading only the old field yields undefined,
+ * `new Date(undefined * 1000)` is an Invalid Date, and Prisma rejects that on
+ * a DateTime column. Every customer.subscription.* event would throw, the
+ * event claim would be released, Stripe would retry forever, and a customer
+ * who just paid would never have their account flipped to active.
+ *
+ * This product sells single-item subscriptions, so the item's period end is
+ * the subscription's period end. max() is used so that a future multi-item
+ * subscription reports the furthest date rather than an arbitrary one.
+ */
+function subscriptionPeriodEnd(subscription: Stripe.Subscription): Date | null {
+  const legacy = (subscription as Stripe.Subscription & { current_period_end?: number })
+    .current_period_end;
+  if (typeof legacy === "number" && Number.isFinite(legacy)) return new Date(legacy * 1000);
+
+  const itemEnds = (subscription.items?.data ?? [])
+    .map((item) => (item as { current_period_end?: number }).current_period_end)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+
+  return itemEnds.length ? new Date(Math.max(...itemEnds) * 1000) : null;
+}
+
+function invoiceMetadataUserId(invoice: Stripe.Invoice): string | null {
+  const legacy = invoice.subscription_details?.metadata?.jobprofitaiUserId;
+  if (legacy) return legacy;
+  const nested = (invoice as Stripe.Invoice & InvoiceParentShape).parent?.subscription_details
+    ?.metadata?.jobprofitaiUserId;
+  return nested ?? null;
+}
+
+/**
  * Maps a Stripe object back to a JobProfitAI account.
  *
  * Prefers the stored stripeCustomerId (authoritative, set when we created
@@ -211,7 +286,7 @@ async function handleSubscriptionUpsert(subscription: Stripe.Subscription): Prom
     stripeSubscriptionId: subscription.id,
     stripePriceId: priceId,
     status: subscription.status,
-    currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+    currentPeriodEnd: subscriptionPeriodEnd(subscription),
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
     canceledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : null,
   };
@@ -264,13 +339,13 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription): Pro
  * successful payment.
  */
 async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<string> {
-  const subscriptionId = idOf(invoice.subscription);
+  const subscriptionId = invoiceSubscriptionId(invoice);
   if (!subscriptionId) return "Not a subscription invoice - ignored";
   if ((invoice.amount_paid ?? 0) <= 0) return "Zero-value invoice - no commission or reward";
 
   const userId = await resolveUserId({
     customerId: idOf(invoice.customer),
-    metadataUserId: invoice.subscription_details?.metadata?.jobprofitaiUserId ?? null,
+    metadataUserId: invoiceMetadataUserId(invoice),
   });
   if (!userId) return "No matching account for paid invoice";
 
@@ -357,7 +432,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<string> {
 async function handleInvoicePaymentFailed(invoice: Stripe.Invoice): Promise<string> {
   const userId = await resolveUserId({
     customerId: idOf(invoice.customer),
-    metadataUserId: invoice.subscription_details?.metadata?.jobprofitaiUserId ?? null,
+    metadataUserId: invoiceMetadataUserId(invoice),
   });
   if (!userId) return "No matching account for failed invoice";
 

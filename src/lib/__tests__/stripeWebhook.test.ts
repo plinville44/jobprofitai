@@ -200,6 +200,61 @@ describe("event idempotency", () => {
   });
 
   /**
+   * Stripe moved `subscription` and `subscription_details` from the top of the
+   * Invoice object into `parent.subscription_details` in the 2025 API
+   * versions. Which shape arrives depends on the API version set on the
+   * webhook endpoint in the Stripe dashboard, which is not under this repo's
+   * control and can be changed by anyone with dashboard access.
+   *
+   * If the newer shape were unhandled, the failure would be silent and
+   * expensive: the charge succeeds, the customer is billed, and the partner's
+   * commission for that payment is simply never recorded. So the nested shape
+   * gets its own test rather than being trusted to a code comment.
+   */
+  it("records commission when the invoice uses the newer nested shape", async () => {
+    await seedAccount({ status: "active" });
+    await fake.client.referral.create({
+      data: {
+        referralCodeId: "rc_1",
+        kind: "partner",
+        partnerId: "p1",
+        referredUserId: "u1",
+        status: "paid",
+        firstPaidAt: new Date(),
+      },
+    });
+    await fake.client.user.create({ data: { id: "firm", email: "firm@example.com" } });
+    await fake.client.partner.create({
+      data: { id: "p1", userId: "firm", firmName: "Ledger", contactName: "Sam", status: "approved" },
+    });
+
+    const event = {
+      id: "evt_invoice_nested",
+      type: "invoice.paid",
+      data: {
+        object: {
+          id: "in_nested",
+          customer: "cus_1",
+          // No top-level `subscription` - exactly what a 2025+ payload looks like.
+          parent: {
+            subscription_details: {
+              subscription: "sub_abc",
+              metadata: { jobprofitaiUserId: "u1" },
+            },
+          },
+          amount_paid: 14_900,
+          status_transitions: { paid_at: Math.floor(Date.now() / 1000) },
+          lines: { data: [] },
+        },
+      },
+    } as never;
+
+    await processStripeEvent(event);
+
+    expect(calls.commissions).toEqual(["in_nested"]);
+  });
+
+  /**
    * A failing handler must RELEASE its event claim, or Stripe's retry would
    * be swallowed as a duplicate and the state change lost forever.
    */
@@ -231,6 +286,38 @@ describe("subscription state is mirrored from Stripe", () => {
     expect(sub.plan).toBe("profit_intelligence");
     expect(sub.stripeSubscriptionId).toBe("sub_abc");
     expect(sub.currentPeriodEnd).toBeInstanceOf(Date);
+  });
+
+  /**
+   * Stripe moved current_period_end off the Subscription and onto each
+   * subscription ITEM in the 2025 API versions, and no longer offers
+   * 2024-06-20 to new accounts, so this is the shape production actually
+   * receives.
+   *
+   * Getting it wrong is fatal rather than cosmetic: the old read yields
+   * undefined, `new Date(undefined * 1000)` is an Invalid Date, Prisma rejects
+   * it, the handler throws, and a customer who has just paid never gets their
+   * account flipped to active. The assertion checks a real date came through,
+   * not merely that the field is a Date, because an Invalid Date is also a
+   * Date instance.
+   */
+  it("reads period end from the subscription item on newer API versions", async () => {
+    await seedAccount();
+    const itemPeriodEnd = Math.floor(Date.now() / 1000) + 2_592_000;
+
+    await processStripeEvent(
+      subscriptionEvent({
+        // No top-level current_period_end - exactly what a 2025+ payload sends.
+        current_period_end: undefined,
+        items: { data: [{ price: { id: "price_149" }, current_period_end: itemPeriodEnd }] },
+      })
+    );
+
+    const sub = await fake.client.subscription.findUnique({ where: { userId: "u1" } });
+    expect(sub.status).toBe("active");
+    expect(sub.currentPeriodEnd).toBeInstanceOf(Date);
+    expect(Number.isNaN(sub.currentPeriodEnd.getTime())).toBe(false);
+    expect(sub.currentPeriodEnd.getTime()).toBe(itemPeriodEnd * 1000);
   });
 
   it("upgrades the stored plan when the price changes", async () => {
