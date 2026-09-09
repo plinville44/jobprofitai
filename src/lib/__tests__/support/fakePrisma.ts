@@ -284,6 +284,12 @@ export function createFakePrisma(): FakePrisma {
         stripePriceId: null,
       })
     ),
+    // tokenHash unique = a reset token identifies exactly one row, ever.
+    passwordResetToken: new FakeModel(
+      "passwordResetToken",
+      [{ fields: ["tokenHash"] }],
+      () => ({ createdAt: new Date(), usedAt: null })
+    ),
     // userId unique is THE constraint that makes the trial extension
     // unrepeatable - see extendTrialWithFeedback.
     trialFeedback: new FakeModel("trialFeedback", [{ fields: ["userId"] }], () => ({

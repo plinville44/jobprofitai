@@ -35,6 +35,35 @@ model User {
   referralRewards   ReferralReward[]
   partner           Partner?
   emailEvents       EmailEvent[]
+  passwordResets    PasswordResetToken[]
+}
+
+// A single-use, time-limited password reset.
+//
+// The raw token is NEVER stored. Only its SHA-256 hash lands here, so a
+// leaked database snapshot cannot be used to take over accounts - an
+// attacker holding these rows still has nothing they can put in a reset
+// link. The raw value exists exactly twice: in the email we send, and in
+// the URL the customer clicks.
+//
+// `tokenHash` is unique so a token can only ever identify one row, and
+// `usedAt` makes the reset single-use: consuming it stamps a time, and the
+// same link stops working immediately afterwards.
+model PasswordResetToken {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+
+  createdAt   DateTime  @default(now())
+
+  // Rate limiting counts recent rows per user, so this index is what keeps
+  // "have they asked five times in the last hour?" cheap.
+  @@index([userId, createdAt])
+  @@index([expiresAt])
 }
 
 // One per connected QuickBooks Online company file ("realm").

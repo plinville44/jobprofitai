@@ -470,3 +470,62 @@ export async function sendContactConfirmation(input: {
     ...email,
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// ACCOUNT SECURITY
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * The reset link.
+ *
+ * Recipient details are passed in rather than looked up by id, because the
+ * caller has just resolved this account by email address and re-querying
+ * would only add a chance of sending to the wrong place.
+ *
+ * The dedupe key includes the token's expiry, which is unique per request to
+ * the millisecond. So the EmailEvent audit row still exists for every reset,
+ * but an accidental double-submit of the same request cannot send twice.
+ */
+export async function sendPasswordReset(input: {
+  userId: string;
+  email: string;
+  token: string;
+  expiresAt: Date;
+  expiryMinutes: number;
+}): Promise<SendEmailResult> {
+  const resetUrl = T.appUrl(`/reset-password?token=${encodeURIComponent(input.token)}`);
+  const email = T.passwordResetEmail(resetUrl, input.expiryMinutes);
+
+  return sendLifecycleEmail({
+    userId: input.userId,
+    emailType: "password_reset",
+    dedupeKey: `password_reset:${input.userId}:${input.expiresAt.toISOString()}`,
+    to: input.email,
+    replyTo: SUPPORT_EMAIL,
+    ...email,
+  });
+}
+
+/**
+ * Sent after a password actually changes.
+ *
+ * This is the account's alarm bell: if someone else reset the password, this
+ * message is the only way the real owner finds out. It is deliberately sent
+ * to the address on the account, not to whoever performed the reset.
+ */
+export async function sendPasswordChanged(input: {
+  userId: string;
+  email: string;
+  changedAt: Date;
+}): Promise<SendEmailResult> {
+  const email = T.passwordChangedEmail();
+
+  return sendLifecycleEmail({
+    userId: input.userId,
+    emailType: "password_changed",
+    dedupeKey: `password_changed:${input.userId}:${input.changedAt.toISOString()}`,
+    to: input.email,
+    replyTo: SUPPORT_EMAIL,
+    ...email,
+  });
+}

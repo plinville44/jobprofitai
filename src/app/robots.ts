@@ -15,7 +15,19 @@ export default function robots(): MetadataRoute.Robots {
       {
         userAgent: "*",
         allow: "/",
-        disallow: ["/api/", "/dashboard/", "/r/", "/login", "/signup"],
+        // /reset-password carries a live credential in its query string, so
+        // it must never be indexed. /forgot-password is excluded for the
+        // same reason /login is: it is a form, not a page anyone should
+        // arrive at from a search result.
+        disallow: [
+          "/api/",
+          "/dashboard/",
+          "/r/",
+          "/login",
+          "/signup",
+          "/forgot-password",
+          "/reset-password",
+        ],
       },
     ],
     sitemap: `${base}/sitemap.xml`,

@@ -18,7 +18,7 @@ const MUTED = "#6B7280";
 const BORDER = "#E5E7EB";
 const BG = "#F6F7F9";
 
-function appUrl(path = ""): string {
+export function appUrl(path = ""): string {
   const base = (process.env.APP_URL ?? "https://jobprofitai.com").replace(/\/+$/, "");
   return path ? `${base}${path.startsWith("/") ? path : `/${path}`}` : base;
 }
@@ -185,6 +185,53 @@ export function formatMoney(cents: number): string {
 
 export function formatDay(date: Date): string {
   return date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ACCOUNT
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * The reset link itself. Two things this copy does deliberately:
+ *
+ * It states the expiry in the body, not just the footnote, because "why
+ * didn't the link work" is the single most common support question a reset
+ * flow generates, and the answer is almost always that an hour passed.
+ *
+ * It tells someone who did not request this that they can ignore it and
+ * their password is unchanged. That sentence is what stops a reset email
+ * triggered by a mistyped address from reading like a breach notification.
+ */
+export function passwordResetEmail(resetUrl: string, expiryMinutes: number): RenderedEmail {
+  return buildEmail("Reset your JobProfitAI password", {
+    preheader: "A link to choose a new password. It expires in an hour.",
+    heading: "Reset your password",
+    body: [
+      "Someone asked to reset the password for the JobProfitAI account using this email address. Use the button below to choose a new one.",
+      `This link works once and expires in ${expiryMinutes} minutes.`,
+      "If you did not ask for this, you can ignore this email. Your password stays exactly as it is, and nobody can change it without this link.",
+    ],
+    cta: { label: "Choose a new password", url: resetUrl },
+    footnote:
+      "If the button doesn't work, copy and paste this address into your browser: " + resetUrl,
+  });
+}
+
+/**
+ * Sent after the password actually changes. Not a courtesy: this is the
+ * message that lets a customer notice a reset they did not perform, which is
+ * the only way they would ever find out.
+ */
+export function passwordChangedEmail(): RenderedEmail {
+  return buildEmail("Your JobProfitAI password was changed", {
+    preheader: "Confirming a password change on your account.",
+    heading: "Your password was changed",
+    body: [
+      "The password on your JobProfitAI account was just changed. If that was you, there is nothing to do.",
+      `If it was not you, contact us at ${SUPPORT_EMAIL} straight away and we will help you secure the account.`,
+    ],
+    cta: { label: "Log in", url: appUrl("/login") },
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────

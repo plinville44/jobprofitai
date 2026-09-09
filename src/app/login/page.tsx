@@ -49,7 +49,16 @@ export default function LoginPage() {
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-navy">Password</label>
+          <div className="flex items-baseline justify-between">
+            <label className="block text-sm font-medium text-navy">Password</label>
+            {/* Next to the field, not buried in the footer. Someone reaches
+                for this at the exact moment their password fails, and the
+                login error deliberately doesn't say which half was wrong, so
+                the recovery route has to be visible without hunting. */}
+            <Link href="/forgot-password" className="text-sm font-medium text-brand hover:underline">
+              Forgot password?
+            </Link>
+          </div>
           <input
             type="password"
             required

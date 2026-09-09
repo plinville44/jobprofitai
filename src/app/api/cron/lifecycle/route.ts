@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { authorizeCron } from "@/lib/cronAuth";
 import { TRIAL_EXTENSION_OFFER_DAY } from "@/lib/plans";
 import { computeTrialState, expireFinishedTrials } from "@/lib/trial";
+import { purgeExpiredPasswordResets } from "@/lib/passwordReset";
 import { qualifyDueReferrals } from "@/lib/referrals";
 import {
   sendReferralRewardEarned,
@@ -51,6 +52,7 @@ interface Counters {
   referralsQualified: number;
   rewardEmails: number;
   testimonialRequests: number;
+  passwordResetsPurged: number;
   errors: string[];
 }
 
@@ -69,6 +71,7 @@ export async function GET(req: NextRequest) {
     referralsQualified: 0,
     rewardEmails: 0,
     testimonialRequests: 0,
+    passwordResetsPurged: 0,
     errors: [],
   };
 
@@ -81,6 +84,12 @@ export async function GET(req: NextRequest) {
   });
   await runStage(counters, "referrals", () => processReferralQualification(counters));
   await runStage(counters, "testimonials", () => processTestimonialRequests(counters, now));
+  // Housekeeping, deliberately last: an expired reset token is already
+  // refused on use, so this only stops the table growing forever. It must
+  // never be the reason a lifecycle email fails to send.
+  await runStage(counters, "password-reset-cleanup", async () => {
+    counters.passwordResetsPurged = await purgeExpiredPasswordResets(now);
+  });
 
   return NextResponse.json({ ok: true, checkedAt: now.toISOString(), ...counters });
 }
