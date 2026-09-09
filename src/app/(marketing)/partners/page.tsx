@@ -9,7 +9,12 @@ import {
   SectionHeading,
   StepCard,
 } from "@/components/marketing/ui";
-import { PARTNER_TIERS, PARTNER_COMMISSION_MONTHS, PLANS } from "@/lib/plans";
+import {
+  PARTNER_TIERS,
+  PARTNER_COMMISSION_MONTHS,
+  PARTNER_FREE_ACCOUNT_THRESHOLD,
+  PLANS,
+} from "@/lib/plans";
 
 export const metadata: Metadata = {
   title: "Partner Program for Accountants & Bookkeepers",
@@ -106,8 +111,12 @@ const FAQ_ITEMS = [
     q: "Is there a cost to join?",
     a: (
       <>
-        No. Applying is free, and at around 3 active paying clients your firm earns a complimentary
-        JobProfitAI account of its own.
+        No, applying is free. Once you have {PARTNER_FREE_ACCOUNT_THRESHOLD} clients paying at the
+        same time, your firm gets its own {PLANS.profit_intelligence_pro.name} account at no charge,
+        for as long as those clients stay. That is a real account with its own QuickBooks
+        connections, for your own books or for a client whose QuickBooks your firm already has
+        access to, so you can run the analysis yourself rather than asking them to send you a
+        report.
       </>
     ),
   },
@@ -245,9 +254,10 @@ export default function PartnersPage() {
               reports, not even the name of the business behind a conversion.
             </p>
             <p>
-              If a contractor wants you working inside their numbers with them, they invite you
-              deliberately through their own account. That&rsquo;s their decision to make, every
-              time.
+              There is no way for us to give you access to a client&rsquo;s account, and no feature
+              that asks them to share it. If you work in a client&rsquo;s numbers today, you do it
+              the way you already do: through the QuickBooks access they have given your firm, or by
+              sitting down with them and their own JobProfitAI login.
             </p>
           </div>
         </Card>

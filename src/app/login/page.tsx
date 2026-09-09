@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { LogoLink } from "@/components/marketing/Logo";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -34,7 +35,15 @@ export default function LoginPage() {
   }
 
   return (
+    // The logo is the way back to the marketing site. Without it this page
+    // was a dead end: someone who clicked Log In from the homepage, then
+    // wanted to read the pricing page again, had no route back except the
+    // browser's back button or retyping the address.
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6">
+      <div className="mb-8 flex justify-center">
+        <LogoLink width={200} priority />
+      </div>
+
       <h1 className="text-2xl font-bold text-navy">Log in</h1>
 
       <form onSubmit={handleSubmit} className="mt-8 space-y-4">
@@ -81,6 +90,12 @@ export default function LoginPage() {
         Don&apos;t have an account?{" "}
         <Link href="/signup" className="font-medium text-brand">
           Start a free trial
+        </Link>
+      </p>
+
+      <p className="mt-3 text-center text-sm text-gray-500">
+        <Link href="/" className="hover:underline">
+          Back to jobprofitai.com
         </Link>
       </p>
     </main>

@@ -589,9 +589,9 @@ model ReferralReward {
 //
 // SECURITY: a Partner row grants NO access whatsoever to any referred
 // contractor's QuickBooks or financial data. Partner status and data access
-// are entirely unrelated systems - a contractor must explicitly invite an
-// accountant through normal account access controls for that. Nothing in
-// this model or the partner dashboard reads another account's financials.
+// are entirely unrelated systems, and there is no in-app mechanism for
+// sharing an account with an accountant at all. Nothing in this model or the
+// partner dashboard reads another account's financials.
 model Partner {
   id                  String    @id @default(cuid())
   userId              String    @unique

@@ -2,26 +2,17 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { JOB_TYPE_OPTIONS, suggestJobType } from "@/lib/jobTypes";
 
-const CATEGORY_OPTIONS: { value: string; label: string }[] = [
-  { value: "", label: "Not set" },
-  { value: "roofing", label: "Roofing" },
-  { value: "remodel", label: "Remodel" },
-  { value: "new_construction", label: "New Construction" },
-  { value: "painting", label: "Painting" },
-  { value: "plumbing", label: "Plumbing" },
-  { value: "electrical", label: "Electrical" },
-  { value: "hvac", label: "HVAC" },
-  { value: "general", label: "General Contracting" },
-  { value: "other", label: "Other" },
-];
 
 export default function JobEditForm({
   jobId,
+  jobName,
   initialCategory,
   initialEstimatedCost,
 }: {
   jobId: string;
+  jobName: string;
   initialCategory: string | null;
   initialEstimatedCost: number | null;
 }) {
@@ -32,6 +23,11 @@ export default function JobEditForm({
   );
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+
+  // Offered, never applied. The suggestion only shows while the field is
+  // still unset, and clicking it fills the dropdown without saving, so the
+  // customer confirms before a guess of ours starts feeding benchmarking.
+  const suggestion = category === "" ? suggestJobType(jobName) : null;
 
   async function save() {
     setBusy(true);
@@ -79,12 +75,21 @@ export default function JobEditForm({
             onChange={(e) => setCategory(e.target.value)}
             className="mt-1 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
           >
-            {CATEGORY_OPTIONS.map((opt) => (
+            {JOB_TYPE_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>
             ))}
           </select>
+          {suggestion && (
+            <button
+              type="button"
+              onClick={() => setCategory(suggestion.value)}
+              className="mt-1 self-start text-xs font-medium text-brand hover:underline"
+            >
+              Use {suggestion.label}, from &ldquo;{suggestion.matchedOn}&rdquo; in the name
+            </button>
+          )}
         </label>
         <label className="flex flex-col text-sm">
           <span className="text-gray-600">Estimated cost ($)</span>

@@ -53,8 +53,8 @@ export default async function PartnerPage() {
           <p className="mt-2 text-sm leading-relaxed text-gray-700">
             Partner status grants a referral code and a commission ledger. Nothing else. It
             gives you no visibility into any client&rsquo;s QuickBooks data, jobs or margins. If a
-            contractor wants you working in their numbers, they invite you deliberately from their
-            own account.
+            contractor wants you working in their numbers, that happens through the QuickBooks
+            access they already give your firm, not through anything here.
           </p>
         </section>
 

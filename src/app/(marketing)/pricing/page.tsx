@@ -19,6 +19,33 @@ export const metadata: Metadata = {
 
 const FAQ_ITEMS = [
   {
+    q: "QuickBooks Plus already shows project profitability. Why pay for this?",
+    a: (
+      <>
+        <span className="block">
+          It does, and that is worth saying plainly. If the built-in Projects report already answers
+          your questions, use it and keep your $149.
+        </span>
+        <span className="mt-3 block">
+          The difference is that QuickBooks reports and JobProfitAI tells you where to look.
+          Projects shows income, cost and margin for a job you go and open. It doesn&rsquo;t compare
+          that margin to a target you set, flag which jobs are drifting below it, tell you a type of
+          work consistently runs over estimate, forecast where an in-progress job lands, or email
+          you once a week with what changed.
+        </span>
+        <span className="mt-3 block">
+          It also won&rsquo;t tell you that six of your jobs have no estimate on file and four have
+          revenue with no costs assigned to them. That is usually the reason the reports looked fine
+          and the bank balance didn&rsquo;t.
+        </span>
+        <span className="mt-3 block">
+          We read your QuickBooks data and never write to it. If you already review every job every
+          week and your data is clean, you don&rsquo;t need us.
+        </span>
+      </>
+    ),
+  },
+  {
     q: "Is a credit card required to start the trial?",
     a: <>No. The 14-day trial needs no card and no payment details. You only enter payment information if you decide to subscribe.</>,
   },
@@ -67,7 +94,7 @@ const FAQ_ITEMS = [
     a: (
       <>
         Not at launch. Both plans are monthly, and these two are the whole lineup. If you need
-        something the plans don&rsquo;t cover. More than three QuickBooks companies, for instance, {" "}
+        something the plans don&rsquo;t cover, more than three QuickBooks companies for instance,{" "}
         <Link href="/contact" className="font-medium text-jp-blue hover:underline">
           get in touch
         </Link>{" "}

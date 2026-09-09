@@ -59,7 +59,12 @@ export default async function JobDetailPage({ params }: { params: { jobId: strin
         <p className="mt-2 text-xs text-gray-400">Target margin: {f.targetMarginPct}%</p>
       )}
 
-      <JobEditForm jobId={f.jobId} initialCategory={f.category} initialEstimatedCost={f.estimatedCost} />
+      <JobEditForm
+        jobId={f.jobId}
+        jobName={f.jobName}
+        initialCategory={f.category}
+        initialEstimatedCost={f.estimatedCost}
+      />
 
       {!f.profitabilityAvailable && (
         <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
