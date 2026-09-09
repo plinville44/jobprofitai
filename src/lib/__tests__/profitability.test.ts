@@ -22,6 +22,7 @@ import {
   computeDataHealth,
   computeProfitOpportunities,
   computeDashboardTotals,
+  diagnoseOpportunityGap,
   findPossibleDuplicateCostEntries,
   type JobInput,
   type FinancialContext,
@@ -503,7 +504,10 @@ describe("computeForecastAtCompletion", () => {
       NOW
     );
     expect(result.available).toBe(false);
-    expect(result.reason).toBe("Not enough data to create a reliable forecast.");
+    // The reason now names the specific blocker rather than one generic
+    // sentence for four different causes, so the customer knows whether
+    // there is anything to do about it.
+    expect(result.reason).toContain("still in progress");
   });
 
   it("is unavailable with no cost estimate on file", () => {
@@ -1064,5 +1068,115 @@ describe("findPossibleDuplicateCostEntries", () => {
       },
     ];
     expect(findPossibleDuplicateCostEntries(jobs)).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// diagnoseOpportunityGap
+// ===========================================================================
+
+describe("diagnoseOpportunityGap", () => {
+  const done = (overrides: Partial<JobFinancials> = {}) =>
+    makeFinancials({ status: "closed", profitabilityAvailable: true, ...overrides });
+
+  it("says nothing has synced when there are no jobs at all", () => {
+    const gap = diagnoseOpportunityGap([]);
+    expect(gap.code).toBe("no_jobs");
+    expect(gap.action).toContain("sync");
+  });
+
+  it("distinguishes 'no completed jobs' from 'not enough completed jobs'", () => {
+    const open = diagnoseOpportunityGap([makeFinancials(), makeFinancials(), makeFinancials()]);
+    expect(open.code).toBe("no_completed_jobs");
+
+    const two = diagnoseOpportunityGap([done(), done()]);
+    expect(two.code).toBe("too_few_completed_jobs");
+    expect(two.headline).toContain("2 completed jobs");
+  });
+
+  it("names the missing job type, which is the blocker QuickBooks can never fill in", () => {
+    // Three completed jobs, plenty of data, no job type on any of them. The
+    // old copy said "not enough completed jobs", which was factually wrong
+    // here and pointed the customer at the one thing they couldn't fix.
+    const gap = diagnoseOpportunityGap([
+      done({ jobId: "a", category: null, varianceVsEstimatePct: 0.2 }),
+      done({ jobId: "b", category: null, varianceVsEstimatePct: 0.1 }),
+      done({ jobId: "c", category: null, varianceVsEstimatePct: 0.3 }),
+    ]);
+
+    expect(gap.code).toBe("no_job_types");
+    expect(gap.completedJobs).toBe(3);
+    expect(gap.completedWithType).toBe(0);
+    expect(gap.action).toContain("job");
+  });
+
+  it("names missing estimates when job types are set but no job has one", () => {
+    const gap = diagnoseOpportunityGap([
+      done({ jobId: "a", category: "kitchen", varianceVsEstimatePct: null }),
+      done({ jobId: "b", category: "kitchen", varianceVsEstimatePct: null }),
+      done({ jobId: "c", category: "kitchen", varianceVsEstimatePct: null }),
+    ]);
+
+    expect(gap.code).toBe("no_estimates_on_completed");
+    expect(gap.completedWithType).toBe(3);
+    expect(gap.eligibleJobs).toBe(0);
+    expect(gap.action).toContain("estimate");
+  });
+
+  it("explains a thin spread across types, and points at the untyped jobs", () => {
+    const gap = diagnoseOpportunityGap([
+      done({ jobId: "a", category: "kitchen", varianceVsEstimatePct: 0.2 }),
+      done({ jobId: "b", category: "roofing", varianceVsEstimatePct: 0.1 }),
+      done({ jobId: "c", category: null, varianceVsEstimatePct: 0.3 }),
+      done({ jobId: "d", category: null, varianceVsEstimatePct: 0.3 }),
+    ]);
+
+    expect(gap.code).toBe("job_types_spread_thin");
+    expect(gap.largestTypeGroup).toBe(1);
+    expect(gap.action).toContain("2 completed jobs have no job type");
+  });
+
+  it("treats a genuine absence of patterns as a good result, not a gap", () => {
+    // Enough data for the rules to run. They simply found nothing, which is
+    // the answer, and must not be worded as something the customer broke.
+    const jobs = [1, 2, 3].map((n) =>
+      done({ jobId: `k${n}`, category: "kitchen", varianceVsEstimatePct: 0.01, grossMarginPct: 0.35 })
+    );
+
+    const gap = diagnoseOpportunityGap(jobs);
+
+    expect(gap.code).toBe("no_pattern_found");
+    expect(gap.eligibleJobs).toBe(3);
+    expect(gap.action).toContain("good result");
+  });
+
+  it("agrees with computeProfitOpportunities about what counts", () => {
+    // The diagnosis must mirror the real gates, not a re-guess of them. If
+    // the rules would produce an opportunity, the gap must say
+    // no_pattern_found is NOT the case - and vice versa.
+    const jobs = [1, 2, 3].map((n) =>
+      done({
+        jobId: `k${n}`,
+        category: "kitchen",
+        varianceVsEstimatePct: 0.4,
+        varianceVsEstimate: 4000,
+      })
+    );
+
+    expect(computeProfitOpportunities(jobs).length).toBeGreaterThan(0);
+    expect(diagnoseOpportunityGap(jobs).eligibleJobs).toBe(3);
+  });
+
+  it("ignores completed jobs whose profitability couldn't be computed", () => {
+    const gap = diagnoseOpportunityGap([
+      done({ jobId: "a", profitabilityAvailable: false }),
+      done({ jobId: "b", profitabilityAvailable: false }),
+      done({ jobId: "c", profitabilityAvailable: false }),
+    ]);
+
+    // Three closed jobs, but none has a usable number, so the honest answer
+    // is the same as having no completed jobs at all.
+    expect(gap.code).toBe("no_completed_jobs");
+    expect(gap.completedJobs).toBe(0);
   });
 });

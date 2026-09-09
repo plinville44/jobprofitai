@@ -4,7 +4,11 @@ import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getEntitlements, requireFeature } from "@/lib/entitlements";
 import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
-import { getConnectionProfitData } from "@/lib/profitability";
+import {
+  diagnoseOpportunityGap,
+  getConnectionProfitData,
+  type JobFinancials,
+} from "@/lib/profitability";
 import { formatCurrency } from "@/lib/format";
 import { ConfidenceBadge } from "@/components/dashboard/Badges";
 import RefreshAnalysisButton from "./RefreshAnalysisButton";
@@ -17,6 +21,50 @@ function UpgradeNotice({ feature }: { feature: string }) {
         See plans and upgrade
       </Link>
       .
+    </div>
+  );
+}
+
+/**
+ * Says WHY there are no opportunities, not just that there are none.
+ *
+ * The generic "not enough completed jobs" line covered six different
+ * situations, and the most common one for a new customer - job type is blank
+ * on every job, and it is the one field QuickBooks cannot supply - looked
+ * identical to "the product is broken". diagnoseOpportunityGap works out
+ * which situation this actually is; this renders it.
+ *
+ * "no_pattern_found" is styled differently on purpose. Having enough data
+ * and finding nothing is a real answer and a good one, so it should not look
+ * like the states that need the customer to go and fix something.
+ */
+function OpportunityEmptyState({ jobs }: { jobs: JobFinancials[] }) {
+  const gap = diagnoseOpportunityGap(jobs);
+  const isGoodNews = gap.code === "no_pattern_found";
+  const needsJobTypes = gap.code === "no_job_types" || gap.code === "job_types_spread_thin";
+
+  return (
+    <div
+      className={`mt-4 rounded-xl border p-5 ${
+        isGoodNews ? "border-green-200 bg-green-50" : "border-gray-200 bg-gray-50"
+      }`}
+    >
+      <p className={`text-sm font-medium ${isGoodNews ? "text-green-900" : "text-navy"}`}>
+        {gap.headline}
+      </p>
+      {gap.action && (
+        <p className={`mt-2 text-sm ${isGoodNews ? "text-green-800" : "text-gray-600"}`}>
+          {gap.action}
+        </p>
+      )}
+      {needsJobTypes && (
+        <Link
+          href="/dashboard/jobs"
+          className="mt-3 inline-block text-sm font-medium text-brand hover:underline"
+        >
+          Set job types
+        </Link>
+      )}
     </div>
   );
 }
@@ -101,10 +149,7 @@ export default async function IntelligencePage() {
         {!opportunitiesAccess ? (
           <UpgradeNotice feature="Profit Opportunities" />
         ) : profitData.opportunities.length === 0 ? (
-          <p className="mt-3 text-sm text-gray-500">
-            Not enough completed jobs yet to detect a pattern (most rules need at least 3 completed jobs in the same
-            category).
-          </p>
+          <OpportunityEmptyState jobs={profitData.jobs} />
         ) : (
           <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
             {profitData.opportunities.map((o, i) => (

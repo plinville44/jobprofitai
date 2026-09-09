@@ -406,20 +406,42 @@ export interface ForecastResult {
  * never built from revenue and current costs alone per spec.
  */
 export function computeForecastAtCompletion(job: JobInput, f: JobFinancials, now: Date): ForecastResult {
+  // Each branch says which ingredient is missing, and where it comes from.
+  // These four conditions used to share one message: "Not enough data to
+  // create a reliable forecast." True, and useless - a contractor reading it
+  // can't tell whether to add an estimate, sync QuickBooks, or nothing at
+  // all, so the sensible reaction is to assume the feature is broken.
   if (job.status !== "open") {
-    return { available: false, reason: "Not enough data to create a reliable forecast." };
+    return {
+      available: false,
+      reason: "Forecast at completion only applies to jobs still in progress. This one is marked completed.",
+    };
   }
   if (f.estimatedCost == null || f.estimatedCost <= 0) {
-    return { available: false, reason: "Not enough data to create a reliable forecast." };
+    return {
+      available: false,
+      reason:
+        "No estimated cost on file for this job. Add one under Edit job and the forecast appears straight away.",
+    };
   }
   if (f.costs <= 0) {
-    return { available: false, reason: "Not enough data to create a reliable forecast." };
+    return {
+      available: false,
+      reason:
+        "No costs have been assigned to this job in QuickBooks yet. The forecast projects the overrun seen so far, so it needs at least some actual spend to work from.",
+    };
   }
   const daysSinceActivity = f.lastFinancialActivity
     ? (now.getTime() - f.lastFinancialActivity.getTime()) / (1000 * 60 * 60 * 24)
     : Infinity;
   if (daysSinceActivity > 30) {
-    return { available: false, reason: "Not enough data to create a reliable forecast." };
+    const days = Number.isFinite(daysSinceActivity) ? Math.floor(daysSinceActivity) : null;
+    return {
+      available: false,
+      reason: days
+        ? `The last cost or invoice on this job was ${days} days ago. Forecasting from activity that stale would be guesswork, so we don't. Sync QuickBooks, or close the job if it's finished.`
+        : "No dated financial activity on this job yet, so there's nothing to project a run rate from.",
+    };
   }
 
   // Simple, transparent run-rate model: cost overrun rate observed so far
@@ -689,6 +711,143 @@ export function computeProfitOpportunities(jobs: JobFinancials[]): ProfitOpportu
   }
 
   return opportunities;
+}
+
+export type OpportunityGapCode =
+  | "no_jobs"
+  | "no_completed_jobs"
+  | "too_few_completed_jobs"
+  | "no_job_types"
+  | "no_estimates_on_completed"
+  | "job_types_spread_thin"
+  | "no_pattern_found";
+
+export interface OpportunityGap {
+  code: OpportunityGapCode;
+  /** The fact, stated plainly. */
+  headline: string;
+  /** The single next thing to do, or null when there is nothing to fix. */
+  action: string | null;
+  totalJobs: number;
+  completedJobs: number;
+  completedWithType: number;
+  /** Completed jobs that have both a job type and an estimate, so a rule can see them. */
+  eligibleJobs: number;
+  /** Biggest number of eligible jobs sharing one job type. */
+  largestTypeGroup: number;
+}
+
+const MIN_JOBS_PER_PATTERN = 3;
+
+/**
+ * Explains why Profit Opportunities is empty.
+ *
+ * "Not enough completed jobs yet to detect a pattern" was true and unhelpful.
+ * It covered at least six different situations, and the one a new customer
+ * most often hits - job type is a field only they can fill in, and it is
+ * blank on every job - was invisible. Someone connects QuickBooks, syncs
+ * cleanly, reads that sentence and concludes the product does not work,
+ * when they are one form field away from it working.
+ *
+ * This mirrors the real gates in computeProfitOpportunities rather than
+ * guessing at them, including the non-obvious one: a completed job with no
+ * estimated cost never enters the grouping at all, so it cannot contribute
+ * to the margin rules either.
+ *
+ * The last case matters most. Having enough data and finding no pattern is
+ * a genuine, good result, and it must not be worded as a failure.
+ */
+export function diagnoseOpportunityGap(jobs: JobFinancials[]): OpportunityGap {
+  const totalJobs = jobs.length;
+  const completed = jobs.filter((j) => j.status === "closed" && j.profitabilityAvailable);
+  const completedWithType = completed.filter((j) => j.category);
+  const eligible = completedWithType.filter((j) => j.varianceVsEstimatePct != null);
+
+  const groups: Record<string, number> = {};
+  for (const j of eligible) groups[j.category as string] = (groups[j.category as string] ?? 0) + 1;
+  const largestTypeGroup = Object.values(groups).reduce((max, n) => Math.max(max, n), 0);
+
+  const base = {
+    totalJobs,
+    completedJobs: completed.length,
+    completedWithType: completedWithType.length,
+    eligibleJobs: eligible.length,
+    largestTypeGroup,
+  };
+
+  if (totalJobs === 0) {
+    return {
+      ...base,
+      code: "no_jobs",
+      headline: "No jobs have synced from QuickBooks yet.",
+      action: "Run a sync from the Profit Dashboard, then come back here.",
+    };
+  }
+
+  if (completed.length === 0) {
+    return {
+      ...base,
+      code: "no_completed_jobs",
+      // Deliberately says "with revenue and costs recorded" rather than just
+      // "completed": a closed job whose profitability couldn't be computed is
+      // filtered out here too, and telling someone none of their jobs are
+      // completed when several are would read as a bug.
+      headline: `None of your ${totalJobs} ${totalJobs === 1 ? "job has" : "jobs have"} completed yet with both revenue and costs recorded.`,
+      action:
+        "Patterns come from finished work, where the final numbers are known. This fills in as jobs close.",
+    };
+  }
+
+  if (completed.length < MIN_JOBS_PER_PATTERN) {
+    return {
+      ...base,
+      code: "too_few_completed_jobs",
+      headline: `You have ${completed.length} completed ${completed.length === 1 ? "job" : "jobs"}. Patterns need at least ${MIN_JOBS_PER_PATTERN} in the same job type.`,
+      action:
+        "Nothing to fix. This is a comparison across finished jobs, so it needs a few of them before it can say anything honest.",
+    };
+  }
+
+  if (completedWithType.length === 0) {
+    return {
+      ...base,
+      code: "no_job_types",
+      headline: `Your ${completed.length} completed jobs don't have a job type set.`,
+      action:
+        "Job type is the one field QuickBooks can't tell us, so it's set by hand on each job. Open a job, choose a type such as kitchen or roofing, and save. Once three completed jobs share a type, the comparison starts working.",
+    };
+  }
+
+  if (eligible.length === 0) {
+    return {
+      ...base,
+      code: "no_estimates_on_completed",
+      headline: `${completedWithType.length} of your completed jobs have a job type, but none has an estimated cost.`,
+      action:
+        "Every pattern here compares actual cost against what the job was expected to cost, so an estimate is required. Add one under Edit job.",
+    };
+  }
+
+  if (largestTypeGroup < MIN_JOBS_PER_PATTERN) {
+    const missingType = completed.length - completedWithType.length;
+    return {
+      ...base,
+      code: "job_types_spread_thin",
+      headline: `Your completed jobs are spread across job types, with at most ${largestTypeGroup} in any one. Patterns need ${MIN_JOBS_PER_PATTERN}.`,
+      action:
+        missingType > 0
+          ? `${missingType} completed ${missingType === 1 ? "job has" : "jobs have"} no job type set. Filling those in is the quickest way to reach a group of three.`
+          : "This fills in as more jobs of the same type finish.",
+    };
+  }
+
+  return {
+    ...base,
+    code: "no_pattern_found",
+    headline: `We compared ${eligible.length} completed jobs and found no pattern worth flagging.`,
+    action:
+      "That's a good result, not a missing feature. It means no job type is consistently running over estimate or missing its margin target.",
+  };
 }
 
 export interface DashboardTotals {
