@@ -15,10 +15,10 @@ import EstimateVsActualChart from "@/components/charts/EstimateVsActualChart";
 import MarginTrendChart from "@/components/charts/MarginTrendChart";
 import DataHealthSummary from "@/components/dashboard/DataHealthSummary";
 
-export default async function DashboardPage({
-  searchParams,
-}: {
-  searchParams: {
+export default async function DashboardPage(props: {
+  // Next.js 16: searchParams arrives as a Promise. Awaited into a local of
+  // the same name so every reference below reads exactly as it did before.
+  searchParams: Promise<{
     qbo_connected?: string;
     qbo_error?: string;
     range?: string;
@@ -26,8 +26,9 @@ export default async function DashboardPage({
     to?: string;
     status?: string;
     trend?: string;
-  };
+  }>;
 }) {
+  const searchParams = await props.searchParams;
   const session = await getSession();
   if (!session) redirect("/login");
 

@@ -11,7 +11,13 @@ import ProfitLeakageChart from "@/components/charts/ProfitLeakageChart";
 import MarginTrendChart from "@/components/charts/MarginTrendChart";
 import JobEditForm from "@/components/dashboard/JobEditForm";
 
-export default async function JobDetailPage({ params }: { params: { jobId: string } }) {
+export default async function JobDetailPage({
+  params,
+}: {
+  // Next.js 16: page params arrive as a Promise.
+  params: Promise<{ jobId: string }>;
+}) {
+  const { jobId } = await params;
   const session = await getSession();
   if (!session) redirect("/login");
 
@@ -24,7 +30,7 @@ export default async function JobDetailPage({ params }: { params: { jobId: strin
     return <UpgradeRequired access={entitlements.access} />;
   }
 
-  const data = await getJobProfitData(params.jobId);
+  const data = await getJobProfitData(jobId);
   if (!data || data.connectionUserId !== session.userId) notFound();
 
   // Forecast-at-Completion is a Profit Intelligence feature (see

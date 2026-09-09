@@ -24,8 +24,13 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET(req: NextRequest, { params }: { params: { code: string } }) {
-  const code = normalizeCode(params.code ?? "");
+export async function GET(
+  req: NextRequest,
+  // Next.js 16: route segment params arrive as a Promise.
+  { params }: { params: Promise<{ code: string }> }
+) {
+  const { code: rawCode } = await params;
+  const code = normalizeCode(rawCode ?? "");
   const signupUrl = new URL("/signup", req.url);
 
   // Codes are short and fixed-alphabet; anything else is noise or probing.

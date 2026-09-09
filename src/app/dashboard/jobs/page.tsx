@@ -58,11 +58,11 @@ function riskScore(j: JobFinancials): number {
   return gap > 0 ? gap * j.revenue : -Infinity;
 }
 
-export default async function JobsPage({
-  searchParams,
-}: {
-  searchParams: { sort?: string; status?: string };
+export default async function JobsPage(props: {
+  // Next.js 16: searchParams arrives as a Promise.
+  searchParams: Promise<{ sort?: string; status?: string }>;
 }) {
+  const searchParams = await props.searchParams;
   const session = await getSession();
   if (!session) redirect("/login");
 

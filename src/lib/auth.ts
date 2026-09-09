@@ -33,7 +33,11 @@ export async function createSession(userId: string): Promise<string> {
     .setExpirationTime(`${SESSION_TTL_SECONDS}s`)
     .sign(getSecret());
 
-  cookies().set(SESSION_COOKIE, token, {
+  // Next.js 16: cookies(), headers() and draftMode() are async. The
+  // synchronous form Next 15 tolerated with a warning is gone, not
+  // deprecated - it no longer exists.
+  const cookieStore = await cookies();
+  cookieStore.set(SESSION_COOKIE, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
@@ -45,7 +49,8 @@ export async function createSession(userId: string): Promise<string> {
 }
 
 export async function getSession(): Promise<{ userId: string } | null> {
-  const token = cookies().get(SESSION_COOKIE)?.value;
+  const cookieStore = await cookies();
+  const token = cookieStore.get(SESSION_COOKIE)?.value;
   if (!token) return null;
 
   try {
@@ -60,5 +65,6 @@ export async function getSession(): Promise<{ userId: string } | null> {
 }
 
 export async function clearSession() {
-  cookies().delete(SESSION_COOKIE);
+  const cookieStore = await cookies();
+  cookieStore.delete(SESSION_COOKIE);
 }

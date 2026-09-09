@@ -62,11 +62,11 @@ const STATUS_LABELS: Record<string, string> = {
   unpaid: "Unpaid",
 };
 
-export default async function BillingPage({
-  searchParams,
-}: {
-  searchParams?: { checkout?: string; limit?: string };
+export default async function BillingPage(props: {
+  // Next.js 16: searchParams arrives as a Promise.
+  searchParams: Promise<{ checkout?: string; limit?: string }>;
 }) {
+  const searchParams = await props.searchParams;
   const session = await getSession();
   if (!session) redirect("/login");
 

@@ -80,7 +80,8 @@ export async function POST(req: NextRequest) {
   // --- Everything below is best-effort and never fails the signup ---
 
   try {
-    const refCode = cookies().get(REFERRAL_COOKIE)?.value ?? null;
+    const cookieStore = await cookies();
+    const refCode = cookieStore.get(REFERRAL_COOKIE)?.value ?? null;
     const attribution = await attributeReferral(user.id, refCode);
 
     if (attribution.attributed) {

@@ -25,13 +25,18 @@ const KNOWN_CATEGORIES = [
   "other",
 ];
 
-export async function PATCH(req: NextRequest, { params }: { params: { jobId: string } }) {
+export async function PATCH(
+  req: NextRequest,
+  // Next.js 16: route segment params arrive as a Promise.
+  { params }: { params: Promise<{ jobId: string }> }
+) {
+  const { jobId } = await params;
   try {
     const session = await getSession();
     if (!session) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
     const job = await prisma.job.findUnique({
-      where: { id: params.jobId },
+      where: { id: jobId },
       include: { connection: true },
     });
     if (!job || job.connection.userId !== session.userId) {
