@@ -270,17 +270,32 @@ export function setupReminderEmail(name: string | null, daysLeft: number): Rende
   });
 }
 
+/**
+ * The pivotal onboarding email: data has landed, here is what to do with it.
+ *
+ * It names the two fields QuickBooks cannot supply, and it says why each one
+ * matters, because both gate features the customer is paying for and neither
+ * announces itself as missing. Without a target margin we cannot compute
+ * "jobs below target" at all. Without a job type and an estimated cost,
+ * forecast at completion, budget variance and every cross-job pattern stay
+ * empty. A customer who never fills these in concludes the product does not
+ * work, and they would be looking at the evidence.
+ */
 export function analysisReadyEmail(companyName: string): RenderedEmail {
-  return buildEmail("Your JobProfitAI profit intelligence is ready", {
-    preheader: "Your first job profitability analysis is done.",
+  return buildEmail("Your numbers are in. Here's where to start", {
+    preheader: "Your first analysis is done, plus the two fields that unlock the rest.",
     heading: "Your numbers are in",
     body: [
-      `We've analyzed the job data in ${companyName} and your profit intelligence is ready to look at.`,
-      "Start with the dashboard: it shows revenue, cost, gross profit and margin for every job, and flags the ones that need attention right now.",
+      `We've analyzed the job data in ${companyName}. Start on the dashboard: revenue, cost, gross profit and margin for every job, with the ones that need attention listed first.`,
+      "Two things are worth five minutes now, because until they're set, parts of JobProfitAI have nothing to work with.",
     ],
-    cta: { label: "See your job profitability", url: appUrl("/dashboard") },
+    bullets: [
+      "Set your target margin in Settings. Until you do, we can't tell you which jobs are coming in below target, because we don't know what your target is.",
+      "Add a job type and an estimated cost to your open jobs. Job type is what lets us compare similar jobs to each other. Estimated cost is what powers budget variance and forecast at completion. QuickBooks has neither field, so both are entered in JobProfitAI, and we suggest the job type from the job name to save you the typing.",
+    ],
+    cta: { label: "Open your dashboard", url: appUrl("/dashboard") },
     footnote:
-      "Numbers look off? That's usually a data gap in QuickBooks rather than a mistake. Check the Data Health page, which lists exactly what's missing.",
+      "Numbers look off? That's usually a gap in QuickBooks rather than a mistake. The Data Health page lists exactly what's missing and which jobs it affects.",
   });
 }
 

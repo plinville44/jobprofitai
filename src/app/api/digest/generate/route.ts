@@ -3,6 +3,7 @@ import { startOfWeek } from "date-fns";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { tryMarkFirstAnalysis } from "@/lib/trial";
+import { tryAnnounceAnalysisReady } from "@/lib/email/lifecycle";
 import { getEntitlements } from "@/lib/entitlements";
 import { generateWeeklyDigestForConnection } from "@/lib/digest";
 
@@ -69,6 +70,9 @@ export async function POST(req: NextRequest) {
     // an analysis out of the product. Best-effort - a growth metric must
     // never fail the customer's real request.
     await tryMarkFirstAnalysis(session.userId);
+    // "Your numbers are in, here's where to start." Sends once ever, guarded
+    // by the EmailEvent dedupe key rather than by a check here.
+    await tryAnnounceAnalysisReady(session.userId, connection.companyName);
 
     return NextResponse.json({ id: digest.id, narrative, kind, metrics });
   } catch (err) {

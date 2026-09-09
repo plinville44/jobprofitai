@@ -64,6 +64,29 @@ export async function sendSetupReminder(userId: string, daysLeft: number): Promi
   });
 }
 
+/**
+ * Best-effort wrapper for routes whose real job is generating the analysis.
+ *
+ * The dedupe key on sendAnalysisReady is keyed to the user alone, so this can
+ * be called after every analysis and the database constraint makes it send
+ * exactly once, ever. That is deliberate: it means the caller does not have
+ * to know whether this was the customer's first analysis, and a retry cannot
+ * produce a second email.
+ */
+export async function tryAnnounceAnalysisReady(
+  userId: string,
+  companyName: string | null
+): Promise<void> {
+  try {
+    await sendAnalysisReady(userId, companyName?.trim() || "your QuickBooks company");
+  } catch (err) {
+    console.error(
+      "lifecycle: could not send analysis-ready email:",
+      err instanceof Error ? err.message : "Unknown error"
+    );
+  }
+}
+
 export async function sendAnalysisReady(
   userId: string,
   companyName: string

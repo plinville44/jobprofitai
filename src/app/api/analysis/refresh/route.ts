@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { tryMarkFirstAnalysis } from "@/lib/trial";
+import { tryAnnounceAnalysisReady } from "@/lib/email/lifecycle";
 import { getEntitlements } from "@/lib/entitlements";
 import { getConnectionProfitData } from "@/lib/profitability";
 import { generateProfitInsights } from "@/lib/intelligence";
@@ -106,6 +107,9 @@ export async function POST(req: NextRequest) {
     ]);
 
     await tryMarkFirstAnalysis(session.userId);
+    // "Your numbers are in, here's where to start." Sends once ever, guarded
+    // by the EmailEvent dedupe key rather than by a check here.
+    await tryAnnounceAnalysisReady(session.userId, connection.companyName);
 
     return NextResponse.json({ ok: true, refreshed: true, count: drafts.length });
   } catch (err) {

@@ -16,6 +16,7 @@ import {
 import {
   sendPartnerCommissionEarned,
   sendPartnerNewPayingClient,
+  sendPartnerTierUpgrade,
   sendPaymentFailed,
   sendReferralConverted,
   sendSubscriptionCanceled,
@@ -417,6 +418,25 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<string> {
           amountCents: commission.commissionCents,
           monthNumber: commission.monthNumber,
         });
+
+        // Tell the partner when their rate goes up. Called on every
+        // qualifying invoice rather than only when a threshold is detected as
+        // crossed, because the dedupe key is
+        // `partner_tier_upgrade:<partnerId>:<tierKey>` - the database makes
+        // each tier announceable exactly once, so this cannot spam a partner
+        // whose client count hovers around a boundary, and it cannot miss an
+        // upgrade that happened while a webhook was being retried.
+        const payingNow = await countPayingClients(referral.partnerId);
+        const tierNow = partnerTierFor(payingNow);
+        if (tierNow.minPayingClients > 1) {
+          await sendPartnerTierUpgrade({
+            partnerUserId: partner.userId,
+            partnerId: referral.partnerId,
+            tierKey: tierNow.key,
+            ratePct: tierNow.ratePct,
+            payingClients: payingNow,
+          });
+        }
         notes.push(
           `commission ${commission.commissionCents}c at ${commission.rateBps / 100}% (month ${commission.monthNumber})`
         );
