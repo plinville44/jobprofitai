@@ -190,7 +190,7 @@ export default async function IntelligencePage() {
             )}
             {insights.length === 0 ? (
               <p className="mt-3 text-sm text-gray-500">
-                No analysis yet. Click "Refresh Analysis" once you have a few completed jobs synced to generate
+                No analysis yet. Click &ldquo;Refresh Analysis&rdquo; once you have a few completed jobs synced to generate
                 AI-written findings from your Profit Opportunities.
               </p>
             ) : (

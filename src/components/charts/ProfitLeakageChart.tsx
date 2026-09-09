@@ -8,6 +8,59 @@ export interface ProfitLeakageStep {
   isTotal: boolean;
 }
 
+interface LeakageRow {
+  label: string;
+  base: number;
+  visible: number;
+  display: number;
+  color: string;
+  isTotal: boolean;
+}
+
+/**
+ * Turns the leakage steps into floating-bar rows, carrying a running total.
+ *
+ * A module-level function rather than inline in the component body on
+ * purpose. The running total has to be mutated as it walks the steps, and
+ * mutating a variable declared in a component during render is the thing
+ * react-hooks/immutability exists to catch: it blocks the React Compiler
+ * from memoizing the component, and it is a genuine footgun the moment
+ * anything about the render becomes concurrent. Out here it is just a pure
+ * function of its argument.
+ */
+function buildRows(steps: ProfitLeakageStep[]): LeakageRow[] {
+  const rows: LeakageRow[] = [];
+  let running = 0;
+
+  for (const step of steps) {
+    if (step.isTotal) {
+      running = step.value;
+      rows.push({
+        label: step.label,
+        base: 0,
+        visible: step.value,
+        display: step.value,
+        color: "#2a78d6",
+        isTotal: true,
+      });
+      continue;
+    }
+
+    const start = running;
+    running = running + step.value;
+    rows.push({
+      label: step.label,
+      base: Math.min(start, running),
+      visible: Math.abs(step.value),
+      display: step.value,
+      color: step.value >= 0 ? "#0ca30c" : "#d03b3b",
+      isTotal: false,
+    });
+  }
+
+  return rows;
+}
+
 /**
  * Chart 4: Profit Leakage / Variance bridge for one job - the movement from
  * expected profit to actual/forecast profit. Built as a "floating bar"
@@ -21,25 +74,7 @@ export default function ProfitLeakageChart({ steps }: { steps: ProfitLeakageStep
     return <p className="text-sm text-gray-500">Not enough estimate and actual data to show profit movement for this job.</p>;
   }
 
-  let running = 0;
-  const rows = steps.map((step) => {
-    if (step.isTotal) {
-      running = step.value;
-      return { label: step.label, base: 0, visible: step.value, display: step.value, color: "#2a78d6", isTotal: true };
-    }
-    const start = running;
-    running = running + step.value;
-    const base = Math.min(start, running);
-    const visible = Math.abs(step.value);
-    return {
-      label: step.label,
-      base,
-      visible,
-      display: step.value,
-      color: step.value >= 0 ? "#0ca30c" : "#d03b3b",
-      isTotal: false,
-    };
-  });
+  const rows = buildRows(steps);
 
   return (
     <ResponsiveContainer width="100%" height={Math.max(rows.length * 44, 160)}>

@@ -99,7 +99,7 @@ export default function FeedbackModal() {
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-600">What's on your mind?</label>
+                <label className="block text-xs font-medium text-gray-600">What&rsquo;s on your mind?</label>
                 <textarea
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}

@@ -10,7 +10,10 @@ export default function ResetPasswordForm() {
   const router = useRouter();
   const token = useSearchParams().get("token") ?? "";
 
-  const [linkState, setLinkState] = useState<LinkState>("checking");
+  // Derived, not set in an effect. A missing token is knowable at first
+  // render, so starting in "invalid" avoids a setState inside useEffect and
+  // the cascading render that comes with it.
+  const [linkState, setLinkState] = useState<LinkState>(token ? "checking" : "invalid");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -22,11 +25,8 @@ export default function ResetPasswordForm() {
   // the most annoying possible ordering, and it is entirely avoidable: the
   // GET checks the token without consuming it.
   useEffect(() => {
+    if (!token) return;
     let cancelled = false;
-    if (!token) {
-      setLinkState("invalid");
-      return;
-    }
     (async () => {
       try {
         const res = await fetch(
