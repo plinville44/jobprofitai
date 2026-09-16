@@ -165,7 +165,19 @@ async function runFullSync(connectionId: string, realmId: string, accessToken: s
   // Resolving from the parent's own record means a renamed customer shows up
   // renamed on their jobs at the next full sync, rather than carrying
   // whatever the name was when the job was first seen.
-  const customerResult = await qboQuery(realmId, accessToken, "SELECT * FROM Customer MAXRESULTS 1000");
+  //
+  // Third: WHERE Active IN (true, false), which is how QuickBooks is asked
+  // for inactive records. Its query endpoint silently returns only active
+  // ones otherwise. Deactivating a customer is how a contractor marks a job
+  // finished, so without this clause a job disappears from the sync the
+  // moment it completes, keeps whatever status it last had, and never
+  // becomes "closed" here. Profit Intelligence compares completed jobs, so
+  // it could never have produced a single pattern for anybody.
+  const customerResult = await qboQuery(
+    realmId,
+    accessToken,
+    "SELECT * FROM Customer WHERE Active IN (true, false) MAXRESULTS 1000"
+  );
   const allCustomers = customerResult?.QueryResponse?.Customer ?? [];
   const customerNameById = new Map<string, string>();
   for (const c of allCustomers) {
