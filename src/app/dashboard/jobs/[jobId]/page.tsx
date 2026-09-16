@@ -125,9 +125,15 @@ export default async function JobDetailPage({
 
       {/* 2. Estimate vs Actual */}
       <Section title="Estimate vs. Actual">
-        <EstimateVsActualChart
-          data={[{ category: "Total", estimated: f.estimatedCost, actual: f.costs }]}
-        />
+        {/* Nothing to plot means no chart. With no estimate and no costs the
+            axis rendered as five ticks all reading $0k, which looks like a
+            broken chart rather than an empty one. The explanatory line below
+            is the honest answer in that case. */}
+        {(f.estimatedCost != null || f.costs > 0) && (
+          <EstimateVsActualChart
+            data={[{ category: "Total", estimated: f.estimatedCost, actual: f.costs }]}
+          />
+        )}
         {f.varianceVsEstimate != null && (
           <p className="mt-3 text-sm text-gray-600">
             {f.varianceVsEstimate > 0

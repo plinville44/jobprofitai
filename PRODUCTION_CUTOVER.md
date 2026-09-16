@@ -194,35 +194,78 @@ end-to-end payment only in **test mode**, using Stripe's `4242 4242 4242 4242` t
 
 ## 3. Intuit / QuickBooks
 
-Production keys were approved on 2026-08-12 but, as far as this repository knows, have
-**not** been put into the live environment. The code is environment-aware and needs no
-changes, only configuration.
+**Status: configuration complete as of 2026-09-10. Untested against a real company.**
 
-**Actions:**
+Production keys were approved on 2026-08-12 and are now live. The code is
+environment-aware and needed no changes, only configuration. Recorded here so the next
+person does not repeat the diagnosis.
 
-1. developer.intuit.com → your app → **Keys & credentials → Production**. Copy the
-   Production Client ID and Client Secret (different from the Development pair).
-2. In Vercel set, **scoped to the Production environment**:
-   - `QBO_CLIENT_ID` = production client ID
-   - `QBO_CLIENT_SECRET` = production client secret
-   - `QBO_ENVIRONMENT` = `production`
-   - `QBO_REDIRECT_URI` = `https://jobprofitai.com/api/quickbooks/callback`
-3. In the Intuit app settings, under **Production → Redirect URIs**, add exactly:
-   `https://jobprofitai.com/api/quickbooks/callback`
-   It must match character for character, including `https` and no trailing slash.
-4. Update the Production **App URLs** (host, launch, disconnect, EULA, privacy) to the
-   real domain. They currently point at the `jobprofitai.vercel.app` placeholder.
-5. Redeploy, then test the full connect → sync → disconnect cycle against a **real**
-   QuickBooks company. Production keys will not accept a sandbox company.
+**Done:**
 
-> ⚠️ **The single most likely failure.** This project has already been bitten twice by
-> environment variables that were saved without the **Production** checkbox ticked in
-> Vercel, producing an "undefined didn't connect" error. Check the Production box on
-> every variable, every time.
+1. Production Client ID and Secret copied from developer.intuit.com → Keys &
+   credentials → Production, and set in Vercel scoped to **Production**.
+2. `QBO_ENVIRONMENT` and `QBO_REDIRECT_URI` set. Note that both rows are scoped
+   **Production and Preview**, while the ID and Secret are Production only. See the
+   Preview warning below.
+3. Redirect URI `https://jobprofitai.com/api/quickbooks/callback` registered under
+   Intuit → Production → Redirect URIs.
+4. Production App URLs moved off the `jobprofitai.vercel.app` placeholder. Host domain
+   `jobprofitai.com`; launch, disconnect and connect/reconnect all point at
+   `https://jobprofitai.com/dashboard`, which redirects to `/login` when there is no
+   session and otherwise lands on the page holding the Connect button.
+5. Redeployed and verified.
 
-Leave your Development keys in the Preview/Development environments so sandbox testing
-keeps working.
+**Still open:**
 
+- Full connect → sync → disconnect cycle against a real QuickBooks Online company.
+  Production keys will not accept a sandbox company, so this needs the PWL Solutions
+  QBO subscription (Plus, not Simple Start, since the sync reads Projects or Classes).
+
+**How to verify the environment without owning a QBO company.**
+
+Click Connect to QuickBooks on the live site and read the `client_id=` parameter in the
+Intuit consent URL before authorizing. `buildAuthorizeUrl` puts `QBO_CLIENT_ID` straight
+into that URL, so it shows which key the running deployment actually loaded. Match it
+against the Production Client ID.
+
+Two limits on that check, both learned the hard way:
+
+- It proves the client ID only. `QBO_ENVIRONMENT` does not appear in the authorize URL,
+  and it is what selects the API base host (`sandbox-quickbooks.api.intuit.com` vs
+  `quickbooks.api.intuit.com`) and the discovery document. Production keys with
+  `QBO_ENVIRONMENT=sandbox` gives a consent screen that looks correct and a sync that
+  fails afterward. Read that value in Vercel directly.
+- If the consent screen offers a **sandbox** company, the deployment is still on
+  Development keys. Sandbox companies exist only under the development client ID.
+
+> ⚠️ **Environment variables do not reach the running deployment.** Saving a variable in
+> Vercel changes nothing until you redeploy. This is what happened on 2026-09-10: all
+> four variables were correct, the site still authorized a sandbox company, and the only
+> problem was that the Current deployment predated the save. Check the timestamp on the
+> deployment marked Current before diagnosing anything else.
+
+> ⚠️ **The other likely failure.** This project has been bitten twice by variables saved
+> without the **Production** checkbox ticked, producing an "undefined didn't connect"
+> error. Check the Production box on every variable, every time.
+
+> ⚠️ **Preview can no longer test QuickBooks.** `QBO_CLIENT_ID` and `QBO_CLIENT_SECRET`
+> are scoped to Production only, so Preview deployments have no QuickBooks credentials,
+> while `QBO_ENVIRONMENT` and `QBO_REDIRECT_URI` still hand Preview the production
+> settings. To restore sandbox testing, add Preview-scoped rows holding the Development
+> ID and Secret, and narrow `QBO_ENVIRONMENT` and `QBO_REDIRECT_URI` to Production with
+> sandbox-valued Preview rows alongside them.
+
+**Flipping to production breaks existing sandbox connections, by design.**
+`QBO_ENVIRONMENT` is a single global switch. `QuickBooksConnection.environment` is
+written on every connection but read nowhere, so there is no per-connection fallback: a
+row holding sandbox tokens starts calling the production API, gets a 401, and shows
+"reconnect required" permanently. Clear out sandbox connections before flipping. On
+2026-09-10 the one test account was deleted from the Neon `production` branch first.
+
+**Intuit does not tell you when a customer disconnects from their side.** The Disconnect
+URL is a page their browser is sent to, not a webhook. The database keeps thinking the
+connection is live until the next sync, when the token refresh returns `invalid_grant`
+and `ReconnectRequiredError` surfaces a reconnect prompt. Correct, but delayed.
 ---
 
 ## 4. Resend

@@ -135,11 +135,15 @@ export function computeJobFinancials(job: JobInput, ctx: FinancialContext): JobF
     unavailableReason = "No revenue or cost data recorded for this job yet.";
   } else if (revenue > 0 && costs === 0) {
     profitabilityAvailable = false;
-    unavailableReason = "Profitability unavailable. Cost data incomplete.";
+    // Deliberately does not repeat "Profitability unavailable". The job
+    // page prints that as a heading and then this string after it, so the
+    // old wording rendered the sentence twice in a row. It still has to read
+    // on its own, because it also goes into confidenceReasons below.
+    unavailableReason = "Cost data incomplete. Revenue is recorded but no costs have been tagged to this job.";
     flags.push("revenue_no_costs");
   } else if (revenue === 0 && costs > 0) {
     profitabilityAvailable = false;
-    unavailableReason = "Costs recorded but no revenue yet. Profitability unavailable.";
+    unavailableReason = "Costs recorded but no revenue on this job yet.";
     flags.push("costs_no_revenue");
   }
 

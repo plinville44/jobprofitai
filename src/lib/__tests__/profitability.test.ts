@@ -149,14 +149,14 @@ describe("computeJobFinancials", () => {
   it("marks profitability unavailable for revenue with zero costs (never divides by an incomplete picture)", () => {
     const f = computeJobFinancials(makeJob({ invoices: [inv(5000)] }), makeCtx());
     expect(f.profitabilityAvailable).toBe(false);
-    expect(f.unavailableReason).toBe("Profitability unavailable. Cost data incomplete.");
+    expect(f.unavailableReason).toBe("Cost data incomplete. Revenue is recorded but no costs have been tagged to this job.");
     expect(f.flags).toContain("revenue_no_costs");
   });
 
   it("marks profitability unavailable for costs with zero revenue", () => {
     const f = computeJobFinancials(makeJob({ costEntries: [cost("materials", 3000)] }), makeCtx());
     expect(f.profitabilityAvailable).toBe(false);
-    expect(f.unavailableReason).toBe("Costs recorded but no revenue yet. Profitability unavailable.");
+    expect(f.unavailableReason).toBe("Costs recorded but no revenue on this job yet.");
     expect(f.flags).toContain("costs_no_revenue");
   });
 

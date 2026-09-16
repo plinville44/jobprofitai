@@ -317,17 +317,25 @@ async function runIncrementalSync(
 async function upsertJobsFromCustomers(connectionId: string, customers: any[]) {
   for (const c of customers) {
     const parentQboId: string | null = c.ParentRef?.value ?? null;
+    // The parent customer IS the client. QuickBooks hands us their name right
+    // here on every job, and until now we stored only their id and threw the
+    // name away, so the job page rendered "No customer on file" on every job
+    // of every contractor. A job with no parent genuinely has no client to
+    // show, and stays null.
+    const customerName: string | null = c.ParentRef?.name ?? null;
     await prisma.job.upsert({
       where: { connectionId_qboId: { connectionId, qboId: c.Id } },
       create: {
         connectionId,
         qboId: c.Id,
         parentQboId,
+        customerName,
         name: c.DisplayName,
         status: c.Active ? "open" : "closed",
       },
       update: {
         parentQboId,
+        customerName,
         name: c.DisplayName,
         status: c.Active ? "open" : "closed",
       },
@@ -626,9 +634,18 @@ async function applyEstimatesToJobs(connectionId: string, estimates: any[]) {
  * cost is far less harmful than a missing one. */
 function categorize(accountOrItemName: string | null | undefined): string {
   const name = (accountOrItemName ?? "").toLowerCase();
+  // Subcontractor is tested BEFORE labor, and the order is load-bearing.
+  // "Subcontracted labor" and "Sub labor" are both common account names in a
+  // contractor's chart of accounts, and both contain the word "labor". With
+  // labor checked first they bucketed as in-house labor, which is exactly
+  // backwards: the whole point of separating the two is that subbing work out
+  // and doing it with your own crew have different margins. Intuit's own
+  // Construction template happens to name the account "Subcontractors" and so
+  // dodged this, which is why it survived until a real chart of accounts was
+  // tested against.
+  if (name.includes("subcontractor") || name.includes("sub-contractor") || name.includes("sub ")) return "subcontractor";
   if (name.includes("labor") || name.includes("payroll") || name.includes("wage")) return "labor";
   if (name.includes("material") || name.includes("supply") || name.includes("supplies")) return "materials";
-  if (name.includes("subcontractor") || name.includes("sub-contractor") || name.includes("sub ")) return "subcontractor";
   if (name.includes("equipment") || name.includes("rental") || name.includes("lease")) return "equipment";
   if (name.includes("overhead") || name.includes("admin")) return "overhead";
   return "other";
