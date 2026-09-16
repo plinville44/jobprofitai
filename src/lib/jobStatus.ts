@@ -25,6 +25,8 @@
  * already imports from entitlements.ts.
  */
 
+import type { Prisma } from "@prisma/client";
+
 /** The status the app should act on. */
 export function effectiveJobStatus(job: { status: string; statusOverride?: string | null }): string {
   return job.statusOverride === "open" || job.statusOverride === "closed"
@@ -40,11 +42,19 @@ export function effectiveJobStatus(job: { status: string; statusOverride?: strin
  * cannot express "coalesce these two columns" in a filter, and a query that
  * quietly disagreed with effectiveJobStatus above would be the worst kind of
  * bug: two parts of the app with different ideas of which jobs are done.
+ *
+ * Typed as Prisma.JobWhereInput rather than left to inference, and NOT
+ * marked `as const`. A const assertion makes the OR array readonly, which
+ * JobWhereInput rejects, and that error is confusing out of proportion to
+ * its cause: once a where clause fails to type-check, Prisma's inference
+ * gives up and the query's result type silently loses the relations named
+ * in `include`, so the real complaint surfaces as "Property 'invoices' does
+ * not exist" a hundred lines away.
  */
-export const CLOSED_JOB_WHERE = {
+export const CLOSED_JOB_WHERE: Prisma.JobWhereInput = {
   OR: [{ statusOverride: "closed" }, { statusOverride: null, status: "closed" }],
-} as const;
+};
 
-export const OPEN_JOB_WHERE = {
+export const OPEN_JOB_WHERE: Prisma.JobWhereInput = {
   OR: [{ statusOverride: "open" }, { statusOverride: null, status: "open" }],
-} as const;
+};
