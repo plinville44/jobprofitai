@@ -154,13 +154,25 @@ async function runStep<T>(label: string, errors: Record<string, string>, fn: () 
 async function runFullSync(connectionId: string, realmId: string, accessToken: string): Promise<Record<string, any>> {
   const errors: Record<string, string> = {};
 
-  const customerResult = await qboQuery(
-    realmId,
-    accessToken,
-    "SELECT Id, DisplayName, Job, ParentRef, Active FROM Customer WHERE Job = true MAXRESULTS 1000"
-  );
-  const projectJobs = customerResult?.QueryResponse?.Customer ?? [];
-  await upsertJobsFromCustomers(connectionId, projectJobs);
+  // SELECT *, and every Customer rather than only the jobs, for two reasons.
+  //
+  // First, the same projection trap documented below for Line: ParentRef is a
+  // composite field, and naming it explicitly in a column list got it back as
+  // {value} with no name, which is why the customer name on every job came
+  // out blank the first time this was fixed.
+  //
+  // Second, even a populated ParentRef.name is QuickBooks' denormalised copy.
+  // Resolving from the parent's own record means a renamed customer shows up
+  // renamed on their jobs at the next full sync, rather than carrying
+  // whatever the name was when the job was first seen.
+  const customerResult = await qboQuery(realmId, accessToken, "SELECT * FROM Customer MAXRESULTS 1000");
+  const allCustomers = customerResult?.QueryResponse?.Customer ?? [];
+  const customerNameById = new Map<string, string>();
+  for (const c of allCustomers) {
+    if (c?.Id && typeof c.DisplayName === "string") customerNameById.set(String(c.Id), c.DisplayName);
+  }
+  const projectJobs = allCustomers.filter((c: any) => c.Job === true);
+  await upsertJobsFromCustomers(connectionId, projectJobs, customerNameById);
 
   // Deliberately SELECT * rather than an explicit column list - same reason
   // as TimeActivity below. "Line" is a composite/array field, and QBO's
@@ -283,6 +295,10 @@ async function runIncrementalSync(
     return match?.[name] ?? [];
   };
 
+  // No name map here: CDC returns only what changed, so the parents of these
+  // jobs usually are not in the response. upsertJobsFromCustomers falls back
+  // to ParentRef.name and leaves the stored name alone when it cannot work
+  // one out, rather than blanking a value a full sync already got right.
   const customers = byEntity("Customer").filter((c) => c.Job === true);
   await upsertJobsFromCustomers(connectionId, customers);
 
@@ -323,15 +339,20 @@ async function runIncrementalSync(
 // Shared upsert helpers (used by both full and incremental sync)
 // ---------------------------------------------------------------------------
 
-async function upsertJobsFromCustomers(connectionId: string, customers: any[]) {
+async function upsertJobsFromCustomers(
+  connectionId: string,
+  customers: any[],
+  customerNameById?: Map<string, string>
+) {
   for (const c of customers) {
     const parentQboId: string | null = c.ParentRef?.value ?? null;
-    // The parent customer IS the client. QuickBooks hands us their name right
-    // here on every job, and until now we stored only their id and threw the
-    // name away, so the job page rendered "No customer on file" on every job
-    // of every contractor. A job with no parent genuinely has no client to
-    // show, and stays null.
-    const customerName: string | null = c.ParentRef?.name ?? null;
+    // The parent customer IS the client, and this is what the job page shows
+    // as the job's customer. Prefer the parent's own DisplayName when the
+    // caller has the full customer list; fall back to QuickBooks'
+    // denormalised copy on ParentRef when it does not. A job with no parent
+    // genuinely has no client to show and stays null.
+    const customerName: string | null =
+      (parentQboId ? customerNameById?.get(parentQboId) : undefined) ?? c.ParentRef?.name ?? null;
     await prisma.job.upsert({
       where: { connectionId_qboId: { connectionId, qboId: c.Id } },
       create: {
@@ -344,7 +365,10 @@ async function upsertJobsFromCustomers(connectionId: string, customers: any[]) {
       },
       update: {
         parentQboId,
-        customerName,
+        // Written only when one was actually resolved. An incremental sync
+        // that cannot see the parent must not blank a name a full sync
+        // already got right.
+        ...(customerName ? { customerName } : {}),
         name: c.DisplayName,
         status: c.Active ? "open" : "closed",
       },

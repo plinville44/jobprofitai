@@ -137,7 +137,7 @@ export default async function DataHealthPage() {
 
       <p className="mt-8 text-xs text-gray-500">
         {h.countsAsOf
-          ? `The four counts below are measured during a full sync of your whole company, last run ${h.countsAsOf.toLocaleDateString()}. The lists above are current as of your most recent sync.`
+          ? `The four counts below are measured during a full sync of your whole company, last run ${h.countsAsOf.toLocaleString()}. The lists above are current as of your most recent sync.`
           : "The four counts below are measured during a full sync of your whole company, which hasn't run yet for this connection."}
       </p>
 
