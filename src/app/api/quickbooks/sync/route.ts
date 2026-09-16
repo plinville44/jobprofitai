@@ -46,7 +46,7 @@ async function runSync(req: NextRequest) {
     );
   }
 
-  const { connectionId, fullResync } = await req.json();
+  const { connectionId } = await req.json();
   const connection = await prisma.quickBooksConnection.findUnique({
     where: { id: connectionId },
   });
@@ -55,6 +55,20 @@ async function runSync(req: NextRequest) {
     return NextResponse.json({ error: "Connection not found" }, { status: 404 });
   }
 
-  const result = await runSyncForConnection(connectionId, { forceFull: fullResync === true });
+  // A person clicking Sync now always gets a full read, never the lighter
+  // incremental path.
+  //
+  // Incremental sync asks QuickBooks only what changed, which means it can
+  // never repair anything: a record QuickBooks considers unchanged is never
+  // revisited, even when we have started storing a field we did not store
+  // before, or fixed how we read one. That produced two separate "why isn't
+  // my data updating" episodes during testing, and a contractor has no way
+  // to reason about it.
+  //
+  // The cost of always going full is small and bounded - six queries capped
+  // at 1000 rows each - and this is a button a person presses occasionally,
+  // not the hourly cron, which still uses the incremental path (it calls
+  // runSyncForConnection without this flag).
+  const result = await runSyncForConnection(connectionId, { forceFull: true });
   return NextResponse.json(result);
 }
