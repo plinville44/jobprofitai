@@ -544,6 +544,10 @@ export interface DataHealthReport {
   // total being low is explained rather than just wrong-looking.
   // null = not yet measured.
   timeEntriesWithoutRate: number | null;
+  // When the sync-derived counters above were measured. Null until a full
+  // sync has ever run. Shown in the UI so a number that is a few days old is
+  // read as a few days old.
+  countsAsOf: Date | null;
   possibleDuplicates: { jobName: string; amount: number; date: string; jobId: string }[];
   overallConfidence: DataConfidence;
   // The raw counts behind overallConfidence. Exposed so the UI can state the
@@ -565,7 +569,8 @@ export interface DataHealthReport {
 export function computeDataHealth(
   jobs: JobFinancials[],
   now: Date,
-  latestSyncEntitiesUpdated: Record<string, unknown> | null
+  latestSyncEntitiesUpdated: Record<string, unknown> | null,
+  countsAsOf: Date | null = null
 ): DataHealthReport {
   const jobsMissingEstimates = jobs
     .filter((j) => j.estimatedCost == null)
@@ -636,6 +641,7 @@ export function computeDataHealth(
     costsMatchedViaParentCount,
     costsMatchedViaParentAmount,
     timeEntriesWithoutRate,
+    countsAsOf,
     possibleDuplicates,
     overallConfidence,
     totalJobs,
@@ -1084,15 +1090,30 @@ export async function getConnectionProfitData(
 
   const financials = jobInputs.map((j) => computeJobFinancials(j, ctx));
 
-  const latestSync = await prisma.syncRun.findFirst({
-    where: { connectionId, status: "success" },
+  // The last FULL sync, deliberately, not the last sync of any kind.
+  //
+  // These counters are whole-company tallies: how many expenses are tagged to
+  // nobody, how many time entries carry no rate. An incremental sync only
+  // looks at what QuickBooks says changed since last time, so its tallies are
+  // a delta, not a state. Reading the newest sync of any kind meant that the
+  // moment an incremental sync ran and found nothing, Data Health reported
+  // zero unassigned expenses while $850 sat there untagged, and said so in
+  // green. A page whose job is to tell a contractor where their data is
+  // incomplete must never be the thing that is incomplete.
+  //
+  // A full sync's numbers can be up to FULL_SYNC_INTERVAL_DAYS old, which is
+  // why countsAsOf is carried through and shown next to them. Stale and
+  // labelled beats current-looking and wrong.
+  const latestFullSync = await prisma.syncRun.findFirst({
+    where: { connectionId, status: "success", mode: "full" },
     orderBy: { startedAt: "desc" },
   });
 
   const dataHealth = computeDataHealth(
     financials,
     now,
-    (latestSync?.entitiesUpdated as Record<string, unknown> | null) ?? null
+    (latestFullSync?.entitiesUpdated as Record<string, unknown> | null) ?? null,
+    latestFullSync?.finishedAt ?? latestFullSync?.startedAt ?? null
   );
   dataHealth.possibleDuplicates = findPossibleDuplicateCostEntries(jobs);
 

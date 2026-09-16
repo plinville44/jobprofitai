@@ -29,7 +29,10 @@ import { encryptToken, decryptToken } from "@/lib/crypto";
 const FULL_SYNC_INTERVAL_DAYS = 30;
 const CDC_ENTITIES = ["Customer", "Purchase", "Bill", "TimeActivity", "Invoice", "Estimate"];
 
-export async function runSyncForConnection(connectionId: string): Promise<Record<string, any>> {
+export async function runSyncForConnection(
+  connectionId: string,
+  options: { forceFull?: boolean } = {}
+): Promise<Record<string, any>> {
   const connection = await prisma.quickBooksConnection.findUniqueOrThrow({
     where: { id: connectionId },
   });
@@ -40,7 +43,13 @@ export async function runSyncForConnection(connectionId: string): Promise<Record
   const fullSyncDue =
     !connection.lastFullSyncAt ||
     Date.now() - connection.lastFullSyncAt.getTime() > FULL_SYNC_INTERVAL_DAYS * 24 * 60 * 60 * 1000;
-  let mode: "full" | "incremental" = fullSyncDue ? "full" : "incremental";
+  // forceFull exists because an incremental sync cannot repair anything. It
+  // only looks at what QuickBooks says changed, so a code change on our side
+  // that alters how a record is stored - or a field we started capturing that
+  // we did not capture before - never reaches rows QuickBooks considers
+  // unchanged. Without this the only remedy was waiting up to
+  // FULL_SYNC_INTERVAL_DAYS.
+  let mode: "full" | "incremental" = options.forceFull || fullSyncDue ? "full" : "incremental";
 
   const syncRun = await prisma.syncRun.create({
     data: { connectionId: connection.id, status: "in_progress", mode },

@@ -969,6 +969,7 @@ describe("computeDashboardTotals", () => {
     costsMatchedViaParentCount: 999, // deliberately large, to prove it's excluded from dataIssues
     costsMatchedViaParentAmount: 999,
     timeEntriesWithoutRate: null, // unmeasured - must contribute 0, same as the nulls above
+    countsAsOf: null,
     possibleDuplicates: [{ jobId: "d", jobName: "D", amount: 100, date: "2026-06-01" }],
     overallConfidence: "medium",
     // The plain counts the Data Health page states in words. Kept consistent

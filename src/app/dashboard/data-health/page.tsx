@@ -135,7 +135,13 @@ export default async function DataHealthPage() {
         />
       </div>
 
-      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <p className="mt-8 text-xs text-gray-500">
+        {h.countsAsOf
+          ? `The four counts below are measured during a full sync of your whole company, last run ${h.countsAsOf.toLocaleDateString()}. The lists above are current as of your most recent sync.`
+          : "The four counts below are measured during a full sync of your whole company, which hasn't run yet for this connection."}
+      </p>
+
+      <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <CountAmountSection
           title="Unassigned expenses"
           help="Expenses synced from QuickBooks with no customer or project tagged at all - could be genuine overhead, or a missed tagging opportunity worth a look."

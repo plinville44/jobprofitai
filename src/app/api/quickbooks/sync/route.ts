@@ -46,7 +46,7 @@ async function runSync(req: NextRequest) {
     );
   }
 
-  const { connectionId } = await req.json();
+  const { connectionId, fullResync } = await req.json();
   const connection = await prisma.quickBooksConnection.findUnique({
     where: { id: connectionId },
   });
@@ -55,6 +55,6 @@ async function runSync(req: NextRequest) {
     return NextResponse.json({ error: "Connection not found" }, { status: 404 });
   }
 
-  const result = await runSyncForConnection(connectionId);
+  const result = await runSyncForConnection(connectionId, { forceFull: fullResync === true });
   return NextResponse.json(result);
 }
