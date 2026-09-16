@@ -44,7 +44,11 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const data: { category?: string | null; estimatedCost?: number | null } = {};
+    const data: {
+      category?: string | null;
+      estimatedCost?: number | null;
+      statusOverride?: string | null;
+    } = {};
 
     if ("category" in body) {
       if (body.category === null || body.category === "") {
@@ -68,11 +72,27 @@ export async function PATCH(
       }
     }
 
+    // Job status is manual for the same reason the two fields above are.
+    // QuickBooks Projects carry a status its API does not expose - marking a
+    // project Completed there changes nothing we can see - so "is this job
+    // finished" has to be answerable here or Profit Intelligence, which only
+    // compares completed jobs, stays silent forever.
+    if ("statusOverride" in body) {
+      if (body.statusOverride === null || body.statusOverride === "") {
+        data.statusOverride = null;
+      } else if (body.statusOverride === "open" || body.statusOverride === "closed") {
+        data.statusOverride = body.statusOverride;
+      } else {
+        return NextResponse.json({ error: "Invalid job status" }, { status: 400 });
+      }
+    }
+
     const updated = await prisma.job.update({ where: { id: job.id }, data });
     return NextResponse.json({
       ok: true,
       category: updated.category,
       estimatedCost: updated.estimatedCost != null ? Number(updated.estimatedCost) : null,
+      statusOverride: updated.statusOverride,
     });
   } catch (err) {
     console.error("jobs/[jobId] PATCH failed:", err instanceof Error ? err.message : "Unknown error");

@@ -253,7 +253,22 @@ model Job {
   parentQboId       String?
   name              String
   customerName      String?
-  status            String    @default("open") // "open" | "closed"
+  status            String    @default("open") // "open" | "closed" - mirrors the QuickBooks customer's Active flag
+  // Set by the contractor in JobProfitAI, and it wins over `status` above.
+  //
+  // QuickBooks Projects have a status ("In progress" / "Completed") that its
+  // v3 API does not expose on the Customer record at all - confirmed against
+  // a real company by dumping every field it returns. Marking a project
+  // Completed in QuickBooks changes nothing we can see. The only synced
+  // signal is Active, which flips when a customer is made inactive, and that
+  // is not what marking a project complete does.
+  //
+  // Without this field a contractor who uses Projects normally would never
+  // have a single completed job here, so Profit Intelligence - which only
+  // compares finished work - could never say anything to them.
+  //
+  // null = follow QuickBooks. "open" | "closed" = the contractor's own call.
+  statusOverride    String?
 
   estimatedRevenue  Decimal?  @db.Decimal(12, 2) // synced from QBO Estimate entity when available
   estimatedCost     Decimal?  @db.Decimal(12, 2) // manual only - QBO's public API doesn't expose internal cost budgets, see plan §6

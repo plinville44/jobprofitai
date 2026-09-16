@@ -6,9 +6,8 @@ import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
 import { prisma } from "@/lib/prisma";
 import { getConnectionProfitData, type JobFinancials } from "@/lib/profitability";
 import { resolveStatusFilter, STATUS_OPTIONS } from "@/lib/dateRange";
-import { NO_VALUE, formatCurrency, formatPct, formatDate } from "@/lib/format";
-import { DataQualityBadge } from "@/components/dashboard/Badges";
 import SortSelect from "@/components/dashboard/SortSelect";
+import JobsTable, { type JobRow } from "@/components/dashboard/JobsTable";
 
 type SortKey =
   | "lowest_margin"
@@ -56,6 +55,31 @@ function riskScore(j: JobFinancials): number {
   if (j.targetMarginPct == null || j.grossMarginPct == null) return -Infinity;
   const gap = j.targetMarginPct - j.grossMarginPct * 100;
   return gap > 0 ? gap * j.revenue : -Infinity;
+}
+
+/**
+ * JobFinancials carries far more than this table shows, including peer
+ * comparisons and confidence reasoning. Only these fields cross into the
+ * client component, so a bigger server-side shape never has to be
+ * serialized and shipped to the browser to render a row.
+ */
+function toRow(j: JobFinancials): JobRow {
+  return {
+    jobId: j.jobId,
+    jobName: j.jobName,
+    customerName: j.customerName,
+    status: j.status,
+    revenue: j.revenue,
+    estimatedCost: j.estimatedCost,
+    costs: j.costs,
+    grossProfit: j.grossProfit,
+    grossMarginPct: j.grossMarginPct,
+    profitabilityAvailable: j.profitabilityAvailable,
+    targetMarginPct: j.targetMarginPct,
+    varianceVsEstimate: j.varianceVsEstimate,
+    dataConfidence: j.dataConfidence,
+    lastFinancialActivity: j.lastFinancialActivity,
+  };
 }
 
 export default async function JobsPage(props: {
@@ -132,56 +156,7 @@ export default async function JobsPage(props: {
       {jobs.length === 0 ? (
         <p className="mt-8 text-sm text-gray-500">No jobs match this filter yet.</p>
       ) : (
-        <div className="mt-4 overflow-x-auto rounded-xl border border-gray-200">
-          <table className="w-full min-w-[900px] text-left text-sm">
-            <thead className="bg-gray-50 text-xs uppercase text-gray-500">
-              <tr>
-                <th className="px-4 py-2 font-medium">Job</th>
-                <th className="px-4 py-2 font-medium">Customer</th>
-                <th className="px-4 py-2 font-medium">Status</th>
-                <th className="px-4 py-2 font-medium">Revenue</th>
-                <th className="px-4 py-2 font-medium">Est. Cost</th>
-                <th className="px-4 py-2 font-medium">Actual Cost</th>
-                <th className="px-4 py-2 font-medium">Gross Profit</th>
-                <th className="px-4 py-2 font-medium">Gross Margin</th>
-                <th className="px-4 py-2 font-medium">Target</th>
-                <th className="px-4 py-2 font-medium">Variance</th>
-                <th className="px-4 py-2 font-medium">Data</th>
-                <th className="px-4 py-2 font-medium">Last Activity</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {jobs.map((j) => (
-                <tr key={j.jobId} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-navy">
-                    <Link href={`/dashboard/jobs/${j.jobId}`} className="hover:underline">
-                      {j.jobName}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 text-gray-600">{j.customerName ?? NO_VALUE}</td>
-                  <td className="px-4 py-3 text-gray-600 capitalize">{j.status}</td>
-                  <td className="px-4 py-3 text-gray-600">{formatCurrency(j.revenue)}</td>
-                  <td className="px-4 py-3 text-gray-600">{formatCurrency(j.estimatedCost)}</td>
-                  <td className="px-4 py-3 text-gray-600">{formatCurrency(j.costs)}</td>
-                  <td className="px-4 py-3 text-gray-600">
-                    {j.profitabilityAvailable ? formatCurrency(j.grossProfit) : NO_VALUE}
-                  </td>
-                  <td className="px-4 py-3 text-gray-600">
-                    {j.profitabilityAvailable ? formatPct(j.grossMarginPct) : "Unavailable"}
-                  </td>
-                  <td className="px-4 py-3 text-gray-600">{j.targetMarginPct != null ? `${j.targetMarginPct}%` : NO_VALUE}</td>
-                  <td className="px-4 py-3 text-gray-600">
-                    {j.varianceVsEstimate != null ? formatCurrency(j.varianceVsEstimate) : NO_VALUE}
-                  </td>
-                  <td className="px-4 py-3">
-                    <DataQualityBadge confidence={j.dataConfidence} />
-                  </td>
-                  <td className="px-4 py-3 text-gray-500">{formatDate(j.lastFinancialActivity)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <JobsTable jobs={jobs.map(toRow)} />
       )}
     </main>
   );

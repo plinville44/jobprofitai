@@ -273,25 +273,34 @@ export function setupReminderEmail(name: string | null, daysLeft: number): Rende
 /**
  * The pivotal onboarding email: data has landed, here is what to do with it.
  *
- * It names the two fields QuickBooks cannot supply, and it says why each one
- * matters, because both gate features the customer is paying for and neither
- * announces itself as missing. Without a target margin we cannot compute
- * "jobs below target" at all. Without a job type and an estimated cost,
- * forecast at completion, budget variance and every cross-job pattern stay
- * empty. A customer who never fills these in concludes the product does not
- * work, and they would be looking at the evidence.
+ * It names every field QuickBooks cannot supply, and says why each one
+ * matters, because they all gate features the customer is paying for and
+ * none of them announces itself as missing. Without a target margin we
+ * cannot compute "jobs below target" at all. Without a job type and an
+ * estimated cost, forecast at completion, budget variance and every
+ * cross-job pattern stay empty. And without jobs marked finished, Profit
+ * Intelligence has nothing to compare, because it only ever looks at
+ * completed work.
+ *
+ * That third one is the least obvious and the most damaging. QuickBooks
+ * Projects have a status its API does not expose, so marking a project
+ * Completed there tells us nothing (see src/lib/jobStatus.ts). A customer
+ * who assumes it carries over will finish job after job and watch Profit
+ * Intelligence stay empty, and they would be looking at the evidence when
+ * they conclude the product does not work.
  */
 export function analysisReadyEmail(companyName: string): RenderedEmail {
   return buildEmail("Your numbers are in. Here's where to start", {
-    preheader: "Your first analysis is done, plus the two fields that unlock the rest.",
+    preheader: "Your first analysis is done, plus the three things that unlock the rest.",
     heading: "Your numbers are in",
     body: [
       `We've analyzed the job data in ${companyName}. Start on the dashboard: revenue, cost, gross profit and margin for every job, with the ones that need attention listed first.`,
-      "Two things are worth five minutes now, because until they're set, parts of JobProfitAI have nothing to work with.",
+      "Three things are worth five minutes now, because until they're set, parts of JobProfitAI have nothing to work with. QuickBooks doesn't have a field for any of them, which is why they're entered here.",
     ],
     bullets: [
       "Set your target margin in Settings. Until you do, we can't tell you which jobs are coming in below target, because we don't know what your target is.",
-      "Add a job type and an estimated cost to your open jobs. Job type is what lets us compare similar jobs to each other. Estimated cost is what powers budget variance and forecast at completion. QuickBooks has neither field, so both are entered in JobProfitAI, and we suggest the job type from the job name to save you the typing.",
+      "Add a job type and an estimated cost to your open jobs. Job type is what lets us compare similar jobs to each other. Estimated cost is what powers budget variance and forecast at completion. We suggest the job type from the job name to save you the typing.",
+      "Mark your finished jobs as completed, on the Jobs page. You can select several and do them in one go. This one surprises people: marking a project Completed in QuickBooks doesn't reach us, because QuickBooks doesn't share project status with outside apps. Until a job is marked finished here, it can't be part of the pattern-finding, which only compares completed work.",
     ],
     cta: { label: "Open your dashboard", url: appUrl("/dashboard") },
     footnote:

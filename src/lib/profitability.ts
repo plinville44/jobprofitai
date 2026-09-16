@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import { requireFeature } from "./entitlements";
+import { effectiveJobStatus, CLOSED_JOB_WHERE } from "./jobStatus";
 
 // ============================================================================
 // PURE CALCULATION LAYER
@@ -1073,7 +1074,7 @@ export async function getConnectionProfitData(
     id: j.id,
     name: j.name,
     customerName: j.customerName,
-    status: j.status,
+    status: effectiveJobStatus(j),
     category: j.category,
     estimatedRevenue: j.estimatedRevenue == null ? null : toNum(j.estimatedRevenue),
     estimatedCost: j.estimatedCost == null ? null : toNum(j.estimatedCost),
@@ -1185,7 +1186,7 @@ export async function getMarginTrend(
   granularity: "monthly" | "quarterly"
 ): Promise<MarginTrendPoint[]> {
   const jobs = await prisma.job.findMany({
-    where: { connectionId, status: "closed" },
+    where: { connectionId, ...CLOSED_JOB_WHERE },
     include: { costEntries: true, invoices: true },
   });
 
@@ -1231,6 +1232,10 @@ export interface JobProfitData {
   priorMarginPcts: number[]; // oldest-first, from past WeeklyDigest snapshots - powers the Profit Trend section
   rawCostEntries: { id: string; category: string; description: string | null; amount: number; txnDate: Date; qboSourceType: string }[];
   rawInvoices: { id: string; amount: number; status: string; txnDate: Date }[];
+  /** The contractor's own status choice, or null when following QuickBooks. */
+  statusOverride: string | null;
+  /** What the sync read from the QuickBooks customer's Active flag. */
+  syncedStatus: string;
 }
 
 /**
@@ -1270,7 +1275,7 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
     id: job.id,
     name: job.name,
     customerName: job.customerName,
-    status: job.status,
+    status: effectiveJobStatus(job),
     category: job.category,
     estimatedRevenue: job.estimatedRevenue == null ? null : toNum(job.estimatedRevenue),
     estimatedCost: job.estimatedCost == null ? null : toNum(job.estimatedCost),
@@ -1296,7 +1301,7 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
   const peerCompletedCostByCategory: Record<string, number[]> = {};
   if (canBenchmark && job.category) {
     const peers = await prisma.job.findMany({
-      where: { connectionId: connection.id, category: job.category, status: "closed", id: { not: job.id } },
+      where: { connectionId: connection.id, category: job.category, ...CLOSED_JOB_WHERE, id: { not: job.id } },
       include: { costEntries: true, invoices: true },
     });
     for (const peer of peers) {
@@ -1304,7 +1309,7 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
         id: peer.id,
         name: peer.name,
         customerName: peer.customerName,
-        status: peer.status,
+        status: effectiveJobStatus(peer),
         category: peer.category,
         estimatedRevenue: peer.estimatedRevenue == null ? null : toNum(peer.estimatedRevenue),
         estimatedCost: peer.estimatedCost == null ? null : toNum(peer.estimatedCost),
@@ -1344,6 +1349,8 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
       qboSourceType: c.qboSourceType,
     })),
     rawInvoices: job.invoices.map((i) => ({ id: i.id, amount: toNum(i.amount), status: i.status, txnDate: i.txnDate })),
+    statusOverride: job.statusOverride,
+    syncedStatus: job.status,
   };
 }
 

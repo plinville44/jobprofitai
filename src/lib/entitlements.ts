@@ -1,4 +1,5 @@
 import { prisma } from "./prisma";
+import { OPEN_JOB_WHERE } from "./jobStatus";
 import {
   PLANS,
   TRIAL_LIMITS,
@@ -329,7 +330,7 @@ export async function getUsageAgainstLimits(
   const [connections, activeJobs] = await Promise.all([
     prisma.quickBooksConnection.count({ where: { userId, disconnectedAt: null } }),
     prisma.job.count({
-      where: { status: "open", connection: { userId, disconnectedAt: null } },
+      where: { ...OPEN_JOB_WHERE, connection: { userId, disconnectedAt: null } },
     }),
   ]);
 

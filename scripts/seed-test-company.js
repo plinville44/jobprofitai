@@ -58,6 +58,7 @@ const DRY_RUN = process.argv.includes("--dry-run");
 const CLOSE_ONLY = process.argv.includes("--close");
 const INSPECT = process.argv.includes("--inspect");
 const FIX_TIME = process.argv.includes("--fix-time");
+const INSPECT_JOBS = process.argv.includes("--inspect-jobs");
 
 if (!ACCESS_TOKEN || !REALM_ID) {
   console.error("Missing QBO_ACCESS_TOKEN or QBO_REALM_ID. See the comment at the top of this file.");
@@ -533,6 +534,28 @@ async function fixTimeActivityRates() {
   }
 }
 
+/**
+ * Dumps the complete raw Customer record for every project, exactly as
+ * QuickBooks returns it. The question this answers: when someone marks a
+ * Project "Completed" in the QuickBooks interface, does ANY field on the
+ * record change? If nothing does, no amount of reading harder on our side
+ * will ever detect a finished job.
+ */
+async function inspectJobs() {
+  const res = await query("SELECT * FROM Customer WHERE Active IN (true, false) MAXRESULTS 1000");
+  const rows = (res?.QueryResponse?.Customer ?? []).filter((c) => c.Job === true);
+  console.log(`\n${rows.length} projects, full raw records:\n`);
+  for (const c of rows) {
+    console.log(`--- ${c.DisplayName} (Id ${c.Id}) ---`);
+    console.log(JSON.stringify(c, null, 2));
+    console.log("");
+  }
+  const keys = new Set();
+  for (const c of rows) for (const k of Object.keys(c)) keys.add(k);
+  console.log("Every field name QuickBooks returned across all projects:");
+  console.log([...keys].sort().join(", "));
+}
+
 // ============================================================
 // Main
 // ============================================================
@@ -544,6 +567,11 @@ async function main() {
 
   if (INSPECT) {
     await inspectTimeActivities();
+    return;
+  }
+
+  if (INSPECT_JOBS) {
+    await inspectJobs();
     return;
   }
 

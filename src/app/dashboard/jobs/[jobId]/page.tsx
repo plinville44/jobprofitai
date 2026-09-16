@@ -70,6 +70,8 @@ export default async function JobDetailPage({
         jobName={f.jobName}
         initialCategory={f.category}
         initialEstimatedCost={f.estimatedCost}
+        initialStatusOverride={data.statusOverride}
+        syncedStatus={data.syncedStatus}
       />
 
       {!f.profitabilityAvailable && (
