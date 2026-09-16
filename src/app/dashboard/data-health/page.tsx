@@ -161,6 +161,17 @@ export default async function DataHealthPage() {
         <DuplicatesSection items={h.possibleDuplicates} />
       </div>
 
+      <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <CountAmountSection
+          title="Time entries with no hourly rate"
+          help="QuickBooks only stores an hourly rate on time it marks billable, so hours logged as non-billable arrive with no rate and can't be costed. These hours are real work that counts as zero labor cost here. Set an hourly rate on the entry in QuickBooks, or record that labor as a bill or expense instead."
+          count={h.timeEntriesWithoutRate}
+          amount={null}
+          noun="time entry"
+          nounPlural="time entries"
+        />
+      </div>
+
       <p className="mt-8 text-xs text-gray-400">
         Every number on this page is computed directly from your synced QuickBooks data - nothing here is estimated or
         written by AI.
@@ -243,12 +254,18 @@ function CountAmountSection({
   count,
   amount,
   neutral = false,
+  noun = "transaction",
+  nounPlural,
 }: {
   title: string;
   help: string;
   count: number | null;
   amount: number | null;
   neutral?: boolean;
+  /** Singular. Not everything counted here is a transaction. */
+  noun?: string;
+  /** Supply when adding an "s" is wrong, e.g. "time entry" -> "time entries". */
+  nounPlural?: string;
 }) {
   const status = neutral ? (count == null ? "unmeasured" : count > 0 ? "unmeasured" : "good") : statusFor(count);
   return (
@@ -265,7 +282,7 @@ function CountAmountSection({
           <>
             <span className="text-xl font-bold text-navy">{count}</span>
             <span className="text-sm text-gray-500">
-              {count === 1 ? "transaction" : "transactions"}
+              {count === 1 ? noun : nounPlural ?? `${noun}s`}
               {amount != null && amount > 0 ? ` · ${formatCurrency(amount)}` : ""}
             </span>
           </>

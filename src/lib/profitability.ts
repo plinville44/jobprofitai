@@ -536,6 +536,14 @@ export interface DataHealthReport {
   // quick glance for accuracy, not something to fix. null = not yet measured.
   costsMatchedViaParentCount: number | null;
   costsMatchedViaParentAmount: number | null;
+  // Time entries QuickBooks returned with no hourly rate, which the sync has
+  // to skip because an hour with no rate has no cost. This is NOT a rare
+  // edge case: QuickBooks only stores an hourly rate on time it considers
+  // billable, so a contractor who logs crew hours as non-billable has every
+  // one of those hours silently worth nothing here. Surfaced so the labor
+  // total being low is explained rather than just wrong-looking.
+  // null = not yet measured.
+  timeEntriesWithoutRate: number | null;
   possibleDuplicates: { jobName: string; amount: number; date: string; jobId: string }[];
   overallConfidence: DataConfidence;
   // The raw counts behind overallConfidence. Exposed so the UI can state the
@@ -590,6 +598,7 @@ export function computeDataHealth(
   const unresolvedExpenseAmount = readCount("unresolvedExpenseAmount");
   const costsMatchedViaParentCount = readCount("costsMatchedViaParentCount");
   const costsMatchedViaParentAmount = readCount("costsMatchedViaParentAmount");
+  const timeEntriesWithoutRate = readCount("timeActivitiesSkippedNoRate");
 
   // Possible duplicate: same job, same amount, same date, but we only ever
   // store one CostEntry per (source type, source id) via upsert - so a true
@@ -626,6 +635,7 @@ export function computeDataHealth(
     unresolvedExpenseAmount,
     costsMatchedViaParentCount,
     costsMatchedViaParentAmount,
+    timeEntriesWithoutRate,
     possibleDuplicates,
     overallConfidence,
     totalJobs,
@@ -902,6 +912,11 @@ export function computeDashboardTotals(
     dataHealth.completedJobsWithUnresolvedActivity.length +
     (dataHealth.unassignedExpenseCount ?? 0) +
     (dataHealth.unresolvedExpenseCount ?? 0) +
+    // Counted, unlike costsMatchedViaParentCount above, because these hours
+    // are genuinely missing from the labor total rather than matched by a
+    // judgment call. A job whose crew time is all non-billable reads as
+    // having no labor cost at all, which is a wrong number, not a footnote.
+    (dataHealth.timeEntriesWithoutRate ?? 0) +
     dataHealth.possibleDuplicates.length;
 
   return {

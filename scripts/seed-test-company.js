@@ -57,6 +57,7 @@ const REALM_ID = process.env.QBO_REALM_ID;
 const DRY_RUN = process.argv.includes("--dry-run");
 const CLOSE_ONLY = process.argv.includes("--close");
 const INSPECT = process.argv.includes("--inspect");
+const FIX_TIME = process.argv.includes("--fix-time");
 
 if (!ACCESS_TOKEN || !REALM_ID) {
   console.error("Missing QBO_ACCESS_TOKEN or QBO_REALM_ID. See the comment at the top of this file.");
@@ -138,12 +139,24 @@ const BILLS = [
 
 const TIME_ACTIVITIES = [
   // Rate set, so this one becomes a real $520 labor cost.
-  { job: "j5", hours: 8, rate: 65, daysAgo: 22, note: "with-rate" },
+  //
+  // billable: true is REQUIRED for the rate to survive, and this was learned
+  // the hard way. QuickBooks only stores an hourly rate on time it considers
+  // billable. Send HourlyRate on a NotBillable entry and it accepts the
+  // request, returns 200, and stores a rate of 0, with no error anywhere.
+  // The first run of this script did exactly that and $520 of labor silently
+  // vanished from the dashboard.
+  //
+  // The reason the sandbox seeder used NotBillable does not apply here:
+  // billable-but-uninvoiced time counts as an unbilled charge and blocks
+  // deactivating a customer, but this entry lives on j5, the one job that
+  // deliberately stays open and is never deactivated.
+  { job: "j5", hours: 8, rate: 65, daysAgo: 22, billable: true, note: "with-rate" },
 
   // Mess 3. No rate. The sync counts these separately and skips them,
   // because an hour with no rate has no cost. Adds $0, so every total above
   // stays correct.
-  { job: "j5", hours: 4, rate: 0, daysAgo: 21, note: "no-rate" },
+  { job: "j5", hours: 4, rate: 0, daysAgo: 21, billable: false, note: "no-rate" },
 ];
 
 // Account names exactly as QuickBooks' Construction chart of accounts
@@ -389,10 +402,8 @@ async function createTimeActivities(jobIds, vendorIds, seen) {
       // counts as an unbilled charge and blocks deactivating the customer
       // later, which would break the --close step. The app's cost tracking
       // ignores billable status entirely.
-      BillableStatus: "NotBillable",
+      BillableStatus: t.billable ? "Billable" : "NotBillable",
     };
-    // Setting HourlyRate through the API sidesteps the QuickBooks interface,
-    // where the rate field only appears once you tick Billable.
     if (t.rate > 0) payload.HourlyRate = t.rate;
 
     const label = `time ${t.job} ${t.hours}h @ ${t.rate || "no rate"}  [${t.note}]`;
@@ -481,6 +492,47 @@ async function inspectTimeActivities() {
   }
 }
 
+/**
+ * Repairs time entries written by an earlier run of this script that set
+ * NotBillable and therefore lost their hourly rate. Only touches entries
+ * carrying this script's own marker, and only the ones that are supposed to
+ * have a rate. The deliberately rate-less entry is left exactly as it is,
+ * because a zero rate is the whole point of that one.
+ */
+async function fixTimeActivityRates() {
+  const res = await query("SELECT * FROM TimeActivity MAXRESULTS 1000");
+  const rows = res?.QueryResponse?.TimeActivity ?? [];
+
+  for (const [i, t] of TIME_ACTIVITIES.entries()) {
+    if (!(t.rate > 0)) continue;
+    const marker = `${MARK}:time:${i}`;
+    const row = rows.find((r) => r.Description === marker);
+    if (!row) {
+      console.log(`  skip    ${marker}  (not found, run without --fix-time first)`);
+      continue;
+    }
+    if (row.HourlyRate > 0 && row.BillableStatus === "Billable") {
+      console.log(`  skip    ${marker}  (already $${row.HourlyRate}/hr and billable)`);
+      skipped++;
+      continue;
+    }
+    if (DRY_RUN) {
+      console.log(`  would   set ${marker} to Billable at $${t.rate}/hr`);
+      continue;
+    }
+    // Full update rather than sparse. QuickBooks is inconsistent about which
+    // fields it will keep on a sparse TimeActivity update, and losing the
+    // customer reference here would be worse than the bug being fixed.
+    await create("timeactivity", {
+      ...row,
+      BillableStatus: "Billable",
+      HourlyRate: t.rate,
+    });
+    created++;
+    console.log(`  fixed   ${marker}  now Billable at $${t.rate}/hr`);
+  }
+}
+
 // ============================================================
 // Main
 // ============================================================
@@ -492,6 +544,14 @@ async function main() {
 
   if (INSPECT) {
     await inspectTimeActivities();
+    return;
+  }
+
+  if (FIX_TIME) {
+    console.log("Repairing time entry rates...");
+    await fixTimeActivityRates();
+    console.log(`\nDone. ${created} fixed, ${skipped} already correct.`);
+    console.log("Re-sync in JobProfitAI, then check Tracked Job Costs reads $83,150.");
     return;
   }
 

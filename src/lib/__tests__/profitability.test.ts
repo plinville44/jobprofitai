@@ -738,6 +738,7 @@ describe("computeDataHealth", () => {
     expect(noSyncYet.unassignedExpenseCount).toBeNull();
     expect(noSyncYet.unresolvedExpenseCount).toBeNull();
     expect(noSyncYet.costsMatchedViaParentCount).toBeNull();
+    expect(noSyncYet.timeEntriesWithoutRate).toBeNull();
 
     const measuredZero = computeDataHealth(jobs, NOW, { unassignedExpenseCount: 0, unassignedExpenseAmount: 0 });
     expect(measuredZero.unassignedExpenseCount).toBe(0); // a real, counted zero - not "not yet measured"
@@ -750,11 +751,14 @@ describe("computeDataHealth", () => {
       unresolvedExpenseAmount: 300,
       costsMatchedViaParentCount: 1,
       costsMatchedViaParentAmount: 400,
+      timeActivitiesSkippedNoRate: 3,
     });
     expect(measuredNonZero.unassignedExpenseCount).toBe(5);
     expect(measuredNonZero.unassignedExpenseAmount).toBe(750);
     expect(measuredNonZero.unresolvedExpenseCount).toBe(2);
     expect(measuredNonZero.costsMatchedViaParentCount).toBe(1);
+    // Read from the sync's own key name, which differs from the report's.
+    expect(measuredNonZero.timeEntriesWithoutRate).toBe(3);
   });
 
   /**
@@ -964,6 +968,7 @@ describe("computeDashboardTotals", () => {
     unresolvedExpenseAmount: null,
     costsMatchedViaParentCount: 999, // deliberately large, to prove it's excluded from dataIssues
     costsMatchedViaParentAmount: 999,
+    timeEntriesWithoutRate: null, // unmeasured - must contribute 0, same as the nulls above
     possibleDuplicates: [{ jobId: "d", jobName: "D", amount: 100, date: "2026-06-01" }],
     overallConfidence: "medium",
     // The plain counts the Data Health page states in words. Kept consistent
