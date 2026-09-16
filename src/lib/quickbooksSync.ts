@@ -181,7 +181,9 @@ async function runFullSync(connectionId: string, realmId: string, accessToken: s
   const allCustomers = customerResult?.QueryResponse?.Customer ?? [];
   const customerNameById = new Map<string, string>();
   for (const c of allCustomers) {
-    if (c?.Id && typeof c.DisplayName === "string") customerNameById.set(String(c.Id), c.DisplayName);
+    if (c?.Id && typeof c.DisplayName === "string") {
+      customerNameById.set(String(c.Id), cleanCustomerName(c.DisplayName, c.Active));
+    }
   }
   const projectJobs = allCustomers.filter((c: any) => c.Job === true);
   await upsertJobsFromCustomers(connectionId, projectJobs, customerNameById);
@@ -351,6 +353,23 @@ async function runIncrementalSync(
 // Shared upsert helpers (used by both full and incremental sync)
 // ---------------------------------------------------------------------------
 
+/**
+ * QuickBooks renames a customer to "Whatever (deleted)" when you make it
+ * inactive, and inactive is exactly how a contractor marks a job finished.
+ * Stored verbatim, that meant every completed job read "Kitchen Remodel
+ * (deleted)" forever, including inside AI-written findings, which made
+ * finished work look like data someone had thrown away.
+ *
+ * Only stripped when the record is actually inactive, and only as a
+ * trailing suffix, so a customer who genuinely has those characters in
+ * their name keeps them while active.
+ */
+function cleanCustomerName(displayName: unknown, active: unknown): string {
+  const name = typeof displayName === "string" ? displayName : "";
+  if (active === false) return name.replace(/\s*\(deleted\)\s*$/i, "").trim() || name;
+  return name;
+}
+
 async function upsertJobsFromCustomers(
   connectionId: string,
   customers: any[],
@@ -365,6 +384,7 @@ async function upsertJobsFromCustomers(
     // genuinely has no client to show and stays null.
     const customerName: string | null =
       (parentQboId ? customerNameById?.get(parentQboId) : undefined) ?? c.ParentRef?.name ?? null;
+    const jobName = cleanCustomerName(c.DisplayName, c.Active);
     await prisma.job.upsert({
       where: { connectionId_qboId: { connectionId, qboId: c.Id } },
       create: {
@@ -372,7 +392,7 @@ async function upsertJobsFromCustomers(
         qboId: c.Id,
         parentQboId,
         customerName,
-        name: c.DisplayName,
+        name: jobName,
         status: c.Active ? "open" : "closed",
       },
       update: {
@@ -381,7 +401,7 @@ async function upsertJobsFromCustomers(
         // that cannot see the parent must not blank a name a full sync
         // already got right.
         ...(customerName ? { customerName } : {}),
-        name: c.DisplayName,
+        name: jobName,
         status: c.Active ? "open" : "closed",
       },
     });
