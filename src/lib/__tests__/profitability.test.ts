@@ -1001,6 +1001,28 @@ describe("computeDashboardTotals", () => {
     expect(totals.revenue).toBe(23000);
     expect(totals.trackedJobCosts).toBe(15500);
     expect(totals.jobGrossProfit).toBe(7500);
+
+    // Revenue with no costs is not profit. A job in that state is excluded
+    // from the profit figure entirely rather than contributing its full
+    // revenue, and when no job in view has both, the figure is null so the
+    // dashboard shows a dash instead of asserting a number.
+    const withUncostedJob = computeDashboardTotals(
+      [...jobs, makeFinancials({ jobId: "e", revenue: 2400, costs: 0, grossProfit: null, grossMarginPct: null, profitabilityAvailable: false })],
+      needsAttention,
+      dataHealth,
+      30
+    );
+    expect(withUncostedJob.revenue).toBe(25400); // the fact: all invoices in range
+    expect(withUncostedJob.jobGrossProfit).toBe(7500); // unchanged by the uncosted job
+
+    const noneCostable = computeDashboardTotals(
+      [makeFinancials({ revenue: 9000, costs: 0, grossProfit: null, grossMarginPct: null, profitabilityAvailable: false })],
+      [],
+      dataHealth,
+      30
+    );
+    expect(noneCostable.jobGrossProfit).toBeNull();
+    expect(noneCostable.revenue).toBe(9000);
     expect(totals.avgJobMarginPct).toBeCloseTo((0.4 + 0.1 + 0.375) / 3);
     expect(totals.jobsBelowTarget).toBe(1);
     expect(totals.profitAtRisk).toBe(750); // only the below_target_margin item counts, not the over_budget one

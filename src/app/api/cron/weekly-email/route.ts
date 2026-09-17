@@ -5,6 +5,7 @@ import { generateWeeklyDigestForConnection } from "@/lib/digest";
 import { runSyncForConnection } from "@/lib/quickbooksSync";
 import { authorizeCron } from "@/lib/cronAuth";
 import { sendEmail } from "@/lib/email/client";
+import { getEntitlements } from "@/lib/entitlements";
 
 // Vercel Cron Jobs send a GET request on the configured schedule (see
 // vercel.json - hourly, "0 * * * *"). This route runs once per hour and, for
@@ -70,6 +71,20 @@ export async function GET(req: NextRequest) {
       }
       if (connection.emailRecipients.length === 0) {
         results.push({ connectionId: connection.id, status: "skipped", detail: "no recipients configured" });
+        continue;
+      }
+
+      // Entitlement, enforced here like every other paid path. Without it an
+      // expired trial kept receiving the Weekly Profit Brief and kept
+      // spending Anthropic tokens generating it, while the trial-expired
+      // email told the same person their profit intelligence was paused.
+      const entitlements = await getEntitlements(connection.userId);
+      if (!entitlements.active) {
+        results.push({
+          connectionId: connection.id,
+          status: "skipped",
+          detail: `no active entitlement (${entitlements.access})`,
+        });
         continue;
       }
 

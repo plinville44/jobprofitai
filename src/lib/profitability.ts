@@ -874,17 +874,16 @@ export function diagnoseOpportunityGap(jobs: JobFinancials[]): OpportunityGap {
 export interface DashboardTotals {
   activeJobs: number;
   /**
-   * How many jobs are in the view the customer is actually looking at.
-   *
-   * Separate from activeJobs because the dashboard's job list is already
-   * filtered by the Active / Completed / All tabs before it gets here.
-   * Counting only open jobs inside a list of completed ones produces a
-   * confident zero, which is true and useless.
+   * How many jobs the customer is actually looking at: matching the
+   * Active / Completed / All tab AND having revenue or costs inside the
+   * selected period. Separate from activeJobs, which counts open jobs only
+   * and is what the weekly digest wants.
    */
   jobsInView: number;
   revenue: number;
   trackedJobCosts: number;
-  jobGrossProfit: number;
+  /** Null when no job in view has both revenue and costs. See the guard below. */
+  jobGrossProfit: number | null;
   avgJobMarginPct: number | null;
   targetMarginPct: number | null;
   jobsBelowTarget: number;
@@ -905,10 +904,41 @@ export function computeDashboardTotals(
   targetMarginPct: number | null
 ): DashboardTotals {
   const activeJobs = jobs.filter((j) => j.status === "open").length;
-  const jobsInView = jobs.length;
+
+  // Only jobs with money in the selected period. The date range windows each
+  // job's cost entries and invoices but never removes the job itself, so a
+  // job with nothing in the window sits in this list contributing zeroes.
+  // Counting those made the job count the one tile that ignored the period
+  // picker, which reads as the picker being broken.
+  const jobsWithActivity = jobs.filter((j) => j.revenue > 0 || j.costs > 0);
+  const jobsInView = jobsWithActivity.length;
+
   const revenue = jobs.reduce((s, j) => s + j.revenue, 0);
   const trackedJobCosts = jobs.reduce((s, j) => s + j.costs, 0);
-  const jobGrossProfit = revenue - trackedJobCosts;
+
+  // Gross profit follows the same rule every single job follows: revenue
+  // with no costs against it is not profit, it is an unanswered question.
+  //
+  // Without this, selecting a period that contains an invoice but none of
+  // that job's costs produced revenue minus nothing and labelled it Job
+  // Gross Profit. On 2026-09-17 "This month" read $9,000 revenue, $0 costs
+  // and $9,000 profit, on a job that had spent $8,000. Average Job Margin
+  // beside it correctly showed a dash, because it already filtered this way.
+  //
+  // Null rather than zero, so the UI shows a dash instead of asserting that
+  // the period broke even.
+  //
+  // Revenue and Tracked Job Costs above stay as they are: they are plain
+  // facts about the period. This one is a judgment, so it uses only the jobs
+  // where the judgment can be made. That means it can differ from revenue
+  // minus costs by whatever the incomplete jobs contribute, which is exactly
+  // what the Data Health page exists to explain, and makes that page's
+  // existing promise ("left out of your company totals rather than counted
+  // as zero") true rather than aspirational.
+  const profitableBasis = jobs.filter((j) => j.profitabilityAvailable);
+  const jobGrossProfit = profitableBasis.length
+    ? profitableBasis.reduce((sum, j) => sum + (j.revenue - j.costs), 0)
+    : null;
 
   const withMargin = jobs.filter((j) => j.grossMarginPct != null);
   const avgJobMarginPct =

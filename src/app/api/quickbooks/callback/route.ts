@@ -64,6 +64,23 @@ export async function GET(req: NextRequest) {
   const owner = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
   const defaultRecipients = owner?.email ? [owner.email] : [];
 
+  // If this QuickBooks company is already connected to a DIFFERENT
+  // JobProfitAI account, the digest recipients have to move with ownership.
+  //
+  // The update branch below reassigns userId to whoever just connected. It
+  // used to leave emailRecipients alone, so a bookkeeper who connected a
+  // client's company and later handed it over kept receiving that client's
+  // job-level revenue, costs and margins by email indefinitely. One
+  // contractor's financials in another company's inbox, with nothing in the
+  // product showing it was happening. Recipients are only reset when
+  // ownership actually changes hands; a plain reconnect by the same account
+  // keeps whatever they configured in Settings.
+  const priorConnection = await prisma.quickBooksConnection.findUnique({
+    where: { realmIdHash },
+    select: { userId: true },
+  });
+  const ownershipChanged = Boolean(priorConnection && priorConnection.userId !== userId);
+
   const connection = await prisma.quickBooksConnection.upsert({
     where: { realmIdHash },
     create: {
@@ -88,6 +105,7 @@ export async function GET(req: NextRequest) {
       accessTokenExpiresAt: new Date(now + tokens.expires_in * 1000),
       refreshTokenExpiresAt: new Date(now + tokens.x_refresh_token_expires_in * 1000),
       disconnectedAt: null,
+      ...(ownershipChanged ? { emailRecipients: defaultRecipients } : {}),
     },
   });
 
