@@ -4,12 +4,22 @@ Everything in this document is an **external action you have to perform yourself
 Vercel, Stripe, Intuit, Resend or Neon. None of it can be done from the codebase, and
 none of it has been done for you.
 
-> **Nothing in this file has been configured.** The code is written and committed; the
-> external accounts are untouched. Where this document says "create" or "set", assume it
-> does not exist yet.
+**Status as of 2026-09-17**
 
-Work through the sections in order. Stripe and Resend need to exist before the app can
-do anything useful with them.
+| Section | State |
+| --- | --- |
+| 1. Neon | Done. Launch plan, `production` branch. |
+| 2. Stripe | **Test keys only. This is the remaining work.** |
+| 3. Intuit / QuickBooks | Done and verified end to end against a real company. |
+| 4. Resend | Done. Domain verified, mail delivering. |
+| 5. Vercel | Done. Domain live, env vars set, crons scheduled. |
+
+So the sections are no longer all "not started". Read the status line at the top of each
+one before doing anything in it. Section 2 is the only one where "create" and "set" still
+mean what they say.
+
+**The deadline that matters:** the founder's own trial ends 24 September 2026. Live
+Stripe has to work before anyone can pay.
 
 **Never paste real secrets into this file, or into any file in the repository.**
 
@@ -194,78 +204,187 @@ end-to-end payment only in **test mode**, using Stripe's `4242 4242 4242 4242` t
 
 ## 3. Intuit / QuickBooks
 
-**Status: configuration complete as of 2026-09-10. Untested against a real company.**
+**Status: done and verified against a real QuickBooks Online company, 2026-09-16/17.**
 
-Production keys were approved on 2026-08-12 and are now live. The code is
-environment-aware and needed no changes, only configuration. Recorded here so the next
-person does not repeat the diagnosis.
+Production keys were approved 2026-08-12, configured 2026-09-10, and exercised end to
+end against a live Plus company on 2026-09-16. Connect, sync, disconnect and reconnect
+all work, and the numbers on the dashboard match the books to the dollar.
 
-**Done:**
+That testing found six bugs in our own code and four undocumented QuickBooks behaviors.
+All six are fixed. The four behaviors are permanent facts about the API and are written
+out below, because none of them are in Intuit's documentation and each cost real time to
+find.
 
-1. Production Client ID and Secret copied from developer.intuit.com → Keys &
-   credentials → Production, and set in Vercel scoped to **Production**.
-2. `QBO_ENVIRONMENT` and `QBO_REDIRECT_URI` set. Note that both rows are scoped
-   **Production and Preview**, while the ID and Secret are Production only. See the
-   Preview warning below.
-3. Redirect URI `https://jobprofitai.com/api/quickbooks/callback` registered under
-   Intuit → Production → Redirect URIs.
-4. Production App URLs moved off the `jobprofitai.vercel.app` placeholder. Host domain
+**Configured:**
+
+1. Production Client ID and Secret from developer.intuit.com → Keys & credentials →
+   Production, set in Vercel scoped to **Production**.
+2. `QBO_ENVIRONMENT` = `production` and
+   `QBO_REDIRECT_URI` = `https://jobprofitai.com/api/quickbooks/callback`, both scoped
+   **Production**, both stored as Vercel **Config** rather than Secret so their values
+   stay readable. Neither is a credential, and a write-only secret makes the one switch
+   that silently changes API hosts impossible to verify.
+3. Redirect URI registered under Intuit → Production → Redirect URIs. The OAuth
+   Playground's own URI, `https://developer.intuit.com/v2/OAuth2Playground/RedirectUrl`,
+   is registered alongside it so the Playground can issue tokens for scripts.
+4. Production App URLs off the `jobprofitai.vercel.app` placeholder. Host domain
    `jobprofitai.com`; launch, disconnect and connect/reconnect all point at
-   `https://jobprofitai.com/dashboard`, which redirects to `/login` when there is no
-   session and otherwise lands on the page holding the Connect button.
-5. Redeployed and verified.
+   `https://jobprofitai.com/dashboard`, which redirects to `/login` without a session
+   and otherwise lands on the page holding the Connect button.
 
-**Still open:**
+**Verified against the live company:** 7 jobs, 18 cost entries, 7 invoices, 5 estimates.
+Per-job revenue, cost, margin and estimate variance correct to the dollar. Cost
+categories split correctly across materials, subcontractors, labor and equipment. All
+three deliberately messy transactions detected (one untagged expense, one tagged to a
+parent customer with three projects, one time entry with no rate). Forecast at
+completion, Profit Intelligence cross-job patterns, the AI narrative and the weekly
+digest all produced correct figures. Disconnect and reconnect preserved history without
+duplicating anything.
 
-- Full connect → sync → disconnect cycle against a real QuickBooks Online company.
-  Production keys will not accept a sandbox company, so this needs the PWL Solutions
-  QBO subscription (Plus, not Simple Start, since the sync reads Projects or Classes).
+---
 
-**How to verify the environment without owning a QBO company.**
+### Four things QuickBooks does that its documentation does not mention
 
-Click Connect to QuickBooks on the live site and read the `client_id=` parameter in the
-Intuit consent URL before authorizing. `buildAuthorizeUrl` puts `QBO_CLIENT_ID` straight
-into that URL, so it shows which key the running deployment actually loaded. Match it
-against the Production Client ID.
+**1. The query endpoint hides inactive records unless you ask for them.**
 
-Two limits on that check, both learned the hard way:
+`SELECT * FROM Customer` returns only active customers. Inactive ones require
+`WHERE Active IN (true, false)`. There is no error and no hint; they are simply absent.
 
-- It proves the client ID only. `QBO_ENVIRONMENT` does not appear in the authorize URL,
-  and it is what selects the API base host (`sandbox-quickbooks.api.intuit.com` vs
-  `quickbooks.api.intuit.com`) and the discovery document. Production keys with
-  `QBO_ENVIRONMENT=sandbox` gives a consent screen that looks correct and a sync that
-  fails afterward. Read that value in Vercel directly.
-- If the consent screen offers a **sandbox** company, the deployment is still on
-  Development keys. Sandbox companies exist only under the development client ID.
+This matters because deactivating a customer is how a job gets marked finished. Without
+that clause a job disappeared from the sync at the exact moment it completed, kept
+whatever status it last had, and never became "closed". Profit Intelligence only
+compares completed jobs, so it could not have produced a single pattern for any
+customer. Found by closing six jobs and watching a full sync report "Synced 1 jobs".
 
-> ⚠️ **Environment variables do not reach the running deployment.** Saving a variable in
-> Vercel changes nothing until you redeploy. This is what happened on 2026-09-10: all
-> four variables were correct, the site still authorized a sandbox company, and the only
-> problem was that the Current deployment predated the save. Check the timestamp on the
-> deployment marked Current before diagnosing anything else.
+**2. Deactivating a customer renames it to "Whatever (deleted)".**
 
-> ⚠️ **The other likely failure.** This project has been bitten twice by variables saved
-> without the **Production** checkbox ticked, producing an "undefined didn't connect"
-> error. Check the Production box on every variable, every time.
+QuickBooks appends that suffix to `DisplayName` when a record goes inactive. Stored
+verbatim, every completed job read "Kitchen Remodel (deleted)" forever, including inside
+AI-written findings. `cleanCustomerName` in `quickbooksSync.ts` strips it, and only when
+the record is actually inactive. Note that `PrintOnCheckName` keeps the original.
 
-> ⚠️ **Preview can no longer test QuickBooks.** `QBO_CLIENT_ID` and `QBO_CLIENT_SECRET`
-> are scoped to Production only, so Preview deployments have no QuickBooks credentials,
-> while `QBO_ENVIRONMENT` and `QBO_REDIRECT_URI` still hand Preview the production
-> settings. To restore sandbox testing, add Preview-scoped rows holding the Development
-> ID and Secret, and narrow `QBO_ENVIRONMENT` and `QBO_REDIRECT_URI` to Production with
-> sandbox-valued Preview rows alongside them.
+**3. Projects have a status that the API does not expose at all.**
 
-**Flipping to production breaks existing sandbox connections, by design.**
-`QBO_ENVIRONMENT` is a single global switch. `QuickBooksConnection.environment` is
-written on every connection but read nowhere, so there is no per-connection fallback: a
-row holding sandbox tokens starts calling the production API, gets a 401, and shows
-"reconnect required" permanently. Clear out sandbox connections before flipping. On
-2026-09-10 the one test account was deleted from the Neon `production` branch first.
+Marking a project **Completed** in the QuickBooks interface changes nothing an
+integration can see except `LastUpdatedTime`. Confirmed by dumping every field the
+Customer endpoint returns for a project. The complete list is:
+
+```
+Active, Balance, BalanceWithJobs, BillWithParent, CurrencyRef, DisplayName,
+FullyQualifiedName, Id, IsProject, Job, Level, MetaData, ParentRef,
+PreferredDeliveryMethod, PrintOnCheckName, ShipAddr, SyncToken, Taxable,
+V4IDPseudonym, domain, sparse
+```
+
+No status field. The only synced signal is `Active`, and that flips when a customer is
+made *inactive*, which is a different act with different side effects (see 2 above).
+
+This is why `Job.statusOverride` exists and why contractors mark jobs complete inside
+JobProfitAI. See `src/lib/jobStatus.ts`, which holds the single definition of "finished"
+in both its in-memory and Prisma-filter forms. Do not add a third.
+
+`scripts/seed-test-company.js --inspect-jobs` re-runs that field dump if Intuit ever
+changes this.
+
+**4. An hourly rate is only stored on time QuickBooks considers billable.**
+
+Send `HourlyRate` on a `NotBillable` TimeActivity and the API accepts it, returns 200,
+and stores a rate of zero. No error anywhere.
+
+The sync correctly skips rate-less time, because an hour with no rate has no cost. But
+that means a contractor who logs crew hours as non-billable, which is normal on
+fixed-price work, has all of that labor silently worth nothing. Data Health now shows
+"Time entries with no hourly rate" and explains the fix, and the count is included in
+Data Issues. This is a real limitation of the integration, not a bug we can fix.
+
+`scripts/seed-test-company.js --inspect` prints what QuickBooks actually stored for each
+time entry, which is the only reliable way to check. The Time Entries screen in
+QuickBooks filters by employee by default and will not show vendor time at all.
+
+---
+
+### Composite fields and projected column lists
+
+`SELECT Id, DisplayName, ParentRef FROM Customer` returns `ParentRef` as `{value}` with
+no `name`. The same is true of `Line` on Purchase and Bill, which came back as an empty
+array for every transaction. Both were silently wrong rather than erroring.
+
+**Use `SELECT *` for any entity with a composite field.** The Customer query now also
+resolves each job's client from the parent's own record rather than from
+`ParentRef.name`, which is more robust and means a renamed customer shows up renamed at
+the next sync.
+
+---
+
+### Sync modes
+
+A person clicking **Sync now** always gets a full read. The hourly cron uses the
+incremental CDC path, which is where being light on Intuit's API actually matters.
+
+This is deliberate and worth not undoing. Incremental sync never revisits a record
+QuickBooks considers unchanged, so it cannot pick up a field we have newly started
+storing or a reading we have newly fixed. That produced two separate "why isn't my data
+updating" episodes during testing. There was briefly a second "Re-read everything"
+button; it was removed because asking a contractor to understand our two sync modes is
+exposing plumbing, and the bigger, more obvious button was the one that could not repair
+anything.
+
+---
+
+### Environment and deployment traps
+
+> ⚠️ **Environment variables do not reach the running deployment until you redeploy.**
+> On 2026-09-10 all four variables were correct, the site still authorized a sandbox
+> company, and the only problem was that the deployment marked Current predated the
+> save. Check that timestamp before diagnosing anything else.
+
+> ⚠️ **Tick the Production checkbox.** This project has been bitten three times by
+> variables saved without it, producing an "undefined didn't connect" error.
+
+> ⚠️ **`npx tsc --noEmit` lies after a schema change.** It checks against whatever
+> Prisma client was generated last time. `npm run build` runs `prisma generate` first.
+> After touching `schema.prisma`, trust the build, not `tsc` alone.
+
+> ⚠️ **Preview cannot test QuickBooks.** All four QuickBooks variables are scoped
+> Production only. To restore sandbox testing, add Preview-scoped rows with the
+> Development ID and Secret, `QBO_ENVIRONMENT` = `sandbox`, and a `QBO_REDIRECT_URI`
+> pointing at the preview host registered in the Intuit Development settings.
+
+**How to verify the environment without owning a QBO company.** Click Connect to
+QuickBooks on the live site and read the `client_id=` parameter in the Intuit consent URL
+before authorizing. `buildAuthorizeUrl` puts `QBO_CLIENT_ID` straight into that URL. Two
+limits: it proves the client ID only, since `QBO_ENVIRONMENT` never appears there; and if
+the consent screen offers a **sandbox** company, the deployment is still on Development
+keys, because sandbox companies exist only under the development client ID.
+
+**Flipping `QBO_ENVIRONMENT` breaks existing sandbox connections, by design.** It is a
+single global switch. `QuickBooksConnection.environment` is written on every connection
+but read nowhere, so there is no per-connection fallback: a row holding sandbox tokens
+starts calling the production API, gets a 401, and shows "reconnect required"
+permanently. Clear out sandbox connections before flipping.
 
 **Intuit does not tell you when a customer disconnects from their side.** The Disconnect
 URL is a page their browser is sent to, not a webhook. The database keeps thinking the
 connection is live until the next sync, when the token refresh returns `invalid_grant`
 and `ReconnectRequiredError` surfaces a reconnect prompt. Correct, but delayed.
+
+---
+
+### The test company and its seeder
+
+`scripts/seed-test-company.js` creates a fixed set of seven jobs with invoices, expenses,
+bills, time entries and three deliberate data problems, in a real QuickBooks company via
+the API. It reuses anything that already exists and marks everything it writes in
+`PrivateNote`, so a second run skips rather than doubling amounts.
+
+Modes: `--dry-run`, `--close`, `--fix-time`, `--inspect`, `--inspect-jobs`.
+
+Get a production token from developer.intuit.com → **OAuth 2.0 Playground** (note the
+URL is `/app/developer/playground`, with "developer" twice). Tokens last 60 minutes.
+
+The company needs **Plus**, not Simple Start or Essentials, because the sync reads
+Projects. QuickBooks Online Plus is $140/month as of 1 August 2026.
+
 ---
 
 ## 4. Resend
@@ -379,8 +498,22 @@ Run through this on the live site after deploying.
 - [ ] Create an account, no credit card requested anywhere
 - [ ] Welcome email arrives
 - [ ] Billing page shows "14 days remaining"
-- [ ] Connect a real QuickBooks company; sync and analysis complete
+- [x] Connect a real QuickBooks company; sync and analysis complete
 - [ ] `/dashboard/admin/trials` shows the account as activated
+
+**QuickBooks, verified 2026-09-16 against a live Plus company**
+
+- [x] Connect, sync, disconnect, reconnect. History survives, nothing duplicates
+- [x] Per-job revenue, cost, margin and estimate variance match the books to the dollar
+- [x] Costs split across materials, subcontractors, labor and equipment
+- [x] A job with revenue and no costs reads "Profitability unavailable", never a margin
+- [x] Data Health counts the untagged expense, the parent-tagged cost and the rate-less
+      time entry
+- [x] Forecast at completion on an open job
+- [x] Profit Intelligence finds a cross-job pattern; every figure traces to a real job
+- [x] Weekly digest narrative, generated on demand, matches the dashboard
+- [ ] Weekly digest **email**, delivered by the cron on the configured day and hour
+- [ ] A contractor with more than 1000 customers or transactions (see Known gaps)
 
 **Billing (test mode first)**
 
@@ -440,6 +573,35 @@ These are deliberate and documented in the product; none of them are half-finish
 6. **`companyName`** is now fetched from QuickBooks on connect (previously never
    populated). Existing connections made before this change will still show a realm ID
    until they reconnect.
+
+7. **Marking a job finished is manual, and always will be.** QuickBooks does not expose
+   project status through its API at all (see section 3). Contractors mark jobs complete
+   in JobProfitAI, on the job page or in bulk from the jobs list. The onboarding email
+   says so explicitly, because a customer who assumes it carries over from QuickBooks
+   will finish job after job and watch Profit Intelligence stay empty.
+
+8. **No pagination. Every sync query is capped at `MAXRESULTS 1000`.** A contractor with
+   more than a thousand customers, or more than a thousand expenses, is silently
+   truncated: no error, just missing data, and every number downstream quietly wrong.
+   Most small contractors are nowhere near this. A busy remodeler several years in could
+   pass it on expenses without noticing. **This is the most likely way the product gives
+   a paying customer a wrong number**, and it should be fixed before any customer with a
+   large history is onboarded.
+
+9. **Labor logged as non-billable time carries no cost.** QuickBooks only stores an
+   hourly rate on billable time (section 3, item 4). Those hours are real work counted as
+   zero. Data Health surfaces the count and explains both fixes (set a rate, or record
+   the labor as a bill). Not fixable from our side.
+
+10. **A password reset does not sign out other devices.** Sessions are stateless JWTs.
+    Revoking them would need a `passwordChangedAt` column and a database read inside
+    `getSession` on every request. Documented rather than hidden.
+
+11. **Signup has no email verification.** Anyone can create an account with any address.
+    The contained consequence is a free 14-day trial with no card. The sharp edge is
+    `ADMIN_EMAILS`: an address on that list with no account attached is a claimable admin
+    slot, since whoever registers it first becomes an admin. **Every address in
+    `ADMIN_EMAILS` must already have an account.** Email verification is the real fix.
 
 ---
 
