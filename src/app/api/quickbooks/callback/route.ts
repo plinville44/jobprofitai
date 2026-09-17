@@ -52,6 +52,18 @@ export async function GET(req: NextRequest) {
   const now = Date.now();
   const realmIdHash = hashRealmId(realmId);
 
+  // The weekly digest goes to whoever connected QuickBooks, unless they say
+  // otherwise in Settings.
+  //
+  // emailEnabled defaults to true and emailRecipients defaults to an empty
+  // list, so without this a customer signs up, connects, and never receives
+  // the weekly brief that is most of what they are paying for. The cron
+  // records "skipped: no recipients configured" and nobody ever sees it.
+  // Defaulting to the account owner is both the obvious intent and the only
+  // address we can be sure belongs to them.
+  const owner = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  const defaultRecipients = owner?.email ? [owner.email] : [];
+
   const connection = await prisma.quickBooksConnection.upsert({
     where: { realmIdHash },
     create: {
@@ -63,6 +75,7 @@ export async function GET(req: NextRequest) {
       refreshToken: encryptToken(tokens.refresh_token),
       accessTokenExpiresAt: new Date(now + tokens.expires_in * 1000),
       refreshTokenExpiresAt: new Date(now + tokens.x_refresh_token_expires_in * 1000),
+      emailRecipients: defaultRecipients,
     },
     update: {
       // Reassign ownership on reconnect too - if a different JobProfitAI

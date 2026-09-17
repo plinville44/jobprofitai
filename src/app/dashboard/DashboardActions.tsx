@@ -63,7 +63,7 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
     return callApi(
       "/api/digest/generate",
       "Generating this week's digest...",
-      () => "Digest generated below."
+      () => "Digest generated below. It's emailed on your weekly schedule, set in Settings."
     );
   }
 

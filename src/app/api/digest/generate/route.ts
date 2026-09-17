@@ -10,8 +10,11 @@ import { generateWeeklyDigestForConnection } from "@/lib/digest";
 /**
  * POST /api/digest/generate  { connectionId }
  * Computes this week's metrics, has Claude write the narrative, and stores
- * the result. Sending the email (Resend) is wired in Week 2 once the sending
- * domain's SPF/DKIM/DMARC are in place - see the Week 2 plan.
+ * the result. It deliberately does NOT email: that is the weekly cron's job
+ * (api/cron/weekly-email), which sends on each connection's configured day
+ * and hour and stamps emailedAt so a retry cannot send twice. This button
+ * exists so a customer can see the current week's brief on demand without
+ * waiting for, or triggering, their scheduled send.
  */
 export async function POST(req: NextRequest) {
   try {
