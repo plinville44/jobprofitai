@@ -155,6 +155,29 @@ export async function applyCustomerCredit(params: {
   );
 }
 
+/**
+ * Finds a credit already on this customer's balance carrying a given reward
+ * id in its metadata, or null.
+ *
+ * This exists because Stripe idempotency keys expire after 24 hours, and the
+ * one place that matters is a referral reward whose credit succeeded at
+ * Stripe but whose database write did not. The reward row stays "pending",
+ * gets retried, and by then the idempotency key is long gone - so without
+ * this lookup the referrer is credited twice for one referral.
+ *
+ * Scans the most recent 100 balance transactions rather than paginating.
+ * A credit that has fallen further back than that is months old on any real
+ * account, and the retry path that calls this runs within days.
+ */
+export async function findCreditByRewardId(
+  customerId: string,
+  rewardId: string
+): Promise<Stripe.CustomerBalanceTransaction | null> {
+  const stripe = getStripe();
+  const page = await stripe.customers.listBalanceTransactions(customerId, { limit: 100 });
+  return page.data.find((txn) => txn.metadata?.rewardId === rewardId) ?? null;
+}
+
 /** Current Stripe customer balance in cents (negative = credit available). */
 export async function getCustomerBalanceCents(customerId: string): Promise<number> {
   const stripe = getStripe();

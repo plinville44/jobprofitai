@@ -38,11 +38,19 @@ export default function EstimateVsActualChart({ data }: { data: EstimateVsActual
   const labeled = data.map((d) => ({ ...d, label: CATEGORY_LABELS[d.category] ?? d.category }));
   const hasAnyEstimate = labeled.some((d) => d.estimated != null);
 
+  // Ticks scaled to the actual numbers. Dividing by 1000 and rounding meant
+  // every tick on a job under about $1,500 read "$0k", so a $900 materials
+  // bar sat against an axis of five identical zeros - a chart that looks
+  // broken rather than small. Thousands only once the numbers are in them.
+  const maxValue = Math.max(0, ...labeled.flatMap((d) => [d.actual, d.estimated ?? 0]));
+  const axisTick = (v: number) =>
+    maxValue >= 10_000 ? `$${Math.round(v / 1000)}k` : `$${Math.round(v).toLocaleString()}`;
+
   return (
     <ResponsiveContainer width="100%" height={Math.max(labeled.length * 48, 160)}>
       <BarChart data={labeled} layout="vertical" margin={{ top: 4, right: 24, bottom: 4, left: 8 }}>
         <CartesianGrid stroke="#e1e0d9" horizontal={false} />
-        <XAxis type="number" tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} stroke="#898781" fontSize={12} />
+        <XAxis type="number" tickFormatter={axisTick} stroke="#898781" fontSize={12} />
         <YAxis type="category" dataKey="label" width={110} stroke="#898781" fontSize={12} />
         <Tooltip formatter={(value: any) => `$${Number(value).toLocaleString()}`} />
         {hasAnyEstimate && <Legend wrapperStyle={{ fontSize: 12 }} />}

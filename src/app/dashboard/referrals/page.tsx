@@ -31,7 +31,7 @@ const STATUS_COPY: Record<string, { label: string; tone: string; help: string }>
   qualified: {
     label: "Credit earned",
     tone: "bg-green-50 text-green-700",
-    help: "Applied to your account.",
+    help: "", // set per row from the reward's own status - see rewardHelp below
   },
   disqualified: {
     label: "Not eligible",
@@ -39,6 +39,29 @@ const STATUS_COPY: Record<string, { label: string; tone: string; help: string }>
     help: "The subscription ended or was refunded before qualifying.",
   },
 };
+
+/**
+ * What actually happened to the credit, rather than what usually happens.
+ *
+ * An earned reward and an applied one are different things: the reward row
+ * is created first and the Stripe credit follows, and it stays pending when
+ * the referrer has no Stripe customer yet, which is the normal case for
+ * someone still on their own trial. The page used to say "Applied to your
+ * account" for every qualified referral, so a credit that had not reached
+ * Stripe still read as money already in hand.
+ */
+function rewardHelp(rewardStatus: string | null): string {
+  switch (rewardStatus) {
+    case "applied":
+      return "Applied to your account as a credit.";
+    case "pending":
+      return "Earned. It goes on as an account credit at your next invoice.";
+    case "voided":
+      return "This credit was reversed. Email support@jobprofitai.com if that looks wrong.";
+    default:
+      return "Earned.";
+  }
+}
 
 export default async function ReferralsPage() {
   const session = await getSession();
@@ -139,11 +162,15 @@ export default async function ReferralsPage() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {history.map((row) => {
-                  const status = STATUS_COPY[row.status] ?? {
+                  const base = STATUS_COPY[row.status] ?? {
                     label: row.status,
                     tone: "bg-gray-100 text-gray-700",
                     help: "",
                   };
+                  const status =
+                    row.status === "qualified"
+                      ? { ...base, help: rewardHelp(row.rewardStatus) }
+                      : base;
                   return (
                     <tr key={row.id}>
                       <td className="px-6 py-3.5 text-gray-600">{formatDate(row.signedUpAt)}</td>
@@ -161,7 +188,11 @@ export default async function ReferralsPage() {
                         {row.rewardAmountCents != null ? money(row.rewardAmountCents) : NO_VALUE}
                       </td>
                       <td className="px-6 py-3.5 text-gray-600">
-                        {row.rewardAppliedAt ? formatDate(row.rewardAppliedAt) : NO_VALUE}
+                        {row.rewardAppliedAt
+                          ? formatDate(row.rewardAppliedAt)
+                          : row.rewardStatus === "pending"
+                            ? "Pending"
+                            : NO_VALUE}
                       </td>
                     </tr>
                   );

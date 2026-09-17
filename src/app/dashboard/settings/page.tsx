@@ -3,6 +3,7 @@ import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { decryptToken } from "@/lib/crypto";
 import { StatusDot } from "@/components/dashboard/Badges";
+import { formatDateTime } from "@/lib/format";
 import SettingsForm from "./SettingsForm";
 import ConnectionActions from "./ConnectionActions";
 
@@ -55,14 +56,15 @@ export default async function SettingsPage() {
               <StatusDot status={connection.lastSyncStatus ? SYNC_STATUS_DOT[connection.lastSyncStatus] ?? "unmeasured" : "unmeasured"} />
               <span>
                 {connection.lastSyncStatus ? SYNC_STATUS_LABEL[connection.lastSyncStatus] ?? connection.lastSyncStatus : "Not synced yet"}
-                {connection.lastSyncAttemptAt ? ` · ${connection.lastSyncAttemptAt.toLocaleString()}` : ""}
+                {connection.lastSyncAttemptAt ? ` · ${formatDateTime(connection.lastSyncAttemptAt, connection.emailTimezone)}` : ""}
               </span>
             </div>
             {connection.lastSyncStatus === "error" && connection.lastSyncError && (
               <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{connection.lastSyncError}</p>
             )}
             <p className="mt-1 text-xs text-gray-400">
-              Last successful sync: {connection.lastSyncedAt?.toLocaleString() ?? "never"}
+              Last successful sync:{" "}
+              {connection.lastSyncedAt ? formatDateTime(connection.lastSyncedAt, connection.emailTimezone) : "never"}
             </p>
             <ConnectionActions connectionId={connection.id} />
           </section>

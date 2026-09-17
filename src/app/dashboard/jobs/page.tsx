@@ -154,7 +154,36 @@ export default async function JobsPage(props: {
       </div>
 
       {jobs.length === 0 ? (
-        <p className="mt-8 text-sm text-gray-500">No jobs match this filter yet.</p>
+        /* "No jobs match this filter" was the same sentence whether nothing
+           had ever synced or the customer was simply on the Completed tab
+           with nothing marked complete yet. The second is the common one,
+           and it has an answer. */
+        <div className="mt-8 text-sm text-gray-500">
+          {statusFilter === "closed" ? (
+            <p>
+              No jobs are marked completed yet. QuickBooks doesn&apos;t tell us when a project
+              wraps up, so that&apos;s a call you make here:{" "}
+              <Link href={linkWithParams({ status: "open" })} className="text-brand hover:underline">
+                open the Active tab
+              </Link>
+              , tick the finished ones and use Mark completed.
+            </p>
+          ) : statusFilter === "open" ? (
+            <p>
+              No active jobs. Everything you have is marked completed, which you can see on the{" "}
+              <Link href={linkWithParams({ status: "closed" })} className="text-brand hover:underline">
+                Completed tab
+              </Link>
+              .
+            </p>
+          ) : (
+            <p>
+              No jobs have synced from QuickBooks yet. JobProfitAI reads QuickBooks Projects, so a
+              company with no Projects set up has nothing to show here. Run Sync now from the
+              Dashboard once you have one.
+            </p>
+          )}
+        </div>
       ) : (
         <JobsTable jobs={jobs.map(toRow)} />
       )}

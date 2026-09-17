@@ -136,7 +136,7 @@ export default function SecurityPage() {
             <Item title="What is stored">
               <p>
                 To produce profitability analysis, JobProfitAI stores a copy of the job-related data
-                it reads from QuickBooks: jobs (Projects or Classes), cost line items from bills,
+                it reads from QuickBooks: jobs (QuickBooks Projects), cost line items from bills,
                 expenses, purchases and time activities, invoice totals and status, estimate values,
                 and the profitability figures calculated from them. It also stores the weekly
                 digests and profit insights generated for you, and your own settings such as target
@@ -250,10 +250,11 @@ export default function SecurityPage() {
               <p>
                 Profit insights and the weekly digest narrative are written by Anthropic&rsquo;s
                 Claude API. What is sent is the calculated profitability data for your jobs,
-                job names, categories and computed figures. The model writes explanatory prose only:
-                every dollar amount, percentage and confidence level is calculated by the
-                application and re-applied afterwards, so the AI cannot change a number. Your
-                QuickBooks credentials are never sent to any AI service.
+                job names, categories and computed figures. The model writes explanatory prose only.
+                Every dollar amount, percentage and confidence level in a finding is calculated by
+                the application and stored separately from the text, and each finding names the jobs
+                it came from, so you can check any figure against the job pages. Your QuickBooks
+                credentials are never sent to any AI service.
               </p>
             </Item>
           </div>

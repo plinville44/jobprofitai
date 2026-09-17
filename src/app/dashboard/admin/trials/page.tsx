@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { computeTrialState } from "@/lib/trial";
 import { NO_VALUE, formatDate } from "@/lib/format";
+import { planDisplayName } from "@/lib/plans";
 import { AdminSection, AdminTable, Pill, Td } from "@/components/dashboard/AdminTable";
 
 export const dynamic = "force-dynamic";
@@ -51,8 +52,12 @@ export default async function AdminTrialsPage() {
                 ) : null}
               </Td>
               <Td>
+                {/* Plan named from the plan table rather than a literal. The
+                    hardcoded "$149" was the price of one specific plan and was
+                    printed for every plan that wasn't Pro, including a retired
+                    tier that never cost that. */}
                 {sub.status === "active" ? (
-                  <Pill tone="good">Paying &middot; {sub.plan === "profit_intelligence_pro" ? "Pro" : "$149"}</Pill>
+                  <Pill tone="good">Paying &middot; {planDisplayName(sub.plan)}</Pill>
                 ) : state.onTrial ? (
                   <Pill tone="info">On trial</Pill>
                 ) : sub.status === "past_due" || sub.status === "unpaid" ? (

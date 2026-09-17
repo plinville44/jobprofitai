@@ -56,17 +56,27 @@ export default function JobMarginBarChart({
           </Bar>
         </BarChart>
       </ResponsiveContainer>
-      <div className="mt-2 flex flex-wrap gap-4 text-xs text-gray-500">
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#0ca30c" }} /> At/above target
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#fab219" }} /> Within 5 points
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#d03b3b" }} /> More than 5 points below
-        </span>
-      </div>
+      {/* The legend explains a color encoding that only exists once a target
+          margin is set. With no target every bar is the same neutral blue,
+          and a three-color key underneath it described a chart that wasn't
+          on the screen. */}
+      {targetMarginPct != null ? (
+        <div className="mt-2 flex flex-wrap gap-4 text-xs text-gray-500">
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#0ca30c" }} /> At/above target
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#fab219" }} /> Within 5 points
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#d03b3b" }} /> More than 5 points below
+          </span>
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-gray-500">
+          Set a target margin in Settings to color these bars by how each job compares to it.
+        </p>
+      )}
     </div>
   );
 }

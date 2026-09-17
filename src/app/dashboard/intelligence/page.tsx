@@ -9,7 +9,7 @@ import {
   getConnectionProfitData,
   type JobFinancials,
 } from "@/lib/profitability";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency, formatDateTime } from "@/lib/format";
 import { ConfidenceBadge } from "@/components/dashboard/Badges";
 import RefreshAnalysisButton from "./RefreshAnalysisButton";
 
@@ -186,7 +186,7 @@ export default async function IntelligencePage() {
         ) : (
           <>
             {latestRun && (
-              <p className="mt-2 text-xs text-gray-400">Last analyzed {latestRun.generatedAt.toLocaleString()}.</p>
+              <p className="mt-2 text-xs text-gray-400">Last analyzed {formatDateTime(latestRun.generatedAt, connection.emailTimezone)}.</p>
             )}
             {insights.length === 0 ? (
               <p className="mt-3 text-sm text-gray-500">

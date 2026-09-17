@@ -79,9 +79,19 @@ export async function POST(req: NextRequest) {
 
   // --- Everything below is best-effort and never fails the signup ---
 
+  // Whether a referral cookie was present at all. The cookie is cleared on
+  // the way out regardless of what attribution decided, so the code is spent
+  // by the first account that uses it. Left in place it lived for 30 more
+  // days and attributed every subsequent signup from that browser to the
+  // same referrer - a contractor setting up a login for their bookkeeper,
+  // or a partner who once clicked their own link, would quietly generate
+  // referral after referral from one machine.
+  let hadReferralCookie = false;
+
   try {
     const cookieStore = await cookies();
     const refCode = cookieStore.get(REFERRAL_COOKIE)?.value ?? null;
+    hadReferralCookie = refCode != null;
     const attribution = await attributeReferral(user.id, refCode);
 
     if (attribution.attributed) {
@@ -112,5 +122,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  return NextResponse.json({ id: user.id, email: user.email });
+  const response = NextResponse.json({ id: user.id, email: user.email });
+  if (hadReferralCookie) {
+    // Deleted with the same path the /r/[code] route set it on, or the
+    // browser keeps a second copy scoped elsewhere and nothing changes.
+    response.cookies.set(REFERRAL_COOKIE, "", { path: "/", maxAge: 0 });
+  }
+  return response;
 }

@@ -13,6 +13,11 @@ vi.mock("@/lib/prisma", () => ({
 // asked to do, including the idempotency key.
 const creditCalls: { customerId: string; amountCents: number; idempotencyKey: string }[] = [];
 let creditShouldFail = false;
+// Stands in for a credit Stripe already holds for a given reward id. Set by
+// the double-credit test to reproduce the case the idempotency key cannot
+// cover: the credit succeeded, the database write after it did not, and the
+// retry arrives more than 24 hours later.
+let existingCreditByRewardId: Record<string, { id: string }> = {};
 vi.mock("@/lib/stripe/billing", () => ({
   applyCustomerCredit: vi.fn(async (params: any) => {
     if (creditShouldFail) throw new Error("stripe unavailable");
@@ -22,6 +27,9 @@ vi.mock("@/lib/stripe/billing", () => ({
       idempotencyKey: params.idempotencyKey,
     });
     return { id: `txn_${creditCalls.length}` };
+  }),
+  findCreditByRewardId: vi.fn(async (_customerId: string, rewardId: string) => {
+    return existingCreditByRewardId[rewardId] ?? null;
   }),
 }));
 
@@ -55,6 +63,7 @@ beforeEach(() => {
   fake.client = createFakePrisma();
   creditCalls.length = 0;
   creditShouldFail = false;
+  existingCreditByRewardId = {};
   process.env.APP_URL = "https://jobprofitai.com";
 });
 
@@ -271,6 +280,115 @@ describe("reward qualification", () => {
     expect(results[0].creditApplied).toBe(false);
     expect(creditCalls).toHaveLength(0);
     expect((await fake.client.referralReward.findMany())[0].status).toBe("pending");
+  });
+
+  /**
+   * past_due means the card failed and Stripe is still retrying. Neither
+   * outcome is right yet: no free month off a payment that is failing, and
+   * no destroyed referral over an expired card.
+   */
+  it("neither rewards nor disqualifies while the referred account is past_due", async () => {
+    await makeUser("alice", "profit_intelligence", "active");
+    await makeUser("bob", "profit_intelligence", "past_due");
+    const code = await getOrCreateCustomerReferralCode("alice");
+    await attributeReferral("bob", code);
+    await markReferralPaid("bob", new Date(NOW.getTime() - 31 * DAY));
+
+    const results = await qualifyDueReferrals(NOW);
+
+    expect(results).toHaveLength(0);
+    expect(await fake.client.referralReward.count()).toBe(0);
+    expect(creditCalls).toHaveLength(0);
+
+    const referral = await fake.client.referral.findUnique({ where: { referredUserId: "bob" } });
+    expect(referral.status).toBe("paid");
+    expect(referral.qualifiedAt).toBeFalsy();
+
+    // And once the retries succeed, the same referral qualifies normally.
+    await fake.client.subscription.update({ where: { userId: "bob" }, data: { status: "active" } });
+    const later = await qualifyDueReferrals(NOW);
+    expect(later).toHaveLength(1);
+    expect(later[0].creditApplied).toBe(true);
+  });
+});
+
+describe("stranded rewards", () => {
+  /**
+   * The gap this closes: qualifyDueReferrals only ever looks at referrals
+   * with no reward row, so a reward stuck at pending was invisible to every
+   * scheduled job in the app. The credit was earned and would simply never
+   * have arrived.
+   */
+  it("retries a reward the qualification sweep can no longer see", async () => {
+    await makeUser("alice", "profit_intelligence", "active");
+    await makeUser("bob", "profit_intelligence", "active");
+    const code = await getOrCreateCustomerReferralCode("alice");
+    await attributeReferral("bob", code);
+    await markReferralPaid("bob", new Date(NOW.getTime() - 31 * DAY));
+
+    creditShouldFail = true;
+    await qualifyDueReferrals(NOW);
+    const reward = (await fake.client.referralReward.findMany())[0];
+    expect(reward.status).toBe("pending");
+
+    // Proof the old sweep cannot help: the referral now has a reward row.
+    creditShouldFail = false;
+    expect(await qualifyDueReferrals(NOW)).toHaveLength(0);
+    expect(creditCalls).toHaveLength(0);
+
+    const { retryPendingRewards } = await import("../referrals");
+    expect(await retryPendingRewards()).toBe(1);
+    expect(
+      (await fake.client.referralReward.findUnique({ where: { id: reward.id } })).status
+    ).toBe("applied");
+    expect(creditCalls).toHaveLength(1);
+  });
+
+  it("does not pay out a pending reward on a disqualified referral", async () => {
+    await makeUser("alice", "profit_intelligence", "active");
+    await makeUser("bob", "profit_intelligence", "active");
+    const code = await getOrCreateCustomerReferralCode("alice");
+    await attributeReferral("bob", code);
+    await markReferralPaid("bob", new Date(NOW.getTime() - 31 * DAY));
+
+    creditShouldFail = true;
+    await qualifyDueReferrals(NOW);
+    creditShouldFail = false;
+
+    await disqualifyReferral("bob", "Payment refunded", NOW);
+
+    const { retryPendingRewards } = await import("../referrals");
+    expect(await retryPendingRewards()).toBe(0);
+    expect(creditCalls).toHaveLength(0);
+  });
+
+  /**
+   * The double-credit window: Stripe took the credit, the database write
+   * after it did not land, and the retry arrives after the 24-hour
+   * idempotency key has expired. Stripe would happily issue a second credit.
+   */
+  it("adopts a credit Stripe already holds instead of issuing a second one", async () => {
+    await makeUser("alice", "profit_intelligence", "active");
+    await makeUser("bob", "profit_intelligence", "active");
+    const code = await getOrCreateCustomerReferralCode("alice");
+    await attributeReferral("bob", code);
+    await markReferralPaid("bob", new Date(NOW.getTime() - 31 * DAY));
+
+    creditShouldFail = true;
+    await qualifyDueReferrals(NOW);
+    const reward = (await fake.client.referralReward.findMany())[0];
+
+    // The first attempt did reach Stripe after all.
+    creditShouldFail = false;
+    existingCreditByRewardId[reward.id] = { id: "txn_already_there" };
+
+    const { retryPendingRewards } = await import("../referrals");
+    expect(await retryPendingRewards()).toBe(1);
+
+    const settled = await fake.client.referralReward.findUnique({ where: { id: reward.id } });
+    expect(settled.status).toBe("applied");
+    expect(settled.stripeBalanceTxnId).toBe("txn_already_there");
+    expect(creditCalls).toHaveLength(0); // no second credit issued
   });
 });
 

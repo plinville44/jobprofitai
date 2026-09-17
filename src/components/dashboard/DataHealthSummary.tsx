@@ -11,12 +11,26 @@ import { DataQualityBadge, StatusDot } from "@/components/dashboard/Badges";
  * for the structured info, and never as the only explanation on its own.
  */
 export default function DataHealthSummary({ dataHealth }: { dataHealth: DataHealthReport }) {
+  // These eight are exactly the eight things computeDashboardTotals adds up
+  // into the "Data Issues" tile, in the same order.
+  //
+  // The card used to list five of them. When the only non-zero counts were
+  // among the missing three, this card said "No data quality issues found"
+  // directly below a tile reading "Data Issues: 9" - on the one page whose
+  // whole job is telling a contractor which of their numbers to trust. If a
+  // check is ever added to that tile, it belongs here too.
   const rows: { label: string; count: number | null }[] = [
     { label: "jobs missing a cost estimate", count: dataHealth.jobsMissingEstimates.length },
     { label: "jobs with revenue but no costs", count: dataHealth.jobsMissingCosts.length },
     { label: "stale jobs (no activity in 30+ days)", count: dataHealth.staleJobs.length },
+    {
+      label: "completed jobs with unresolved activity",
+      count: dataHealth.completedJobsWithUnresolvedActivity.length,
+    },
     { label: "unassigned expenses", count: dataHealth.unassignedExpenseCount },
     { label: "expenses tagged to an unrecognized customer", count: dataHealth.unresolvedExpenseCount },
+    { label: "time entries with no hourly rate", count: dataHealth.timeEntriesWithoutRate },
+    { label: "possible duplicate cost entries", count: dataHealth.possibleDuplicates.length },
   ];
   const flagged = rows.filter((r) => (r.count ?? 0) > 0);
   const unmeasured = rows.filter((r) => r.count == null);

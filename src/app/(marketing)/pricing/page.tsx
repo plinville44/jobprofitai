@@ -75,9 +75,10 @@ const FAQ_ITEMS = [
     q: "What counts as an “active job”?",
     a: (
       <>
-        A job that&rsquo;s currently open in your QuickBooks company, a Project or Class still in
-        progress. Completed jobs stay in your history and your trend analysis; they don&rsquo;t
-        count against the limit.
+        A QuickBooks Project you haven&rsquo;t marked completed yet. QuickBooks doesn&rsquo;t
+        expose project status through its API, so you mark jobs completed inside JobProfitAI,
+        one at a time or in bulk from the jobs list. Completed jobs stay in your history and
+        your trend analysis; they don&rsquo;t count against the limit.
       </>
     ),
   },

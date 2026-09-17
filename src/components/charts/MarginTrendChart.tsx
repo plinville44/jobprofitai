@@ -23,6 +23,27 @@ export default function MarginTrendChart({
     return <p className="text-sm text-gray-500">Not enough completed-job history yet to show a trend.</p>;
   }
 
+  // One point is not a trend. Recharts will happily draw a lone dot with a
+  // line chart's axes and grid around it, which reads as a flat line - a
+  // claim about direction made from a single measurement.
+  const plottable = data.filter((d) => d.marginPct != null);
+  if (plottable.length === 0) {
+    return (
+      <p className="text-sm text-gray-500">
+        No period here has completed-job revenue yet, so there is no margin to plot.
+      </p>
+    );
+  }
+  if (plottable.length === 1) {
+    const only = plottable[0];
+    return (
+      <p className="text-sm text-gray-500">
+        Only one period has completed-job revenue so far ({only.period}, at{" "}
+        {only.marginPct!.toFixed(1)}% margin). A trend line needs at least two.
+      </p>
+    );
+  }
+
   return (
     <ResponsiveContainer width="100%" height={220}>
       <LineChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>

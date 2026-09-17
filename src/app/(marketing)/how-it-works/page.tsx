@@ -127,10 +127,11 @@ export default function HowItWorksPage() {
             title="JobProfitAI organizes the financial information"
           >
             <p>
-              Contractors track job cost in QuickBooks in two different ways: some use Projects
-              (sub-customers), some use Classes. JobProfitAI detects which one your company uses
-              rather than assuming, then pulls together everything attached to each job. Invoices,
-              bills, expenses, purchases, time activities and estimates.
+              JobProfitAI reads QuickBooks <strong>Projects</strong> (sub-customers) and pulls
+              together everything attached to each one. Invoices, bills, expenses, purchases, time
+              activities and estimates. Contractors who track job cost by Class instead are not
+              supported yet; that is on the roadmap rather than in the product, and it is worth
+              checking before you sign up.
             </p>
             <p>
               Costs are grouped into categories you&rsquo;d actually recognize: labor, materials,
@@ -139,8 +140,8 @@ export default function HowItWorksPage() {
               defensibly, and flags that it made that judgment rather than hiding it.
             </p>
             <p>
-              Optionally, you set a target margin (company-wide or per job type) and an overhead
-              allocation method. Both are yours to configure; neither is guessed at.
+              Optionally, you set a company-wide target margin and an overhead allocation method.
+              Both are yours to configure; neither is guessed at.
             </p>
           </Step>
 
@@ -164,9 +165,9 @@ export default function HowItWorksPage() {
           <Step number={4} title="Find issues before they become bigger">
             <p>
               &ldquo;Needs Your Attention&rdquo; is a deterministic rule set that runs across every
-              job: costs running over estimate, margins below target, margin declining across recent
-              months, and cost categories that look like outliers compared to similar completed
-              jobs.
+              job: costs running over estimate, margins below target, margin declining across
+              recent weekly snapshots, and cost categories that look like outliers compared to
+              similar completed jobs.
             </p>
             <p>
               Each finding carries a dollar impact, a severity, and a confidence level. Confidence
@@ -175,10 +176,11 @@ export default function HowItWorksPage() {
               simply don&rsquo;t fire until there&rsquo;s enough of it.
             </p>
             <p>
-              There&rsquo;s also a Data Health page that tells you exactly where your QuickBooks
-              data is incomplete: jobs with no estimate on file, jobs with revenue but no costs
-              recorded, expenses not tagged to any customer. Those gaps change what the numbers can
-              tell you, so they&rsquo;re shown rather than papered over.
+              There&rsquo;s also a Data Health page that tells you exactly what is missing before
+              you trust a number: expenses not tagged to any job, jobs with revenue but no costs
+              recorded, time entries QuickBooks gave us with no hourly rate, and jobs with no cost
+              estimate entered here. Those gaps change what the numbers can tell you, so
+              they&rsquo;re shown rather than papered over.
             </p>
           </Step>
 
@@ -191,10 +193,11 @@ export default function HowItWorksPage() {
             <p>
               An important detail about how this is built: the dollar amounts, percentages,
               confidence levels and the list of jobs behind each finding are all calculated by the
-              application. The AI writes the explanation and the recommendation around numbers it
-              is not permitted to change, and every figure is replaced with the original computed
-              value before anything is stored. That&rsquo;s deliberate. Profit decisions
-              shouldn&rsquo;t rest on a number a language model produced.
+              application, and those are the values stored and displayed. The AI writes the
+              explanation and the recommendation around them. Every finding names the jobs it came
+              from, so you can check any of it against the job pages rather than taking it on
+              faith. That&rsquo;s deliberate. Profit decisions shouldn&rsquo;t rest on a number a
+              language model produced.
             </p>
           </Step>
 

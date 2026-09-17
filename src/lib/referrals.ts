@@ -2,7 +2,7 @@ import crypto from "crypto";
 import type { Referral } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { REFERRAL_QUALIFY_DAYS, priceCentsForStoredPlan } from "@/lib/plans";
-import { applyCustomerCredit } from "@/lib/stripe/billing";
+import { applyCustomerCredit, findCreditByRewardId } from "@/lib/stripe/billing";
 
 // The customer referral program: refer a paying customer, earn one free
 // month of your own current plan as an account credit.
@@ -292,7 +292,18 @@ export async function qualifyDueReferrals(now: Date = new Date()): Promise<Quali
           })
         : null;
       const referredStatus = referredSubscription?.status;
-      if (referredStatus !== "active" && referredStatus !== "past_due") {
+
+      // past_due is deliberately neither a qualification nor a
+      // disqualification. The referred customer's card has failed and Stripe
+      // is still retrying; issuing a free month worth $149-$299 off a payment
+      // that is currently failing is wrong, and so is destroying the referral
+      // over a card that expired. The referral stays "paid" with qualifiedAt
+      // null, so it is still matched by the `due` query above and re-checked
+      // on the next run. If the retries never succeed, Stripe moves the
+      // subscription to unpaid or canceled and the branch below ends it then.
+      if (referredStatus === "past_due") continue;
+
+      if (referredStatus !== "active") {
         await prisma.referral.update({
           where: { id: referral.id },
           data: {
@@ -361,8 +372,14 @@ export async function qualifyDueReferrals(now: Date = new Date()): Promise<Quali
  * before they ever subscribe, and it should sit waiting for them rather than
  * being lost. applyPendingRewardsForUser() below picks those up at checkout.
  *
- * The Stripe idempotency key is the reward id, so even if this is called
- * twice for the same reward, Stripe issues the credit once.
+ * Double-crediting is prevented in two layers, because one is not enough.
+ * The Stripe idempotency key is the reward id, which covers a retry inside
+ * 24 hours. Past that Stripe forgets the key, so this first asks Stripe
+ * whether a credit carrying this reward id is already on the customer's
+ * balance. That is the case that actually bites: the credit succeeds, the
+ * database write that follows it fails, the reward stays "pending", and the
+ * retry lands days later - a window the idempotency key alone does not
+ * cover. The row is repaired from the existing transaction instead.
  */
 export async function tryApplyReward(rewardId: string): Promise<boolean> {
   const reward = await prisma.referralReward.findUnique({ where: { id: rewardId } });
@@ -376,6 +393,19 @@ export async function tryApplyReward(rewardId: string): Promise<boolean> {
   if (!customerId) return false; // stays pending until they have a Stripe customer
 
   try {
+    const existing = await findCreditByRewardId(customerId, reward.id);
+    if (existing) {
+      await prisma.referralReward.update({
+        where: { id: reward.id },
+        data: {
+          status: "applied",
+          appliedAt: reward.appliedAt ?? new Date(),
+          stripeBalanceTxnId: existing.id,
+        },
+      });
+      return true;
+    }
+
     const txn = await applyCustomerCredit({
       customerId,
       amountCents: reward.amountCents,
@@ -396,6 +426,53 @@ export async function tryApplyReward(rewardId: string): Promise<boolean> {
     );
     return false; // left pending; retried on the next cron run
   }
+}
+
+/**
+ * Retries every reward still sitting at "pending", whatever stranded it.
+ *
+ * qualifyDueReferrals() only ever looks at referrals with no reward row at
+ * all (`reward: null`), so once a reward exists it is invisible to that
+ * sweep. A reward left pending by a Stripe outage, or by a referrer who had
+ * no Stripe customer at the time, was therefore never retried by anything -
+ * despite tryApplyReward's own comment promising it would be. The only path
+ * that picked those up was checkout, which a referrer who is already
+ * subscribed never walks again. That is a credit someone earned and would
+ * simply never receive.
+ *
+ * Cheap to run on every tick: a pending reward whose referrer still has no
+ * Stripe customer costs one indexed query and returns before touching Stripe.
+ *
+ * The referral is re-checked per reward rather than filtered in the query.
+ * disqualifyReferral marks the reward "voided" so those are already out, but
+ * a referral disqualified by some future path that forgets to void must not
+ * quietly pay out here, and this is money.
+ */
+export async function retryPendingRewards(limit = 200): Promise<number> {
+  const pending = await prisma.referralReward.findMany({
+    where: { status: "pending" },
+    select: { id: true, referralId: true },
+    take: limit,
+  });
+
+  let applied = 0;
+  for (const reward of pending) {
+    try {
+      const referral = await prisma.referral.findUnique({
+        where: { id: reward.referralId },
+        select: { status: true },
+      });
+      if (referral?.status === "disqualified") continue;
+
+      if (await tryApplyReward(reward.id)) applied++;
+    } catch (err) {
+      console.error(
+        `referrals: retry failed for reward ${reward.id}:`,
+        err instanceof Error ? err.message : "Unknown error"
+      );
+    }
+  }
+  return applied;
 }
 
 /**

@@ -60,6 +60,7 @@ vi.mock("@/lib/partners", () => ({
     calls.voided.push(invoiceId);
     return true;
   }),
+  flagPaidCommissionsForReview: vi.fn(async () => 0),
 }));
 
 vi.mock("@/lib/email/lifecycle", () => ({
@@ -404,5 +405,34 @@ describe("refunds", () => {
 
     expect(calls.voided).toEqual(["in_1"]);
     expect(calls.disqualified).toEqual(["u1"]);
+  });
+
+  /**
+   * A goodwill credit is not a refusal to pay. Reversing a partner's whole
+   * commission and permanently killing a referral over one is a large,
+   * silent penalty for the most routine act of customer service there is.
+   */
+  it("reverses nothing on a partial refund", async () => {
+    await seedAccount({ status: "active" });
+
+    const result = await processStripeEvent({
+      id: "evt_refund_partial",
+      type: "charge.refunded",
+      data: {
+        object: {
+          id: "ch_2",
+          invoice: "in_1",
+          customer: "cus_1",
+          amount: 29_900,
+          amount_refunded: 2_000,
+          refunded: false,
+        },
+      },
+    } as never);
+
+    expect(result.handled).toBe(true);
+    expect(result.detail).toMatch(/Partial refund/);
+    expect(calls.voided).toEqual([]);
+    expect(calls.disqualified).toEqual([]);
   });
 });

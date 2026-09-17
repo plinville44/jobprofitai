@@ -4,7 +4,7 @@ import { getSession } from "@/lib/auth";
 import { getJobProfitData } from "@/lib/profitability";
 import { getEntitlements, requireFeature } from "@/lib/entitlements";
 import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
-import { NO_VALUE, formatCurrency, formatPct, formatDate, categoryLabel } from "@/lib/format";
+import { NO_VALUE, formatCurrency, formatPct, formatDate, formatShortDate, categoryLabel } from "@/lib/format";
 import { ConfidenceBadge, DataQualityBadge, SeverityBadge } from "@/components/dashboard/Badges";
 import EstimateVsActualChart from "@/components/charts/EstimateVsActualChart";
 import ProfitLeakageChart from "@/components/charts/ProfitLeakageChart";
@@ -136,12 +136,23 @@ export default async function JobDetailPage({
             data={[{ category: "Total", estimated: f.estimatedCost, actual: f.costs }]}
           />
         )}
-        {f.varianceVsEstimate != null && (
+        {/* Zero costs is not underspending. Variance is costs minus estimate,
+            so a job with nothing tagged to it yet read "Running $12,000 under
+            the $12,000 estimate" - maximum praise for having no data - two
+            lines above "No categorized costs yet". */}
+        {f.costs === 0 && f.estimatedCost != null ? (
           <p className="mt-3 text-sm text-gray-600">
-            {f.varianceVsEstimate > 0
-              ? `Running ${formatCurrency(f.varianceVsEstimate)} over the ${formatCurrency(f.estimatedCost)} estimate.`
-              : `Running ${formatCurrency(Math.abs(f.varianceVsEstimate))} under the ${formatCurrency(f.estimatedCost)} estimate.`}
+            No costs have been tagged to this job yet, so there is nothing to compare against the{" "}
+            {formatCurrency(f.estimatedCost)} estimate.
           </p>
+        ) : (
+          f.varianceVsEstimate != null && (
+            <p className="mt-3 text-sm text-gray-600">
+              {f.varianceVsEstimate > 0
+                ? `Running ${formatCurrency(f.varianceVsEstimate)} over the ${formatCurrency(f.estimatedCost)} estimate.`
+                : `Running ${formatCurrency(Math.abs(f.varianceVsEstimate))} under the ${formatCurrency(f.estimatedCost)} estimate.`}
+            </p>
+          )
         )}
         {f.estimatedCost == null && <p className="mt-3 text-sm text-gray-500">No cost estimate on file for this job.</p>}
       </Section>
@@ -166,16 +177,28 @@ export default async function JobDetailPage({
 
       {/* 4. Profit Trend (this job's margin over past digests) + Forecast + Leakage */}
       <Section title="Profit Trend">
-        {data.priorMarginPcts.length >= 2 ? (
+        {/* Real week labels, and a current point only when there is one.
+            The old version labelled the x-axis 1, 2, 3, Now and passed
+            `f.grossMarginPct ?? 0`, so a job whose margin cannot be computed
+            was drawn as a real 0% - a line falling off a cliff, on a job
+            whose own header says profitability is unavailable. */}
+        {data.priorMarginPoints.length >= 2 ? (
           <MarginTrendChart
-            data={[...data.priorMarginPcts, f.grossMarginPct ?? 0].map((m, i) => ({
-              period: i === data.priorMarginPcts.length ? "Now" : `${i + 1}`,
-              marginPct: m * 100,
-            }))}
+            data={[
+              ...data.priorMarginPoints.map((p) => ({
+                period: formatShortDate(p.weekStarting),
+                marginPct: p.marginPct * 100,
+              })),
+              { period: "Now", marginPct: f.grossMarginPct == null ? null : f.grossMarginPct * 100 },
+            ]}
             targetMarginPct={f.targetMarginPct}
           />
         ) : (
-          <p className="text-sm text-gray-500">Not enough digest history yet to show a trend for this job.</p>
+          <p className="text-sm text-gray-500">
+            {data.priorMarginPoints.length === 1
+              ? "Only one weekly snapshot so far. A trend needs at least two, so this fills in after next week's digest."
+              : "No weekly snapshots for this job yet. The Profit Trend fills in as weekly digests are generated."}
+          </p>
         )}
 
         {f.status === "open" && (

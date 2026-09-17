@@ -184,13 +184,26 @@ export default async function PartnerPage() {
       {/* ── Tier progress ───────────────────────────────────────── */}
       <section className="rounded-xl border border-gray-200 bg-white p-6">
         <h2 className="text-base font-semibold text-navy">Your tier</h2>
-        {data.nextTier && data.clientsToNextTier != null ? (
+        {/* With no paying clients yet, partnerTierFor falls back to the
+            entry tier and nextPartnerTier returns that same tier, so this
+            read "You're earning 20% with 0 paying clients. 1 more takes you
+            to 20%" - a progress bar toward the rate they were already being
+            told they had. Nobody has earned a rate before their first client
+            pays, so that case gets its own sentence. */}
+        {data.payingClients === 0 ? (
+          <p className="mt-2 text-sm text-gray-600">
+            No paying clients yet. Commission starts at{" "}
+            <strong className="text-navy">{data.tier.ratePct}%</strong> from your first client&rsquo;s
+            first paid invoice, and nothing accrues while they are on their free trial.
+          </p>
+        ) : data.nextTier && data.clientsToNextTier != null && data.nextTier.ratePct > data.tier.ratePct ? (
           <>
             <p className="mt-2 text-sm text-gray-600">
               You&rsquo;re earning <strong className="text-navy">{data.tier.ratePct}%</strong> with{" "}
               {data.payingClients} paying{" "}
               {data.payingClients === 1 ? "client" : "clients"}.{" "}
-              {data.clientsToNextTier} more takes you to{" "}
+              {data.clientsToNextTier} more{" "}
+              {data.clientsToNextTier === 1 ? "takes" : "take"} you to{" "}
               <strong className="text-navy">{data.nextTier.ratePct}%</strong>.
             </p>
             <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-gray-100">

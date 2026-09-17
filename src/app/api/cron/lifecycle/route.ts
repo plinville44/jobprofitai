@@ -4,7 +4,7 @@ import { authorizeCron } from "@/lib/cronAuth";
 import { TRIAL_EXTENSION_OFFER_DAY } from "@/lib/plans";
 import { computeTrialState, expireFinishedTrials } from "@/lib/trial";
 import { purgeExpiredPasswordResets } from "@/lib/passwordReset";
-import { qualifyDueReferrals } from "@/lib/referrals";
+import { qualifyDueReferrals, retryPendingRewards } from "@/lib/referrals";
 import {
   sendReferralRewardEarned,
   sendSetupReminder,
@@ -51,6 +51,7 @@ interface Counters {
   expiredEmails: number;
   referralsQualified: number;
   rewardEmails: number;
+  strandedRewardsApplied: number;
   testimonialRequests: number;
   passwordResetsPurged: number;
   errors: string[];
@@ -70,6 +71,7 @@ export async function GET(req: NextRequest) {
     expiredEmails: 0,
     referralsQualified: 0,
     rewardEmails: 0,
+    strandedRewardsApplied: 0,
     testimonialRequests: 0,
     passwordResetsPurged: 0,
     errors: [],
@@ -185,6 +187,14 @@ async function processReferralQualification(counters: Counters): Promise<void> {
       );
     }
   }
+
+  // Rewards that were earned but never made it onto a Stripe balance. Run
+  // after qualification rather than before, so a reward created moments ago
+  // and stranded by a Stripe error is retried on this same tick instead of
+  // waiting an hour. The referrer was already emailed when the reward was
+  // earned, and that email does not promise a date, so landing the credit
+  // late needs no second message.
+  counters.strandedRewardsApplied = await retryPendingRewards();
 }
 
 /**

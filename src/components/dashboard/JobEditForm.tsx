@@ -106,14 +106,20 @@ export default function JobEditForm({
             onChange={(e) => setStatusOverride(e.target.value)}
             className="mt-1 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
           >
+            {/* Says "inactive", not "completed". The synced value comes from
+                the QuickBooks customer's Active flag, and calling that
+                "completed" contradicted the sentence directly below it -
+                the one explaining that project completion never reaches us. */}
             <option value="">
-              Follow QuickBooks ({syncedStatus === "closed" ? "completed" : "active"})
+              Follow QuickBooks (customer is {syncedStatus === "closed" ? "inactive" : "active"})
             </option>
             <option value="closed">Completed</option>
             <option value="open">Still active</option>
           </select>
           <span className="mt-1 text-xs text-gray-500">
-            Marking a project complete in QuickBooks doesn&apos;t reach us.
+            QuickBooks only tells us whether the customer record is active or inactive. Marking a
+            project Completed there isn&apos;t something its API exposes, so mark it here when the
+            work is done.
           </span>
         </label>
         <label className="flex flex-col text-sm">

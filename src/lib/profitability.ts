@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import { requireFeature } from "./entitlements";
-import { effectiveJobStatus, CLOSED_JOB_WHERE } from "./jobStatus";
+import { effectiveJobStatus, CLOSED_JOB_WHERE, OPEN_JOB_WHERE } from "./jobStatus";
 
 // ============================================================================
 // PURE CALCULATION LAYER
@@ -58,6 +58,24 @@ export interface FinancialContext {
   overheadMethod: "pct_of_revenue" | "pct_of_direct_cost" | null;
   overheadValue: number | null; // stored as a fraction, e.g. 0.12 for 12%
   lastSyncedAt: Date | null;
+
+  /**
+   * True when the costs and invoices in JobInput have been filtered to a
+   * date window (the dashboard's period picker) rather than being the job's
+   * whole life.
+   *
+   * It exists because a job's estimate has no period. Comparing one month of
+   * costs against a whole-job estimate is not a comparison, and it produced
+   * the worst kind of wrong number: plausible. Pick "This month" on a job
+   * costed at $12,000 that spent $600 in March and the variance read "95%
+   * under the estimate" - a contractor's cue to bid lower next time.
+   *
+   * Everything that judges a job against its whole life is therefore
+   * suppressed rather than recomputed on a slice: estimate variance, the
+   * over-budget flag, and the staleness flag. Nothing here changes what the
+   * period picker is for, which is the revenue, cost and margin totals.
+   */
+  costsAreWindowed?: boolean;
 }
 
 export interface JobFinancials {
@@ -172,13 +190,18 @@ export function computeJobFinancials(job: JobInput, ctx: FinancialContext): JobF
   // --- Estimate variance (independent of the availability gate above - an
   // estimate can exist even when we can't yet compute profitability, and
   // vice versa). ---
+  // An estimate covers the whole job, so it can only be compared against the
+  // whole job's costs. See FinancialContext.costsAreWindowed.
   const estimatedCost = job.estimatedCost;
-  const varianceVsEstimate = estimatedCost == null ? null : costs - estimatedCost;
+  const comparableToEstimate = !ctx.costsAreWindowed && estimatedCost != null;
+  const varianceVsEstimate = comparableToEstimate ? costs - estimatedCost! : null;
   const varianceVsEstimatePct =
-    estimatedCost != null && estimatedCost !== 0 && varianceVsEstimate != null
-      ? varianceVsEstimate / estimatedCost
+    comparableToEstimate && estimatedCost !== 0 && varianceVsEstimate != null
+      ? varianceVsEstimate / estimatedCost!
       : null;
 
+  // Still raised on a windowed view: whether an estimate EXISTS is a fact
+  // about the job, not about the period, and Data Health counts on it.
   if (estimatedCost == null) flags.push("no_estimate_on_file");
   if (varianceVsEstimatePct != null && varianceVsEstimatePct > 0.1) flags.push("over_budget_10pct_plus");
   if (job.status === "open" && job.endDate && job.endDate < ctx.now) flags.push("past_end_date_still_open");
@@ -186,7 +209,10 @@ export function computeJobFinancials(job: JobInput, ctx: FinancialContext): JobF
   const daysSinceActivity = lastFinancialActivity
     ? (ctx.now.getTime() - lastFinancialActivity.getTime()) / (1000 * 60 * 60 * 24)
     : null;
-  if (job.status === "open" && (daysSinceActivity == null || daysSinceActivity > 30)) {
+  // Not raised on a windowed view. "No activity in 30 days" read off a
+  // one-month slice is circular: filter to March and every job that was
+  // quiet in March looks abandoned.
+  if (!ctx.costsAreWindowed && job.status === "open" && (daysSinceActivity == null || daysSinceActivity > 30)) {
     flags.push("stale_job");
   }
 
@@ -509,13 +535,28 @@ export function computeProfitLeakage(f: JobFinancials, forecast: ForecastResult)
     steps.push({ label: "Overhead allocation", value: f.fullyLoadedProfit - f.grossProfit, isTotal: false });
   }
 
-  const runningTotal = steps.reduce((s, step) => (step.isTotal ? step.value : s + step.value), 0);
-  const endLabel = f.status === "open" && forecast.available ? "Forecast profit" : "Actual profit";
-  const endValue =
-    f.status === "open" && forecast.available && forecast.forecastProfit != null
-      ? forecast.forecastProfit
-      : f.fullyLoadedProfit ?? f.grossProfit ?? runningTotal;
-  steps.push({ label: endLabel, value: endValue, isTotal: true });
+  const endIsForecast =
+    f.status === "open" && forecast.available && forecast.forecastProfit != null;
+  const endValue = endIsForecast
+    ? forecast.forecastProfit!
+    : f.fullyLoadedProfit ?? f.grossProfit;
+
+  // No end point we can stand behind means no bridge at all.
+  //
+  // This used to fall back to the running total, which derived the endpoint
+  // from the very variances the chart exists to explain - so the chart could
+  // never disagree with itself and always closed perfectly. On a job with
+  // revenue and no tagged costs that produced the worst version of it: cost
+  // variance came out as the entire estimate "saved", and the bridge drew
+  // the whole invoice as profit, directly below the amber box saying
+  // profitability was unavailable for exactly that reason.
+  if (endValue == null) return null;
+
+  steps.push({
+    label: endIsForecast ? "Forecast profit" : "Actual profit",
+    value: endValue,
+    isTotal: true,
+  });
 
   return steps;
 }
@@ -1041,6 +1082,11 @@ export interface ConnectionProfitData {
   targetMarginPct: number | null;
 }
 
+export interface PriorMarginPoint {
+  weekStarting: Date;
+  marginPct: number; // fraction, e.g. 0.18
+}
+
 /**
  * Reads the last few WeeklyDigest snapshots for this connection and returns,
  * per job, its margin history oldest-first (excluding the current moment -
@@ -1050,22 +1096,37 @@ export interface ConnectionProfitData {
  * requires >=2 points before the rule fires, so sparse data just means the
  * rule doesn't fire yet rather than firing on noise.
  */
-async function getPriorMarginsByJob(connectionId: string, limit = 6): Promise<Record<string, number[]>> {
+async function getPriorMarginsByJob(
+  connectionId: string,
+  limit = 6
+): Promise<Record<string, PriorMarginPoint[]>> {
+  // Newest first, then reversed into chronological order.
+  //
+  // This used to order ascending with the same take, which quietly means
+  // "the first six digests this connection ever produced". A customer with a
+  // year of history had a trend line frozen on their first six weeks, and
+  // the margin-declining rule was reading data from last spring.
   const digests = await prisma.weeklyDigest.findMany({
     where: { connectionId },
-    orderBy: { weekStarting: "asc" },
+    orderBy: { weekStarting: "desc" },
     take: limit,
   });
-  const byJob: Record<string, number[]> = {};
+  digests.reverse();
+
+  const byJob: Record<string, PriorMarginPoint[]> = {};
   for (const digest of digests) {
     const metrics = digest.metrics as unknown as { jobs?: { jobId: string; marginPct: number | null }[] };
     for (const j of metrics?.jobs ?? []) {
       if (j.marginPct == null) continue;
-      (byJob[j.jobId] ??= []).push(j.marginPct);
+      (byJob[j.jobId] ??= []).push({ weekStarting: digest.weekStarting, marginPct: j.marginPct });
     }
   }
   return byJob;
 }
+
+/** The margins alone, for the rules that only care about the shape. */
+const marginPctsOnly = (points: PriorMarginPoint[] | undefined): number[] | undefined =>
+  points?.map((p) => p.marginPct);
 
 /**
  * The main entry point pages/routes call. Fetches everything needed, builds
@@ -1086,10 +1147,18 @@ export async function getConnectionProfitData(
     include: { marginTargets: true },
   });
 
+  // Status is filtered through the shared where-fragments, NOT on the raw
+  // `status` column. That column mirrors the QuickBooks Active flag; a job
+  // the contractor marked complete inside JobProfitAI carries the decision
+  // in `statusOverride`. Filtering on the column alone meant the Completed
+  // tab could not see the jobs the Mark completed button had just changed,
+  // while the same jobs correctly displayed as "Completed" one column over,
+  // because the table reads effectiveJobStatus.
   const jobs = await prisma.job.findMany({
     where: {
       connectionId,
-      ...(statusFilter !== "all" ? { status: statusFilter } : {}),
+      ...(statusFilter === "closed" ? CLOSED_JOB_WHERE : {}),
+      ...(statusFilter === "open" ? OPEN_JOB_WHERE : {}),
     },
     include: { costEntries: true, invoices: true },
   });
@@ -1111,7 +1180,7 @@ export async function getConnectionProfitData(
 
   const inRange = (d: Date) => !dateRange || (d >= dateRange.from && d <= dateRange.to);
 
-  const jobInputs: JobInput[] = jobs.map((j) => ({
+  const toJobInput = (j: (typeof jobs)[number], windowed: boolean): JobInput => ({
     id: j.id,
     name: j.name,
     customerName: j.customerName,
@@ -1123,14 +1192,33 @@ export async function getConnectionProfitData(
     endDate: j.endDate,
     updatedAt: j.updatedAt,
     costEntries: j.costEntries
-      .filter((c) => inRange(c.txnDate))
+      .filter((c) => !windowed || inRange(c.txnDate))
       .map((c) => ({ category: c.category, amount: toNum(c.amount), txnDate: c.txnDate })),
     invoices: j.invoices
-      .filter((i) => inRange(i.txnDate))
+      .filter((i) => !windowed || inRange(i.txnDate))
       .map((i) => ({ amount: toNum(i.amount), status: i.status, txnDate: i.txnDate })),
-  }));
+  });
 
-  const financials = jobInputs.map((j) => computeJobFinancials(j, ctx));
+  // Two passes over the SAME rows - no second database query.
+  //
+  // The period picker is a lens on money: revenue, costs, margin, the charts.
+  // It is not a lens on diagnosis. Data Health, Needs Your Attention and the
+  // profit opportunities all ask lifetime questions ("is anything untagged",
+  // "is this job running over", "has this one gone quiet"), and answering
+  // them from a one-month slice invents problems that don't exist and hides
+  // ones that do: filter to March and a job that finished in February has no
+  // costs at all, so it reports as untagged, unprofitable and abandoned.
+  //
+  // So the windowed numbers drive the totals and the jobs list, and the
+  // lifetime numbers drive everything that makes a claim about a job. When
+  // no range is selected the two are the same object and nothing is computed
+  // twice.
+  const financials = jobs.map((j) =>
+    computeJobFinancials(toJobInput(j, true), { ...ctx, costsAreWindowed: Boolean(dateRange) })
+  );
+  const lifetimeFinancials = dateRange
+    ? jobs.map((j) => computeJobFinancials(toJobInput(j, false), ctx))
+    : financials;
 
   // The last FULL sync, deliberately, not the last sync of any kind.
   //
@@ -1152,14 +1240,14 @@ export async function getConnectionProfitData(
   });
 
   const dataHealth = computeDataHealth(
-    financials,
+    lifetimeFinancials,
     now,
     (latestFullSync?.entitiesUpdated as Record<string, unknown> | null) ?? null,
     latestFullSync?.finishedAt ?? latestFullSync?.startedAt ?? null
   );
   dataHealth.possibleDuplicates = findPossibleDuplicateCostEntries(jobs);
 
-  const opportunities = computeProfitOpportunities(financials);
+  const opportunities = computeProfitOpportunities(lifetimeFinancials);
 
   // Needs Attention: per-job rule evaluation, with prior-margin trend data
   // and same-category peer costs (completed jobs only) threaded in.
@@ -1177,10 +1265,10 @@ export async function getConnectionProfitData(
 
   const priorMarginsByJob = await getPriorMarginsByJob(connectionId);
   const completedByCategory: Record<string, JobFinancials[]> = {};
-  for (const f of financials) {
+  for (const f of lifetimeFinancials) {
     if (f.status === "closed" && f.category) (completedByCategory[f.category] ??= []).push(f);
   }
-  const needsAttention = financials.flatMap((f) => {
+  const needsAttention = lifetimeFinancials.flatMap((f) => {
     const peerCompletedCostByCategory: Record<string, number[]> = {};
     if (canBenchmark && f.category && completedByCategory[f.category]) {
       for (const peer of completedByCategory[f.category]) {
@@ -1191,7 +1279,7 @@ export async function getConnectionProfitData(
       }
     }
     return computeNeedsAttentionForJob(f, {
-      priorMarginPcts: priorMarginsByJob[f.jobId],
+      priorMarginPcts: marginPctsOnly(priorMarginsByJob[f.jobId]),
       peerCompletedCostByCategory,
     });
   });
@@ -1231,10 +1319,14 @@ export async function getMarginTrend(
     include: { costEntries: true, invoices: true },
   });
 
+  // UTC, explicitly. Transaction dates arrive from QuickBooks as date-only
+  // strings and are stored as midnight UTC, so reading them with the local
+  // getMonth() bucketed them correctly on Vercel (UTC) and one month early in
+  // any developer timezone west of it. Same reasoning as formatDate.
   const periodKey = (d: Date): string =>
     granularity === "monthly"
-      ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
-      : `${d.getFullYear()}-Q${Math.floor(d.getMonth() / 3) + 1}`;
+      ? `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`
+      : `${d.getUTCFullYear()}-Q${Math.floor(d.getUTCMonth() / 3) + 1}`;
 
   const buckets = new Map<string, { revenue: number; costs: number }>();
   for (const job of jobs) {
@@ -1270,7 +1362,13 @@ export interface JobProfitData {
   forecast: ForecastResult;
   leakage: ProfitLeakageStep[] | null;
   needsAttention: NeedsAttentionItem[];
-  priorMarginPcts: number[]; // oldest-first, from past WeeklyDigest snapshots - powers the Profit Trend section
+  /**
+   * Oldest-first margin snapshots from past weekly digests, each carrying the
+   * week it was taken. The dates are part of the data, not decoration: the
+   * Profit Trend chart used to label them 1, 2, 3, Now, which draws a gap of
+   * two months and a gap of one week as the same distance.
+   */
+  priorMarginPoints: PriorMarginPoint[];
   rawCostEntries: { id: string; category: string; description: string | null; amount: number; txnDate: Date; qboSourceType: string }[];
   rawInvoices: { id: string; amount: number; status: string; txnDate: Date }[];
   /** The contractor's own status choice, or null when following QuickBooks. */
@@ -1368,7 +1466,7 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
   }
   const priorMarginsByJob = await getPriorMarginsByJob(connection.id);
   const needsAttention = computeNeedsAttentionForJob(financials, {
-    priorMarginPcts: priorMarginsByJob[job.id],
+    priorMarginPcts: marginPctsOnly(priorMarginsByJob[job.id]),
     peerCompletedCostByCategory,
   });
 
@@ -1380,7 +1478,7 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
     forecast,
     leakage,
     needsAttention,
-    priorMarginPcts: priorMarginsByJob[job.id] ?? [],
+    priorMarginPoints: priorMarginsByJob[job.id] ?? [],
     rawCostEntries: job.costEntries.map((c) => ({
       id: c.id,
       category: c.category,

@@ -5,7 +5,7 @@ import { getEntitlements } from "@/lib/entitlements";
 import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
 import { prisma } from "@/lib/prisma";
 import { getConnectionProfitData, type DataHealthReport } from "@/lib/profitability";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency, formatDateTime } from "@/lib/format";
 import { DataQualityBadge, StatusDot } from "@/components/dashboard/Badges";
 
 /**
@@ -100,8 +100,10 @@ export default async function DataHealthPage() {
                 {h.jobsMissingData} {h.jobsMissingData === 1 ? "job is" : "jobs are"} missing
                 revenue or cost data
               </strong>
-              , so {h.jobsMissingData === 1 ? "it is" : "they are"} left out of your company
-              totals rather than counted as zero.{" "}
+              , so {h.jobsMissingData === 1 ? "its margin is" : "their margins are"} left out of
+              your company profit and margin figures rather than counted as zero. Whatever revenue
+              and cost {h.jobsMissingData === 1 ? "it does" : "they do"} have is still included in
+              those totals.{" "}
             </>
           ) : null}
           {COMPLETENESS_EXPLANATION[h.overallConfidence]}
@@ -110,8 +112,8 @@ export default async function DataHealthPage() {
         {h.jobsMissingData > 0 ? (
           <p className="mt-2 text-sm text-gray-500">
             The lists below show exactly which jobs, and what each one is missing. Most of it is
-            fixed in QuickBooks by tagging costs to the right job, or by adding a cost estimate in
-            Settings.
+            fixed in QuickBooks by tagging costs to the right job. A missing cost estimate is
+            added here instead: open the job and use Edit job.
           </p>
         ) : null}
       </div>
@@ -137,8 +139,8 @@ export default async function DataHealthPage() {
 
       <p className="mt-8 text-xs text-gray-500">
         {h.countsAsOf
-          ? `The four counts below are measured during a full sync of your whole company, last run ${h.countsAsOf.toLocaleString()}. The lists above are current as of your most recent sync.`
-          : "The four counts below are measured during a full sync of your whole company, which hasn't run yet for this connection."}
+          ? `Expenses and time entries below are counted during a full sync of your whole company, last run ${formatDateTime(h.countsAsOf, connection.emailTimezone)}. Possible duplicates, and the lists above, are worked out from your synced data every time this page loads.`
+          : "Expenses and time entries below are counted during a full sync of your whole company, which hasn't run yet for this connection. Possible duplicates, and the lists above, are worked out from your synced data every time this page loads."}
       </p>
 
       <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">

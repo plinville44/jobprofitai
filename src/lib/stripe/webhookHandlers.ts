@@ -10,6 +10,7 @@ import {
 } from "@/lib/referrals";
 import {
   countPayingClients,
+  flagPaidCommissionsForReview,
   recordCommissionForInvoice,
   voidCommissionForInvoice,
 } from "@/lib/partners";
@@ -467,17 +468,51 @@ async function handleInvoicePaymentFailed(invoice: Stripe.Invoice): Promise<stri
 }
 
 /**
- * A refund invalidates the money the reward/commission was based on, so both
- * are reversed. Partial refunds are treated the same as full ones here:
- * anything less than "they paid and kept it" is not a qualifying payment.
+ * True when the whole charge came back, false for a partial refund.
+ *
+ * `charge.refunded` is Stripe's own full-refund flag; the amount comparison
+ * is a belt-and-braces second reading. A charge object carrying neither
+ * field - which in practice means a hand-built or trimmed payload - is
+ * treated as a full refund, because the safe default when we cannot tell is
+ * to reverse rather than to keep paying commission on money that is gone.
+ */
+function isFullRefund(charge: Stripe.Charge): boolean {
+  if (charge.refunded === true) return true;
+  const amount = charge.amount ?? 0;
+  const refunded = charge.amount_refunded ?? 0;
+  return refunded >= amount;
+}
+
+/**
+ * A FULL refund invalidates the money the reward and commission were based
+ * on, so both are reversed.
+ *
+ * A PARTIAL refund deliberately reverses nothing. The old behaviour treated
+ * the two identically, which meant a $20 goodwill credit on a $299 invoice
+ * destroyed the partner's entire commission for that month and permanently
+ * disqualified the referral - including one that had already earned and
+ * been credited its free month, possibly a year earlier. That is a large,
+ * silent, irreversible penalty triggered by the smallest routine act of
+ * customer service there is. The customer paid and kept the service; the
+ * referral stands. If a partial refund ever does need to reverse something,
+ * that is a decision for a person, and the event is in the Stripe log.
  */
 async function handleChargeRefunded(charge: Stripe.Charge): Promise<string> {
   const invoiceId = idOf(charge.invoice);
   const notes: string[] = [];
 
+  if (!isFullRefund(charge)) {
+    return `Partial refund on charge ${charge.id}: nothing reversed (commission and referral stand)`;
+  }
+
   if (invoiceId) {
     const voided = await voidCommissionForInvoice(invoiceId, "Payment refunded");
     if (voided) notes.push("voided partner commission");
+
+    // Commission already paid out to the partner cannot be voided by an
+    // update, so it is flagged instead of being left invisible.
+    const flagged = await flagPaidCommissionsForReview(invoiceId, "Payment refunded");
+    if (flagged) notes.push(`flagged ${flagged} already-paid commission for review`);
   }
 
   const userId = await resolveUserId({ customerId: idOf(charge.customer) });
@@ -499,6 +534,12 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<string> {
     if (invoiceId) {
       const voided = await voidCommissionForInvoice(invoiceId, "Payment disputed (chargeback)");
       if (voided) notes.push("voided partner commission");
+
+      const flagged = await flagPaidCommissionsForReview(
+        invoiceId,
+        "Payment disputed (chargeback)"
+      );
+      if (flagged) notes.push(`flagged ${flagged} already-paid commission for review`);
     }
     const userId = await resolveUserId({ customerId: idOf(charge.customer) });
     if (userId) {

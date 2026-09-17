@@ -355,6 +355,54 @@ describe("computeJobFinancials", () => {
 // computeNeedsAttentionForJob
 // ===========================================================================
 
+describe("windowed costs (dashboard period filter)", () => {
+  /**
+   * An estimate has no period. Comparing one month of costs against a
+   * whole-job estimate produced a number that looked right and was not:
+   * "95% under the estimate" on a job that had simply been quiet that month.
+   */
+  it("suppresses estimate variance and the over-budget flag", () => {
+    const job = makeJob({ estimatedCost: 12000, costEntries: [cost("materials", 600)], invoices: [inv(2000)] });
+
+    const lifetime = computeJobFinancials(job, makeCtx());
+    expect(lifetime.varianceVsEstimate).toBe(-11400);
+
+    const windowed = computeJobFinancials(job, makeCtx({ costsAreWindowed: true }));
+    expect(windowed.varianceVsEstimate).toBeNull();
+    expect(windowed.varianceVsEstimatePct).toBeNull();
+    expect(windowed.flags).not.toContain("over_budget_10pct_plus");
+
+    // The estimate still EXISTS, and Data Health counts on knowing that.
+    expect(windowed.estimatedCost).toBe(12000);
+    expect(windowed.flags).not.toContain("no_estimate_on_file");
+
+    // The figures the period picker is actually for are untouched.
+    expect(windowed.costs).toBe(600);
+    expect(windowed.revenue).toBe(2000);
+  });
+
+  it("suppresses the stale-job flag, which a window makes circular", () => {
+    const quietInWindow = makeJob({
+      status: "open",
+      costEntries: [],
+      invoices: [],
+      estimatedCost: 5000,
+    });
+
+    expect(computeJobFinancials(quietInWindow, makeCtx()).flags).toContain("stale_job");
+    expect(
+      computeJobFinancials(quietInWindow, makeCtx({ costsAreWindowed: true })).flags
+    ).not.toContain("stale_job");
+  });
+
+  it("still flags an over-budget job when no window is applied", () => {
+    const over = makeJob({ estimatedCost: 10000, costEntries: [cost("labor", 12000)], invoices: [inv(15000)] });
+    const f = computeJobFinancials(over, makeCtx());
+    expect(f.varianceVsEstimate).toBe(2000);
+    expect(f.flags).toContain("over_budget_10pct_plus");
+  });
+});
+
 describe("computeNeedsAttentionForJob", () => {
   it("raises revenue_no_costs", () => {
     const items = computeNeedsAttentionForJob(makeFinancials({ flags: ["revenue_no_costs"] }));
@@ -660,7 +708,7 @@ describe("computeProfitLeakage", () => {
     expect(overheadStep).toEqual({ label: "Overhead allocation", value: -500, isTotal: false }); // 2500 - 3000
   });
 
-  it("prefers Fully Loaded Profit, then Gross Profit, then the running total, for the closing figure", () => {
+  it("prefers Fully Loaded Profit, then Gross Profit, for the closing figure", () => {
     const base = { estimatedRevenue: 15000, estimatedCost: 10000, revenue: 14000, costs: 11000, status: "closed" as const };
 
     const withFullyLoaded = computeProfitLeakage(makeFinancials({ ...base, fullyLoadedProfit: 111 }), unavailableForecast)!;
@@ -672,12 +720,18 @@ describe("computeProfitLeakage", () => {
     )!;
     expect(withGrossOnly[withGrossOnly.length - 1].value).toBe(222);
 
-    const withNeitherFallsBackToRunningTotal = computeProfitLeakage(
-      makeFinancials({ ...base, fullyLoadedProfit: null, grossProfit: null }),
-      unavailableForecast
-    )!;
-    // running total = expectedProfit(5000) + revenueVariance(-1000) + costVariance(-1000) = 3000
-    expect(withNeitherFallsBackToRunningTotal[withNeitherFallsBackToRunningTotal.length - 1].value).toBe(3000);
+    // With neither, there is no third preference. This used to close on the
+    // running total, which is the sum of the variances the chart exists to
+    // explain - an endpoint derived from the steps rather than measured, so
+    // the bridge could never fail to balance and never disagreed with
+    // itself. See "returns null when there is no real profit figure to end
+    // on" below for what that did to a job with revenue and no costs.
+    expect(
+      computeProfitLeakage(
+        makeFinancials({ ...base, fullyLoadedProfit: null, grossProfit: null }),
+        unavailableForecast
+      )
+    ).toBeNull();
   });
 
   it("labels the closing step 'Forecast profit' only for an open job with an available forecast", () => {
@@ -697,6 +751,30 @@ describe("computeProfitLeakage", () => {
     )!;
     // Open, but no forecast to show - falls back to "Actual profit" rather than mislabeling a non-existent forecast.
     expect(openWithoutForecast[openWithoutForecast.length - 1].label).toBe("Actual profit");
+  });
+
+  /**
+   * The bridge used to close itself from its own running total when there
+   * was no real endpoint, so a job with revenue and nothing tagged to it
+   * drew the entire invoice as profit - beneath the box explaining that its
+   * profitability could not be computed.
+   */
+  it("returns null when there is no real profit figure to end on", () => {
+    expect(
+      computeProfitLeakage(
+        makeFinancials({
+          estimatedRevenue: 15000,
+          estimatedCost: 10000,
+          revenue: 14000,
+          costs: 0,
+          profitabilityAvailable: false,
+          grossProfit: null,
+          fullyLoadedProfit: null,
+          status: "open",
+        }),
+        unavailableForecast
+      )
+    ).toBeNull();
   });
 });
 

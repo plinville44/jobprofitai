@@ -205,6 +205,46 @@ export async function voidCommissionForInvoice(
 }
 
 /**
+ * Marks already-PAID commission on a refunded invoice for human review.
+ *
+ * voidCommissionForInvoice above only touches rows still at "earned", which
+ * is correct: money already sent to a partner cannot be un-sent by an
+ * UPDATE, and flipping the row to "voided" would make the ledger claim a
+ * payout that happened never did. But leaving it entirely untouched was the
+ * worse half of that trade - the refund arrived, nothing anywhere recorded
+ * that a commission had been paid on money the customer got back, and the
+ * only way to find it was to already know it existed.
+ *
+ * So the row keeps its "paid" status and its history, and gains a note. It
+ * is then a decision someone makes, with the facts in front of them, rather
+ * than one the system makes silently in either direction.
+ *
+ * Returns how many paid commissions were flagged.
+ */
+export async function flagPaidCommissionsForReview(
+  stripeInvoiceId: string,
+  reason: string,
+  now: Date = new Date()
+): Promise<number> {
+  const paid = await prisma.partnerCommission.findMany({
+    where: { stripeInvoiceId, status: "paid" },
+    select: { id: true, paidNote: true },
+  });
+
+  for (const row of paid) {
+    const note = `REVIEW ${now.toISOString().slice(0, 10)}: ${reason} after this commission was paid out.`;
+    await prisma.partnerCommission.update({
+      where: { id: row.id },
+      // Appended, not replaced. Whatever an admin wrote when they paid this
+      // out is part of the record too.
+      data: { paidNote: row.paidNote ? `${row.paidNote}\n${note}` : note },
+    });
+  }
+
+  return paid.length;
+}
+
+/**
  * At roughly 3 active paying clients a partner earns a complimentary
  * JobProfitAI account for their own firm. Recorded here; the actual
  * entitlement is granted by an admin so it's a deliberate act with a record,

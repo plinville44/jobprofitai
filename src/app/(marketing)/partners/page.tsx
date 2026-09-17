@@ -46,8 +46,9 @@ const FAQ_ITEMS = [
         No, and this is deliberate, not an oversight. Being a referral partner grants you no
         access whatsoever to a contractor&rsquo;s QuickBooks data, jobs or profitability. Your
         partner dashboard shows counts and commission amounts only. If a client wants you to see
-        their numbers, they have to grant that explicitly through account access controls. A
-        referral link is not consent.
+        their numbers, they have to share them with you themselves, for example by adding your
+        address to the recipients for their Weekly Profit Brief. There is no partner-side view
+        of a client&rsquo;s financial data at all. A referral link is not consent.
       </>
     ),
   },

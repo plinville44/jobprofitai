@@ -6,8 +6,9 @@ import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
 import { prisma } from "@/lib/prisma";
 import { decryptToken } from "@/lib/crypto";
 import { getConnectionProfitData, getMarginTrend } from "@/lib/profitability";
+import { CLOSED_JOB_WHERE } from "@/lib/jobStatus";
 import { resolveDateRange, resolveStatusFilter, RANGE_OPTIONS, STATUS_OPTIONS } from "@/lib/dateRange";
-import { NO_VALUE, confidenceLabel, formatCurrency, formatPct } from "@/lib/format";
+import { NO_VALUE, confidenceLabel, formatCurrency, formatDate, formatDateTime, formatPct } from "@/lib/format";
 import { SeverityBadge } from "@/components/dashboard/Badges";
 import DashboardActions from "./DashboardActions";
 import JobMarginBarChart from "@/components/charts/JobMarginBarChart";
@@ -69,6 +70,19 @@ export default async function DashboardPage(props: {
     : null;
   const marginTrend = connection ? await getMarginTrend(connection.id, trendGranularity) : [];
 
+  // Only fetched when the trend has nothing to draw, purely so the empty
+  // state can say WHICH of the three reasons it is. The overwhelmingly
+  // common one is that no job has been marked completed, and "not enough
+  // history" told a contractor with forty finished jobs to sit and wait.
+  const trendDiagnosis = connection && marginTrend.length === 0
+    ? {
+        totalJobs: await prisma.job.count({ where: { connectionId: connection.id } }),
+        completedJobs: await prisma.job.count({
+          where: { connectionId: connection.id, ...CLOSED_JOB_WHERE },
+        }),
+      }
+    : null;
+
   const linkWithParams = (overrides: Record<string, string | undefined>) => {
     const params = new URLSearchParams();
     const merged = { range: rangeKey, status: statusFilter, trend: trendGranularity, ...overrides };
@@ -116,7 +130,7 @@ export default async function DashboardPage(props: {
             </p>
             <p className="mt-1 text-xs text-gray-400">
               Cost tracking mode: {connection.costTrackingMode} · Last synced:{" "}
-              {connection.lastSyncedAt?.toLocaleString() ?? "never"}
+              {connection.lastSyncedAt ? formatDateTime(connection.lastSyncedAt, connection.emailTimezone) : "never"}
             </p>
             <DashboardActions connectionId={connection.id} />
           </div>
@@ -150,7 +164,15 @@ export default async function DashboardPage(props: {
               ))}
             </div>
           </div>
-          <p className="mt-2 text-xs text-gray-400">Showing {rangeLabel.toLowerCase()}, {statusFilter} jobs.</p>
+          {/* Says which numbers the period actually moves. Revenue, costs and
+              margin are period questions; whether a job is over its estimate
+              or missing cost data is not, and those panels deliberately keep
+              reading the whole job. Without this line the two sets of figures
+              on one screen look like they disagree. */}
+          <p className="mt-2 text-xs text-gray-400">
+            Showing {rangeLabel.toLowerCase()}, {statusFilter} jobs. Needs Your Attention, Data
+            Health and Profit At Risk always cover the whole job.
+          </p>
 
           {/* KPI cards */}
           <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
@@ -184,7 +206,19 @@ export default async function DashboardPage(props: {
           <div className="mt-10">
             <h2 className="text-lg font-semibold text-navy">Needs Your Attention</h2>
             {profitData.needsAttention.length === 0 ? (
-              <p className="mt-2 text-sm text-gray-500">Nothing needs attention right now for the selected filters.</p>
+              /* Three different situations wore the same sentence, and the
+                 most common one was "you have no jobs here", which reads as
+                 a clean bill of health. The period is not mentioned because
+                 this panel no longer depends on it. */
+              <p className="mt-2 text-sm text-gray-500">
+                {profitData.dataHealth.totalJobs === 0
+                  ? statusFilter === "all"
+                    ? "No jobs have synced from QuickBooks yet, so there is nothing to check."
+                    : `No ${statusFilter === "open" ? "active" : "completed"} jobs to check. Try the All jobs tab.`
+                  : `Nothing needs attention across your ${profitData.dataHealth.totalJobs} ${
+                      statusFilter === "open" ? "active " : statusFilter === "closed" ? "completed " : ""
+                    }${profitData.dataHealth.totalJobs === 1 ? "job" : "jobs"}.`}
+              </p>
             ) : (
               <div className="mt-3 overflow-hidden rounded-xl border border-gray-200">
                 <table className="w-full text-left text-sm">
@@ -264,10 +298,14 @@ export default async function DashboardPage(props: {
                 </div>
               </div>
               <div className="mt-3">
-                <MarginTrendChart
-                  data={marginTrend.map((p) => ({ period: p.period, marginPct: p.marginPct == null ? null : p.marginPct * 100 }))}
-                  targetMarginPct={profitData.totals.targetMarginPct}
-                />
+                {trendDiagnosis ? (
+                  <MarginTrendEmptyState {...trendDiagnosis} />
+                ) : (
+                  <MarginTrendChart
+                    data={marginTrend.map((p) => ({ period: p.period, marginPct: p.marginPct == null ? null : p.marginPct * 100 }))}
+                    targetMarginPct={profitData.totals.targetMarginPct}
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -283,7 +321,7 @@ export default async function DashboardPage(props: {
           {latestDigest && (
             <div className="mt-6 rounded-xl border border-gray-200 p-6">
               <div className="flex items-center justify-between gap-3">
-                <p className="text-sm text-gray-500">Digest for week of {latestDigest.weekStarting.toLocaleDateString()}</p>
+                <p className="text-sm text-gray-500">Digest for week of {formatDate(latestDigest.weekStarting)}</p>
                 {latestDigest.kind === "narrative" ? (
                   <span className="text-xs font-semibold uppercase tracking-wide text-brand">AI Analysis</span>
                 ) : (
@@ -331,5 +369,51 @@ function KpiCard({ label, value, tone }: { label: string; value: string; tone?: 
       <p className="text-xs text-gray-500">{label}</p>
       <p className="mt-1 text-xl font-bold text-navy">{value}</p>
     </div>
+  );
+}
+
+/**
+ * Why the margin trend is empty, in the customer's terms.
+ *
+ * The trend compares finished work, and QuickBooks does not tell us when a
+ * project is finished, so on most accounts the answer is "nothing is marked
+ * completed yet" - a thing the contractor can fix in about ten seconds from
+ * the Jobs page. The old single message, "Not enough completed-job history
+ * yet to show a trend", described that situation as a waiting game.
+ */
+function MarginTrendEmptyState({
+  totalJobs,
+  completedJobs,
+}: {
+  totalJobs: number;
+  completedJobs: number;
+}) {
+  if (totalJobs === 0) {
+    return (
+      <p className="text-sm text-gray-500">
+        No jobs have synced from QuickBooks yet. Run a sync above and this fills in.
+      </p>
+    );
+  }
+
+  if (completedJobs === 0) {
+    return (
+      <p className="text-sm text-gray-500">
+        None of your {totalJobs} jobs are marked completed yet, and this trend only compares
+        finished work. QuickBooks doesn&apos;t tell us when a project wraps up, so you mark them
+        here.{" "}
+        <Link href="/dashboard/jobs" className="text-brand hover:underline">
+          Mark jobs completed
+        </Link>{" "}
+        (you can select several at once).
+      </p>
+    );
+  }
+
+  return (
+    <p className="text-sm text-gray-500">
+      Your {completedJobs} completed {completedJobs === 1 ? "job has" : "jobs have"} no invoices or
+      costs dated in QuickBooks yet, so there is nothing to plot over time.
+    </p>
   );
 }

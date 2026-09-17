@@ -62,6 +62,25 @@ function buildRows(steps: ProfitLeakageStep[]): LeakageRow[] {
 }
 
 /**
+ * The waterfall is drawn as two stacked bars: a transparent `base` that
+ * positions each floating step, and the `visible` bar on top of it. The
+ * default tooltip lists every series in the stack, so it printed the amount
+ * twice, both rows labelled "Amount" and both showing the same number - the
+ * invisible spacer bar reporting itself. Rendering the row once, with the
+ * step's own name, is clearer than the original was even before the repeat.
+ */
+function LeakageTooltip({ active, payload }: { active?: boolean; payload?: { payload?: LeakageRow }[] }) {
+  const row = active ? payload?.[0]?.payload : null;
+  if (!row) return null;
+  return (
+    <div className="rounded-md border border-gray-200 bg-white px-3 py-2 text-xs shadow-sm">
+      <p className="font-medium text-navy">{row.label}</p>
+      <p className="mt-0.5 text-gray-600">${Math.round(row.display).toLocaleString()}</p>
+    </div>
+  );
+}
+
+/**
  * Chart 4: Profit Leakage / Variance bridge for one job - the movement from
  * expected profit to actual/forecast profit. Built as a "floating bar"
  * waterfall: total steps sit on the axis, delta steps float between the
@@ -82,9 +101,7 @@ export default function ProfitLeakageChart({ steps }: { steps: ProfitLeakageStep
         <CartesianGrid stroke="#e1e0d9" horizontal={false} />
         <XAxis type="number" tickFormatter={(v) => `$${Math.round(v).toLocaleString()}`} stroke="#898781" fontSize={12} />
         <YAxis type="category" dataKey="label" width={140} stroke="#898781" fontSize={12} />
-        <Tooltip
-          formatter={(_value: any, _name: any, props: any) => [`$${Math.round(props.payload.display).toLocaleString()}`, "Amount"]}
-        />
+        <Tooltip content={<LeakageTooltip />} cursor={{ fill: "#f5f5f3" }} />
         <Bar dataKey="base" stackId="a" fill="transparent" isAnimationActive={false} />
         <Bar dataKey="visible" stackId="a" radius={[0, 4, 4, 0]} barSize={18}>
           {rows.map((r, i) => (

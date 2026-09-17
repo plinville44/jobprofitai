@@ -70,10 +70,11 @@ const FAQ_ITEMS = [
     q: "Do I need to change the way I use QuickBooks?",
     a: (
       <>
-        No. JobProfitAI reads whichever way you already track job cost, whether that&rsquo;s
-        QuickBooks Projects or Classes, and it works out which one you use automatically. You will get more out of it if your
-        costs are consistently tagged to jobs, and the built-in Data Health page tells you exactly
-        where that&rsquo;s incomplete rather than quietly guessing.
+        No, but JobProfitAI does need your job costs tracked as QuickBooks{" "}
+        <strong>Projects</strong> (sub-customers). If you track job cost by Class instead, it
+        won&rsquo;t find your jobs yet. Classes are on the roadmap, not in the product. Beyond that,
+        you will get more out of it if costs are consistently tagged to jobs, and the built-in Data
+        Health page tells you exactly where that&rsquo;s incomplete rather than quietly guessing.
       </>
     ),
   },
@@ -105,13 +106,15 @@ const FAQ_ITEMS = [
     q: "Can my accountant use JobProfitAI?",
     a: (
       <>
-        Yes. Accountants, bookkeepers and fractional CFOs use JobProfitAI with their contractor
-        clients, and there&rsquo;s a{" "}
+        JobProfitAI is built for accountants, bookkeepers and fractional CFOs to use alongside
+        their contractor clients, and there&rsquo;s a{" "}
         <Link href="/partners" className="font-medium text-jp-blue hover:underline">
           partner program
         </Link>{" "}
-        for firms that work with several. Being your accountant doesn&rsquo;t automatically give
-        them access to your numbers. You have to grant that deliberately.
+        for firms that work with several. To be clear about how that works today: an account belongs
+        to one person, and there is no way to share yours. If you want your accountant to see your
+        numbers, they would need their own account connected to your QuickBooks company, which is
+        something you do in QuickBooks, not here.
       </>
     ),
   },
@@ -234,7 +237,7 @@ export default function HomePage() {
         <SectionHeading
           eyebrow="What you get"
           title="Profit intelligence, not another dashboard to check"
-          intro="Everything here runs off the job, revenue and cost data already in your QuickBooks company. Nothing to re-enter, no spreadsheets to maintain."
+          intro="Revenue and costs come straight from your QuickBooks company. Three things QuickBooks has no field for are set here instead: a job type, your internal cost estimate, and whether a job is finished. No spreadsheets to maintain."
           align="center"
         />
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
@@ -260,7 +263,7 @@ export default function HomePage() {
           />
           <ValueCard
             title="Data Health"
-            body="See exactly where your QuickBooks data is incomplete. Missing estimates, untagged costs. Instead of getting numbers that quietly guess."
+            body="See exactly what's missing before you trust a number. Untagged costs, jobs with no estimate on file, time entries with no rate. Instead of numbers that quietly guess."
           />
         </div>
       </Section>
@@ -269,10 +272,10 @@ export default function HomePage() {
       <Section tone="surface">
         <SectionHeading
           eyebrow="How it works"
-          title="Three steps, about two minutes of setup"
+          title="Connect in about two minutes, then fill in what QuickBooks can't tell us"
           align="center"
         />
-        <div className="grid gap-10 sm:grid-cols-3">
+        <div className="grid gap-10 sm:grid-cols-2 lg:grid-cols-4">
           <StepCard
             number={1}
             title="Connect QuickBooks"
@@ -285,6 +288,11 @@ export default function HomePage() {
           />
           <StepCard
             number={3}
+            title="Add a job type and a cost estimate"
+            body="QuickBooks has no field for either, so they're entered here. We suggest the job type from the job name. This is what powers budget variance, forecasting and cross-job comparison."
+          />
+          <StepCard
+            number={4}
             title="Know where profit is being made and lost"
             body="See what deserves your attention right now, and what actions may improve profitability on the work ahead."
           />
@@ -318,7 +326,7 @@ export default function HomePage() {
                 },
                 {
                   t: "Numbers come from your data, not the AI",
-                  b: "Dollar amounts, percentages and confidence levels are calculated by the application. The AI writes the explanation around figures it isn't allowed to change.",
+                  b: "Every dollar amount, percentage and confidence level on a Profit Insight is calculated by the application and shown as calculated. The AI writes the explanation around them.",
                 },
                 {
                   t: "Gaps are stated, not filled in",
