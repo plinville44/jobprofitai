@@ -994,6 +994,10 @@ describe("computeDashboardTotals", () => {
     const totals = computeDashboardTotals(jobs, needsAttention, dataHealth, 30);
 
     expect(totals.activeJobs).toBe(2); // only the 2 "open" jobs
+    // Every job handed in, regardless of status. The dashboard filters by the
+    // Active/Completed/All tab before calling this, so this is the count of
+    // what the customer is actually looking at.
+    expect(totals.jobsInView).toBe(jobs.length);
     expect(totals.revenue).toBe(23000);
     expect(totals.trackedJobCosts).toBe(15500);
     expect(totals.jobGrossProfit).toBe(7500);

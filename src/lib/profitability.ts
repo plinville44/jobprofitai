@@ -873,6 +873,15 @@ export function diagnoseOpportunityGap(jobs: JobFinancials[]): OpportunityGap {
 
 export interface DashboardTotals {
   activeJobs: number;
+  /**
+   * How many jobs are in the view the customer is actually looking at.
+   *
+   * Separate from activeJobs because the dashboard's job list is already
+   * filtered by the Active / Completed / All tabs before it gets here.
+   * Counting only open jobs inside a list of completed ones produces a
+   * confident zero, which is true and useless.
+   */
+  jobsInView: number;
   revenue: number;
   trackedJobCosts: number;
   jobGrossProfit: number;
@@ -896,6 +905,7 @@ export function computeDashboardTotals(
   targetMarginPct: number | null
 ): DashboardTotals {
   const activeJobs = jobs.filter((j) => j.status === "open").length;
+  const jobsInView = jobs.length;
   const revenue = jobs.reduce((s, j) => s + j.revenue, 0);
   const trackedJobCosts = jobs.reduce((s, j) => s + j.costs, 0);
   const jobGrossProfit = revenue - trackedJobCosts;
@@ -928,6 +938,7 @@ export function computeDashboardTotals(
 
   return {
     activeJobs,
+    jobsInView,
     revenue,
     trackedJobCosts,
     jobGrossProfit,

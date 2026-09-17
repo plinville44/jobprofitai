@@ -154,7 +154,15 @@ export default async function DashboardPage(props: {
 
           {/* KPI cards */}
           <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-            <KpiCard label="Active Jobs" value={String(profitData.totals.activeJobs)} />
+            {/* Follows the Active / Completed / All tab above it. A tile
+                reading "Active Jobs: 0" while the customer is looking at six
+                completed jobs is technically correct and reads as a bug. */}
+            <KpiCard
+              label={
+                statusFilter === "open" ? "Active Jobs" : statusFilter === "closed" ? "Completed Jobs" : "Total Jobs"
+              }
+              value={String(profitData.totals.jobsInView)}
+            />
             <KpiCard label="Revenue" value={formatCurrency(profitData.totals.revenue)} />
             <KpiCard label="Tracked Job Costs" value={formatCurrency(profitData.totals.trackedJobCosts)} />
             <KpiCard label="Job Gross Profit" value={formatCurrency(profitData.totals.jobGrossProfit)} />
