@@ -112,9 +112,9 @@ const FAQ_ITEMS = [
           partner program
         </Link>{" "}
         for firms that work with several. To be clear about how that works today: an account belongs
-        to one person, and there is no way to share yours. If you want your accountant to see your
-        numbers, they would need their own account connected to your QuickBooks company, which is
-        something you do in QuickBooks, not here.
+        to one person, there is no way to share it, and a QuickBooks company can only be connected
+        to one JobProfitAI account at a time. If you want your accountant to see your numbers, add
+        their email address to the recipients for your Weekly Profit Brief in Settings.
       </>
     ),
   },

@@ -78,10 +78,12 @@ const FAQ_ITEMS = [
     a: (
       <>
         Commission is only earned on subscription revenue that&rsquo;s actually collected and kept.
-        Failed payments earn nothing, sales tax is excluded from the calculation, and if a payment
-        is refunded or charged back the commission for that invoice is reversed, and that
-        month doesn&rsquo;t count against the client&rsquo;s {PARTNER_COMMISSION_MONTHS}-month
-        window either.
+        Failed payments earn nothing and sales tax is excluded from the calculation. If a payment
+        is refunded in full or charged back before we&rsquo;ve paid you for it, the commission for
+        that invoice is reversed and that month doesn&rsquo;t count against the client&rsquo;s{" "}
+        {PARTNER_COMMISSION_MONTHS}-month window. If we&rsquo;ve already paid it out, we review it
+        with you rather than deducting anything automatically. A partial refund, such as a
+        goodwill credit, doesn&rsquo;t affect your commission.
       </>
     ),
   },
@@ -115,9 +117,10 @@ const FAQ_ITEMS = [
         No, applying is free. Once you have {PARTNER_FREE_ACCOUNT_THRESHOLD} clients paying at the
         same time, your firm gets its own {PLANS.profit_intelligence_pro.name} account at no charge,
         for as long as those clients stay. That is a real account with its own QuickBooks
-        connections, for your own books or for a client whose QuickBooks your firm already has
-        access to, so you can run the analysis yourself rather than asking them to send you a
-        report.
+        connections, for your own books or for a client who doesn&rsquo;t use JobProfitAI
+        themselves. A QuickBooks company can only be connected to one JobProfitAI account at a
+        time, so connecting one a client has already connected moves it to your account and out
+        of theirs.
       </>
     ),
   },

@@ -23,7 +23,13 @@ export default async function AdminPartnersPage() {
       user: { select: { email: true } },
       referralCode: { select: { code: true } },
       commissions: {
-        select: { id: true, status: true, commissionCents: true },
+        select: {
+          id: true,
+          status: true,
+          commissionCents: true,
+          paidNote: true,
+          stripeInvoiceId: true,
+        },
       },
       _count: { select: { referrals: true } },
     },
@@ -75,6 +81,14 @@ export default async function AdminPartnersPage() {
             const paidCents = p.commissions
               .filter((c) => c.status === "paid")
               .reduce((t, c) => t + c.commissionCents, 0);
+            // Commission already paid out on an invoice that was later
+            // refunded or charged back. The webhook cannot void these (the
+            // money has left), so it appends a REVIEW note instead - and
+            // until this screen read that field, the note was written to a
+            // column nothing displayed.
+            const needsReview = p.commissions.filter(
+              (c) => c.status === "paid" && c.paidNote?.includes("REVIEW")
+            );
 
             return (
               <tr key={p.id}>
@@ -107,7 +121,22 @@ export default async function AdminPartnersPage() {
                 <Td>{paying}</Td>
                 <Td>{tier.ratePct}%</Td>
                 <Td className="font-semibold text-navy">{money(owedCents)}</Td>
-                <Td>{money(paidCents)}</Td>
+                <Td>
+                  {money(paidCents)}
+                  {needsReview.length > 0 ? (
+                    <span className="mt-1 block">
+                      <Pill tone="bad">
+                        {needsReview.length} to review
+                      </Pill>
+                      {needsReview.map((c) => (
+                        <span key={c.id} className="mt-1 block text-xs text-gray-600">
+                          {money(c.commissionCents)} on {c.stripeInvoiceId}:{" "}
+                          {c.paidNote!.split("\n").filter((l) => l.startsWith("REVIEW")).join(" ")}
+                        </span>
+                      ))}
+                    </span>
+                  ) : null}
+                </Td>
                 <Td>
                   <div className="space-y-2">
                     <PartnerStatusActions partnerId={p.id} status={p.status} />
