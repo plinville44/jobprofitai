@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { computeTrialState } from "@/lib/trial";
 import { NO_VALUE, formatDate } from "@/lib/format";
-import { planDisplayName } from "@/lib/plans";
+import { SUBSCRIPTION_STATUS_LABELS, planDisplayName } from "@/lib/plans";
 import { AdminSection, AdminTable, Pill, Td } from "@/components/dashboard/AdminTable";
 
 export const dynamic = "force-dynamic";
@@ -60,12 +60,14 @@ export default async function AdminTrialsPage() {
                   <Pill tone="good">Paying &middot; {planDisplayName(sub.plan)}</Pill>
                 ) : state.onTrial ? (
                   <Pill tone="info">On trial</Pill>
-                ) : sub.status === "past_due" || sub.status === "unpaid" ? (
-                  <Pill tone="warn">{sub.status}</Pill>
-                ) : sub.status === "canceled" ? (
-                  <Pill tone="bad">Canceled</Pill>
+                ) : sub.status === "past_due" ? (
+                  <Pill tone="warn">{SUBSCRIPTION_STATUS_LABELS.past_due}</Pill>
+                ) : sub.status === "unpaid" || sub.status === "canceled" ? (
+                  <Pill tone="bad">{SUBSCRIPTION_STATUS_LABELS[sub.status]}</Pill>
+                ) : sub.status === "incomplete" || sub.status === "incomplete_expired" ? (
+                  <Pill tone="warn">{SUBSCRIPTION_STATUS_LABELS[sub.status]}</Pill>
                 ) : (
-                  <Pill>Trial ended</Pill>
+                  <Pill>{SUBSCRIPTION_STATUS_LABELS.trial_expired}</Pill>
                 )}
               </Td>
               <Td className="whitespace-nowrap">

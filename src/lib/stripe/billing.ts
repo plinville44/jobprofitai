@@ -90,6 +90,14 @@ export async function createCheckoutSession(
     subscription_data: {
       metadata: { jobprofitaiUserId: userId, plan },
     },
+    // Automatic-renewal disclosure, shown directly above the pay button so
+    // the price, the monthly renewal and how to cancel are in front of the
+    // customer at the moment they agree to pay.
+    custom_text: {
+      submit: {
+        message: `Your ${PLANS[plan].name} subscription renews automatically every month at ${PLANS[plan].priceLabel} plus any applicable tax until you cancel. You can cancel anytime from Billing in your JobProfitAI account, and cancellation takes effect at the end of the month you have already paid for. By subscribing you agree to the JobProfitAI Terms of Service at ${appUrl("/terms")}.`,
+      },
+    },
     success_url: appUrl(
       opts.successPath ?? "/dashboard/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}"
     ),

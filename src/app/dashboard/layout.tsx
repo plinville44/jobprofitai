@@ -70,8 +70,10 @@ export default async function DashboardLayout({ children }: { children: React.Re
       {user && !user.emailVerifiedAt ? (
         <div className="border-b border-amber-200 bg-amber-50">
           <p className="mx-auto max-w-6xl px-6 py-2.5 text-sm text-amber-900">
-            <strong className="font-semibold">Confirm your email.</strong> We sent a link to{" "}
-            {user.email}. Your Weekly Profit Brief won&apos;t be sent until it&apos;s confirmed.{" "}
+            {/* Doesn't claim a link was sent: accounts created before
+                verification existed never received one. */}
+            <strong className="font-semibold">Confirm your email address, {user.email}.</strong>{" "}
+            Your Weekly Profit Brief isn&apos;t sent until you do.{" "}
             <ResendVerificationButton compact />
           </p>
         </div>

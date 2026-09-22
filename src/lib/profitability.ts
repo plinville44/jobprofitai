@@ -388,7 +388,7 @@ export function computeNeedsAttentionForJob(
         jobId: f.jobId,
         jobName: f.jobName,
         issueCode: "margin_declining",
-        issue: "Margin has declined over the last several digests",
+        issue: "Margin has declined over the last several weekly briefs",
         financialImpact: null,
         severity: "medium",
         confidence: priors.length >= 3 ? "high" : "medium",
@@ -452,7 +452,7 @@ export function computeForecastAtCompletion(job: JobInput, f: JobFinancials, now
     return {
       available: false,
       reason:
-        "No estimated cost on file for this job. Add one under Edit job and the forecast appears straight away.",
+        "No estimated cost on file for this job. Add one in Job Details on this page and the forecast appears straight away.",
     };
   }
   if (f.costs <= 0) {
@@ -522,42 +522,46 @@ export function computeProfitLeakage(f: JobFinancials, forecast: ForecastResult)
   if (f.estimatedCost == null || f.estimatedRevenue == null) return null;
 
   const expectedProfit = f.estimatedRevenue - f.estimatedCost;
-  const revenueVariance = f.revenue - f.estimatedRevenue; // more actual revenue than quoted = helps profit
-  const costVariance = f.estimatedCost - f.costs; // spent less than estimated = helps profit (positive)
+
+  // An open job is bridged to its FORECAST, a completed job to what actually
+  // happened. The two can't share steps, which is what this used to do: an
+  // open job's steps were billed-and-spent-to-date against the whole-job
+  // estimate, so a $20,000 job with $5,000 invoiced so far showed
+  // "Revenue vs. estimate -$15,000" as a red loss, the running total went
+  // negative, and the last bar then jumped to a forecast built from the
+  // quote. Every bar was true and the chart as a whole was nonsense.
+  if (f.status === "open") {
+    // Without a forecast (none possible yet, or not on this plan) there is
+    // no honest endpoint for a job that isn't finished. Showing to-date
+    // figures against a whole-job estimate is the under-budget mistake again.
+    if (!forecast.available || forecast.forecastProfit == null) return null;
+
+    // The forecast keeps the quoted revenue and projects cost, so the only
+    // movement from expected to forecast is projected cost. Overhead is not
+    // a step here because the forecast doesn't include it.
+    return [
+      { label: "Expected profit", value: expectedProfit, isTotal: true },
+      { label: "Projected cost vs. estimate", value: forecast.forecastProfit - expectedProfit, isTotal: false },
+      { label: "Forecast profit", value: forecast.forecastProfit, isTotal: true },
+    ];
+  }
+
+  const endValue = f.fullyLoadedProfit ?? f.grossProfit;
+  // No end point we can stand behind means no bridge at all. This used to
+  // fall back to the running total, which derived the endpoint from the
+  // very variances the chart exists to explain, and on a job with revenue
+  // and no tagged costs drew the whole invoice as profit.
+  if (endValue == null) return null;
 
   const steps: ProfitLeakageStep[] = [
     { label: "Expected profit", value: expectedProfit, isTotal: true },
-    { label: "Revenue vs. estimate", value: revenueVariance, isTotal: false },
-    { label: "Cost vs. estimate", value: costVariance, isTotal: false },
+    { label: "Revenue vs. estimate", value: f.revenue - f.estimatedRevenue, isTotal: false },
+    { label: "Cost vs. estimate", value: f.estimatedCost - f.costs, isTotal: false },
   ];
-
   if (f.fullyLoadedProfit != null && f.grossProfit != null) {
     steps.push({ label: "Overhead allocation", value: f.fullyLoadedProfit - f.grossProfit, isTotal: false });
   }
-
-  const endIsForecast =
-    f.status === "open" && forecast.available && forecast.forecastProfit != null;
-  const endValue = endIsForecast
-    ? forecast.forecastProfit!
-    : f.fullyLoadedProfit ?? f.grossProfit;
-
-  // No end point we can stand behind means no bridge at all.
-  //
-  // This used to fall back to the running total, which derived the endpoint
-  // from the very variances the chart exists to explain - so the chart could
-  // never disagree with itself and always closed perfectly. On a job with
-  // revenue and no tagged costs that produced the worst version of it: cost
-  // variance came out as the entire estimate "saved", and the bridge drew
-  // the whole invoice as profit, directly below the amber box saying
-  // profitability was unavailable for exactly that reason.
-  if (endValue == null) return null;
-
-  steps.push({
-    label: endIsForecast ? "Forecast profit" : "Actual profit",
-    value: endValue,
-    isTotal: true,
-  });
-
+  steps.push({ label: "Actual profit", value: endValue, isTotal: true });
   return steps;
 }
 
@@ -566,6 +570,13 @@ export interface DataHealthReport {
   jobsMissingCosts: { jobId: string; jobName: string }[];
   staleJobs: { jobId: string; jobName: string; daysSinceActivity: number }[];
   completedJobsWithUnresolvedActivity: { jobId: string; jobName: string }[];
+  /**
+   * Every job whose profit can't be calculated yet, with the reason. This is
+   * the list behind the Data Health headline count. Not added to the Data
+   * Issues tile: an open job with costs and no invoice yet is ordinary work
+   * in progress, not a problem with anyone's books.
+   */
+  jobsWithoutEnoughData: { jobId: string; jobName: string; reason: string }[];
   unassignedExpenseCount: number | null; // null = not yet measured (needs a sync with unassigned-expense tracking, see sync route Phase 2)
   unassignedExpenseAmount: number | null;
   // Tagged to a real QuickBooks customer, but one that doesn't match any of
@@ -628,7 +639,7 @@ export function computeDataHealth(
       jobId: j.jobId,
       jobName: j.jobName,
       daysSinceActivity: j.lastFinancialActivity
-        ? Math.round((now.getTime() - j.lastFinancialActivity.getTime()) / (1000 * 60 * 60 * 24))
+        ? Math.floor((now.getTime() - j.lastFinancialActivity.getTime()) / (1000 * 60 * 60 * 24))
         : Infinity,
     }));
 
@@ -658,7 +669,20 @@ export function computeDataHealth(
   // receives already-aggregated per-job financials.
   const possibleDuplicates: DataHealthReport["possibleDuplicates"] = [];
 
-  const insufficientCount = jobs.filter((j) => j.dataConfidence === "insufficient_data").length;
+  // Every job the headline counts as missing data, by name, with the reason.
+  // The headline used to count all of these while the lists below it only
+  // named revenue-with-no-costs, so three open jobs with costs and no invoice
+  // yet read "3 jobs are missing revenue or cost data" above lists that all
+  // said "None right now".
+  const jobsWithoutEnoughData = jobs
+    .filter((j) => j.dataConfidence === "insufficient_data")
+    .map((j) => ({
+      jobId: j.jobId,
+      jobName: j.jobName,
+      reason: j.unavailableReason ?? "Not enough revenue and cost data yet.",
+    }));
+
+  const insufficientCount = jobsWithoutEnoughData.length;
   const totalJobs = jobs.length;
   const jobsMissingData = insufficientCount;
   const jobsWithEnoughData = totalJobs - insufficientCount;
@@ -676,6 +700,7 @@ export function computeDataHealth(
     jobsMissingCosts,
     staleJobs,
     completedJobsWithUnresolvedActivity,
+    jobsWithoutEnoughData,
     unassignedExpenseCount,
     unassignedExpenseAmount,
     unresolvedExpenseCount,
@@ -727,7 +752,7 @@ export function computeProfitOpportunities(jobs: JobFinancials[]): ProfitOpportu
       opportunities.push({
         type: "recurring_underestimation",
         title: `${category[0].toUpperCase()}${category.slice(1)} jobs consistently run over estimate`,
-        description: `Across the last ${catJobs.length} completed ${category} jobs, actual costs averaged ${(avgOverrunPct * 100).toFixed(1)}% above estimate (avg $${Math.round(avgDollarImpact).toLocaleString()} over per job).`,
+        description: `Across ${catJobs.length} completed ${category} jobs with an estimate on file, actual costs averaged ${(avgOverrunPct * 100).toFixed(1)}% above estimate (avg $${Math.round(avgDollarImpact).toLocaleString()} over per job).`,
         financialImpact: avgDollarImpact * catJobs.length,
         confidence: catJobs.length >= 5 ? "high" : "medium",
         supportingJobIds: catJobs.map((j) => j.jobId),
@@ -744,7 +769,7 @@ export function computeProfitOpportunities(jobs: JobFinancials[]): ProfitOpportu
       opportunities.push({
         type: "low_margin_category",
         title: `${category[0].toUpperCase()}${category.slice(1)} jobs frequently miss target margin`,
-        description: `${belowTarget.length} of ${withMargin.length} completed ${category} jobs came in below target margin.`,
+        description: `${belowTarget.length} of ${withMargin.length} completed ${category} jobs with an estimate on file came in below target margin.`,
         financialImpact: null,
         confidence: withMargin.length >= 5 ? "high" : "medium",
         supportingJobIds: belowTarget.map((j) => j.jobId),
@@ -764,7 +789,7 @@ export function computeProfitOpportunities(jobs: JobFinancials[]): ProfitOpportu
       opportunities.push({
         type: "high_performing_category",
         title: `${category[0].toUpperCase()}${category.slice(1)} jobs outperform your average`,
-        description: `${category[0].toUpperCase()}${category.slice(1)} jobs averaged ${(avgMargin * 100).toFixed(1)}% margin vs. ${(overallAvg * 100).toFixed(1)}% company-wide across ${withMargin.length} completed jobs.`,
+        description: `${category[0].toUpperCase()}${category.slice(1)} jobs averaged ${(avgMargin * 100).toFixed(1)}% margin across ${withMargin.length} completed jobs with an estimate on file, against ${(overallAvg * 100).toFixed(1)}% for all your completed jobs with revenue and costs.`,
         financialImpact: null,
         confidence: withMargin.length >= 5 ? "high" : "medium",
         supportingJobIds: withMargin.map((j) => j.jobId),
@@ -864,7 +889,7 @@ export function diagnoseOpportunityGap(jobs: JobFinancials[]): OpportunityGap {
     return {
       ...base,
       code: "too_few_completed_jobs",
-      headline: `You have ${completed.length} completed ${completed.length === 1 ? "job" : "jobs"}. Patterns need at least ${MIN_JOBS_PER_PATTERN} in the same job type.`,
+      headline: `You have ${completed.length} completed ${completed.length === 1 ? "job" : "jobs"} with both revenue and costs recorded. Patterns need at least ${MIN_JOBS_PER_PATTERN} in the same job type.`,
       action:
         "Nothing to fix. This is a comparison across finished jobs, so it needs a few of them before it can say anything honest.",
     };
@@ -874,9 +899,9 @@ export function diagnoseOpportunityGap(jobs: JobFinancials[]): OpportunityGap {
     return {
       ...base,
       code: "no_job_types",
-      headline: `Your ${completed.length} completed jobs don't have a job type set.`,
+      headline: `Your ${completed.length} completed jobs with revenue and costs recorded don't have a job type set.`,
       action:
-        "Job type is the one field QuickBooks can't tell us, so it's set by hand on each job. Open a job, choose a type such as kitchen or roofing, and save. Once three completed jobs share a type, the comparison starts working.",
+        "Job type is the one field QuickBooks can't tell us, so it's set by hand. On the Jobs page, tick the jobs and use Set job type, or open a job and set it in Job Details. Once three completed jobs share a type, the comparison starts working.",
     };
   }
 
@@ -886,7 +911,7 @@ export function diagnoseOpportunityGap(jobs: JobFinancials[]): OpportunityGap {
       code: "no_estimates_on_completed",
       headline: `${completedWithType.length} of your completed jobs have a job type, but none has an estimated cost.`,
       action:
-        "Every pattern here compares actual cost against what the job was expected to cost, so an estimate is required. Add one under Edit job.",
+        "Every pattern here compares actual cost against what the job was expected to cost, so an estimate is required. Add one in Job Details on the job's page.",
     };
   }
 
@@ -1038,6 +1063,18 @@ export function computeDashboardTotals(
 const toNum = (d: Prisma.Decimal | null | undefined): number => (d == null ? 0 : Number(d));
 
 /**
+ * An estimated cost of zero is no estimate. Data Health used to count it as
+ * present while the forecast called it missing, and the job page printed
+ * "Running $4,000 over the $0 estimate". Normalised once, here, so every
+ * reader sees the same thing.
+ */
+const estimateOrNull = (d: Prisma.Decimal | null | undefined): number | null => {
+  if (d == null) return null;
+  const n = Number(d);
+  return n > 0 ? n : null;
+};
+
+/**
  * Flags cost entries that share a job, amount, and calendar day but came from
  * *different* QBO source transactions (qboSourceId) - the upsert in the sync
  * route already prevents storing the same source transaction twice, so a hit
@@ -1085,6 +1122,8 @@ export type JobStatusFilter = "open" | "closed" | "all";
 export interface ConnectionProfitData {
   connectionId: string;
   jobs: JobFinancials[];
+  /** Jobs on the selected Active/Completed/All tab, activity or not. */
+  jobsInTab: number;
   needsAttention: NeedsAttentionItem[];
   dataHealth: DataHealthReport;
   opportunities: ProfitOpportunity[];
@@ -1157,21 +1196,22 @@ export async function getConnectionProfitData(
     include: { marginTargets: true },
   });
 
-  // Status is filtered through the shared where-fragments, NOT on the raw
-  // `status` column. That column mirrors the QuickBooks Active flag; a job
-  // the contractor marked complete inside JobProfitAI carries the decision
-  // in `statusOverride`. Filtering on the column alone meant the Completed
-  // tab could not see the jobs the Mark completed button had just changed,
-  // while the same jobs correctly displayed as "Completed" one column over,
-  // because the table reads effectiveJobStatus.
-  const jobs = await prisma.job.findMany({
-    where: {
-      connectionId,
-      ...(statusFilter === "closed" ? CLOSED_JOB_WHERE : {}),
-      ...(statusFilter === "open" ? OPEN_JOB_WHERE : {}),
-    },
+  // Every job is loaded, and the Active/Completed/All tab is applied in
+  // memory, because Data Health is not a per-tab report. It covers the whole
+  // company on the page it links to, and part of it (untagged expenses, time
+  // with no rate) is company-wide by nature. Filtering it by tab made the
+  // dashboard card disagree with the Data Health page one click away, and on
+  // the default Active tab "completed jobs with unresolved activity" could
+  // only ever read zero.
+  //
+  // The tab uses effectiveJobStatus, never the raw `status` column, which
+  // mirrors QuickBooks and ignores a job the contractor marked complete here.
+  const allJobs = await prisma.job.findMany({
+    where: { connectionId },
     include: { costEntries: true, invoices: true },
   });
+  const jobs =
+    statusFilter === "all" ? allJobs : allJobs.filter((j) => effectiveJobStatus(j) === statusFilter);
 
   const categoryTargetMarginPct: Record<string, number> = {};
   for (const mt of connection.marginTargets) {
@@ -1197,7 +1237,7 @@ export async function getConnectionProfitData(
     status: effectiveJobStatus(j),
     category: j.category,
     estimatedRevenue: j.estimatedRevenue == null ? null : toNum(j.estimatedRevenue),
-    estimatedCost: j.estimatedCost == null ? null : toNum(j.estimatedCost),
+    estimatedCost: estimateOrNull(j.estimatedCost),
     startDate: j.startDate,
     endDate: j.endDate,
     updatedAt: j.updatedAt,
@@ -1229,6 +1269,9 @@ export async function getConnectionProfitData(
   const lifetimeFinancials = dateRange
     ? jobs.map((j) => computeJobFinancials(toJobInput(j, false), ctx))
     : financials;
+  // Data Health's own basis: every job, whole life, whatever the tab says.
+  const companyLifetimeFinancials =
+    statusFilter === "all" ? lifetimeFinancials : allJobs.map((j) => computeJobFinancials(toJobInput(j, false), ctx));
 
   // The last FULL sync, deliberately, not the last sync of any kind.
   //
@@ -1250,14 +1293,16 @@ export async function getConnectionProfitData(
   });
 
   const dataHealth = computeDataHealth(
-    lifetimeFinancials,
+    companyLifetimeFinancials,
     now,
     (latestFullSync?.entitiesUpdated as Record<string, unknown> | null) ?? null,
     latestFullSync?.finishedAt ?? latestFullSync?.startedAt ?? null
   );
-  dataHealth.possibleDuplicates = findPossibleDuplicateCostEntries(jobs);
+  dataHealth.possibleDuplicates = findPossibleDuplicateCostEntries(allJobs);
 
-  const opportunities = computeProfitOpportunities(lifetimeFinancials);
+  // Company-wide, like Data Health: patterns across completed jobs don't
+  // stop existing because the Active tab is selected.
+  const opportunities = computeProfitOpportunities(companyLifetimeFinancials);
 
   // Needs Attention: per-job rule evaluation, with prior-margin trend data
   // and same-category peer costs (completed jobs only) threaded in.
@@ -1275,7 +1320,10 @@ export async function getConnectionProfitData(
 
   const priorMarginsByJob = await getPriorMarginsByJob(connectionId);
   const completedByCategory: Record<string, JobFinancials[]> = {};
-  for (const f of lifetimeFinancials) {
+  // Peers come from every completed job, not the tab. On the Active tab the
+  // tab contains no completed jobs, so the peer comparison silently switched
+  // itself off for the view customers use most.
+  for (const f of companyLifetimeFinancials) {
     if (f.status === "closed" && f.category) (completedByCategory[f.category] ??= []).push(f);
   }
   const needsAttention = lifetimeFinancials.flatMap((f) => {
@@ -1299,6 +1347,7 @@ export async function getConnectionProfitData(
   return {
     connectionId,
     jobs: financials,
+    jobsInTab: jobs.length,
     needsAttention,
     dataHealth,
     opportunities,
@@ -1385,6 +1434,8 @@ export interface JobProfitData {
   statusOverride: string | null;
   /** What the sync read from the QuickBooks customer's Active flag. */
   syncedStatus: string;
+  /** Same check as Data Health, for this job only. */
+  possibleDuplicates: DataHealthReport["possibleDuplicates"];
 }
 
 /**
@@ -1427,7 +1478,7 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
     status: effectiveJobStatus(job),
     category: job.category,
     estimatedRevenue: job.estimatedRevenue == null ? null : toNum(job.estimatedRevenue),
-    estimatedCost: job.estimatedCost == null ? null : toNum(job.estimatedCost),
+    estimatedCost: estimateOrNull(job.estimatedCost),
     startDate: job.startDate,
     endDate: job.endDate,
     updatedAt: job.updatedAt,
@@ -1437,7 +1488,15 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
 
   const financials = computeJobFinancials(jobInput, ctx);
   const forecast = computeForecastAtCompletion(jobInput, financials, now);
-  const leakage = computeProfitLeakage(financials, forecast);
+  // The bridge for an open job ends on the forecast, so it follows the same
+  // plan gate as the forecast panel. Otherwise a plan without forecasting
+  // saw "Forecast at Completion is part of Profit Intelligence" beside a
+  // chart whose last bar was labelled "Forecast profit".
+  const canForecast = Boolean(await requireFeature(connection.userId, "forecast_at_completion"));
+  const leakage = computeProfitLeakage(
+    financials,
+    canForecast ? forecast : { available: false, reason: "Not on this plan." }
+  );
 
   // Peer costs for the outlier rule: other completed jobs in the same
   // category, same connection. Gated on the Pro cross-job benchmarking
@@ -1461,7 +1520,7 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
         status: effectiveJobStatus(peer),
         category: peer.category,
         estimatedRevenue: peer.estimatedRevenue == null ? null : toNum(peer.estimatedRevenue),
-        estimatedCost: peer.estimatedCost == null ? null : toNum(peer.estimatedCost),
+        estimatedCost: estimateOrNull(peer.estimatedCost),
         startDate: peer.startDate,
         endDate: peer.endDate,
         updatedAt: peer.updatedAt,
@@ -1500,6 +1559,7 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
     rawInvoices: job.invoices.map((i) => ({ id: i.id, amount: toNum(i.amount), status: i.status, txnDate: i.txnDate })),
     statusOverride: job.statusOverride,
     syncedStatus: job.status,
+    possibleDuplicates: findPossibleDuplicateCostEntries([job]),
   };
 }
 
@@ -1577,7 +1637,15 @@ export async function computeConnectionMetrics(connectionId: string, weekStartin
   const activeJobs = jobMetrics.filter((j) => j.status === "open").length;
   const totalActualCost = jobMetrics.reduce((s, j) => s + j.actualCost, 0);
   const totalActualRevenue = jobMetrics.reduce((s, j) => s + j.actualRevenue, 0);
-  const blendedMarginPct = totalActualRevenue > 0 ? (totalActualRevenue - totalActualCost) / totalActualRevenue : null;
+  // Margin only over jobs that have both revenue and costs, the same basis
+  // as the dashboard's Job Gross Profit. Revenue with nothing spent against
+  // it is not margin, and counting it told the brief's reader 57.9% while
+  // the dashboard, correctly, said 20.0%. Total revenue and cost stay plain
+  // sums: they are facts, the margin is a judgment.
+  const marginBasis = jobMetrics.filter((j) => j.actualRevenue > 0 && j.actualCost > 0);
+  const basisRevenue = marginBasis.reduce((s, j) => s + j.actualRevenue, 0);
+  const basisCost = marginBasis.reduce((s, j) => s + j.actualCost, 0);
+  const blendedMarginPct = basisRevenue > 0 ? (basisRevenue - basisCost) / basisRevenue : null;
 
   return {
     connectionId,

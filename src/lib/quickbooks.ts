@@ -23,13 +23,27 @@ function apiBaseUrl() {
  * the API response - see the App Assessment Questionnaire's Authorization
  * and Authentication questions about handling expired/invalid tokens.
  */
+export const RECONNECT_REQUIRED_MESSAGE =
+  "Your QuickBooks connection has expired or was disconnected on Intuit's side. Use Reconnect QuickBooks to restore it.";
+
 export class ReconnectRequiredError extends Error {
-  constructor(
-    message = "Your QuickBooks connection has expired or was disconnected on Intuit's side. Please reconnect QuickBooks below."
-  ) {
+  constructor(message = RECONNECT_REQUIRED_MESSAGE) {
     super(message);
     this.name = "ReconnectRequiredError";
   }
+}
+
+/**
+ * Whether a stored sync error means the customer must reconnect. The error
+ * text is what the sync writes to lastSyncError; the older wording is
+ * matched too so connections that failed before this change are recognised.
+ */
+export function needsReconnect(lastSyncError: string | null | undefined): boolean {
+  if (!lastSyncError) return false;
+  return (
+    lastSyncError === RECONNECT_REQUIRED_MESSAGE ||
+    lastSyncError.startsWith("Your QuickBooks connection has expired or was disconnected")
+  );
 }
 
 interface DiscoveryDocument {
@@ -233,6 +247,53 @@ export async function qboQuery(
     throw new Error(`QuickBooks API query failed with status ${res.status} (intuit_tid: ${intuitTid(res)})`);
   }
   return res.json();
+}
+
+/** QuickBooks' own cap on rows per query response. */
+const QBO_PAGE_SIZE = 1000;
+/** Safety stop: 200 pages is 200,000 rows of one entity, far past any contractor's books. */
+const QBO_MAX_PAGES = 200;
+
+/**
+ * Runs a query and follows every page, returning all rows for `entity`.
+ *
+ * QuickBooks returns at most 1,000 rows per query, and the full sync used to
+ * ask once with MAXRESULTS 1000 and stop. Nothing failed: a company with
+ * more than 1,000 customers (which includes every non-job customer, so a
+ * residential contractor gets there in a few years) or 1,000 bills simply
+ * had the rest left out, silently, while the pricing page said "Unlimited
+ * active jobs".
+ *
+ * `baseQuery` must not contain STARTPOSITION or MAXRESULTS. Rows are
+ * de-duplicated by Id in case a page boundary shifts while we read.
+ */
+export async function qboQueryAll(
+  realmId: string,
+  accessToken: string,
+  baseQuery: string,
+  entity: string
+): Promise<any[]> {
+  const byId = new Map<string, any>();
+  const withoutId: any[] = [];
+  for (let page = 0; page < QBO_MAX_PAGES; page++) {
+    const start = page * QBO_PAGE_SIZE + 1;
+    const result = await qboQuery(
+      realmId,
+      accessToken,
+      `${baseQuery} STARTPOSITION ${start} MAXRESULTS ${QBO_PAGE_SIZE}`
+    );
+    const rows: any[] = result?.QueryResponse?.[entity] ?? [];
+    for (const row of rows) {
+      if (row?.Id != null) byId.set(String(row.Id), row);
+      else withoutId.push(row);
+    }
+    if (rows.length < QBO_PAGE_SIZE) return [...byId.values(), ...withoutId];
+  }
+  // Reaching here means more rows than the safety stop allows. Failing
+  // loudly beats quietly syncing a partial company.
+  throw new Error(
+    `QuickBooks returned more than ${QBO_MAX_PAGES * QBO_PAGE_SIZE} ${entity} records. Contact support@jobprofitai.com.`
+  );
 }
 
 /** Shared authenticated GET against an arbitrary Accounting API path (company-scoped). */

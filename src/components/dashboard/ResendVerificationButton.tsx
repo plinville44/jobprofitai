@@ -45,7 +45,13 @@ export default function ResendVerificationButton({ compact = false }: { compact?
             : "rounded-lg bg-jp-blue px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
         }
       >
-        {state === "sending" ? "Sending..." : state === "sent" ? "Link sent" : "Send a new link"}
+        {state === "sending"
+          ? "Sending..."
+          : state === "sent"
+            ? "Link sent"
+            : compact
+              ? "Send me a confirmation link"
+              : "Send a new link"}
       </button>
       {message && (
         <span className={compact ? "text-amber-900" : "mt-2 block text-sm text-jp-slate"}>{message}</span>

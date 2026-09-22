@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { PLANS, isPlanId } from "@/lib/plans";
 import { sendEmail, sendLifecycleEmail, SUPPORT_EMAIL, type SendEmailResult } from "./client";
 import * as T from "./templates";
+import { DEFAULT_TIME_ZONE } from "@/lib/format";
 
 // Every lifecycle email trigger in one place, each with an explicit dedupe
 // key. Nothing else in the app calls sendLifecycleEmail() directly, so the
@@ -18,6 +19,8 @@ import * as T from "./templates";
 interface Contact {
   email: string;
   name: string | null;
+  /** For printing trial and access end moments in the account's own zone. */
+  timeZone: string;
 }
 
 async function contactFor(userId: string): Promise<Contact | null> {
@@ -25,7 +28,12 @@ async function contactFor(userId: string): Promise<Contact | null> {
     where: { id: userId },
     select: { email: true, name: true },
   });
-  return user ?? null;
+  if (!user) return null;
+  const connection = await prisma.quickBooksConnection.findFirst({
+    where: { userId, disconnectedAt: null },
+    select: { emailTimezone: true },
+  });
+  return { ...user, timeZone: connection?.emailTimezone ?? DEFAULT_TIME_ZONE };
 }
 
 /** ISO day stamp, used where "once per day" is the right granularity. */
@@ -126,8 +134,8 @@ export async function sendTrialEndingSoon(params: {
 
   const email =
     params.offerExtension && params.extensionWouldEndAt
-      ? T.trialEndingWithOfferEmail(params.daysLeft, params.extensionWouldEndAt)
-      : T.trialEndingNoOfferEmail(params.daysLeft, params.trialEndsAt);
+      ? T.trialEndingWithOfferEmail(params.daysLeft, params.extensionWouldEndAt, contact.timeZone)
+      : T.trialEndingNoOfferEmail(params.daysLeft, params.trialEndsAt, contact.timeZone);
 
   return sendLifecycleEmail({
     userId: params.userId,
@@ -144,7 +152,7 @@ export async function sendTrialExtended(
 ): Promise<SendEmailResult> {
   const contact = await contactFor(userId);
   if (!contact) return { ok: false, error: "User not found" };
-  const email = T.trialExtendedEmail(newTrialEndsAt);
+  const email = T.trialExtendedEmail(newTrialEndsAt, contact.timeZone);
 
   return sendLifecycleEmail({
     userId,
@@ -248,7 +256,7 @@ export async function sendSubscriptionCanceled(
 ): Promise<SendEmailResult> {
   const contact = await contactFor(userId);
   if (!contact) return { ok: false, error: "User not found" };
-  const email = T.subscriptionCanceledEmail(accessUntil);
+  const email = T.subscriptionCanceledEmail(accessUntil, contact.timeZone);
 
   return sendLifecycleEmail({
     userId,

@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { decryptToken } from "@/lib/crypto";
 import { getConnectionProfitData, getMarginTrend } from "@/lib/profitability";
 import { CLOSED_JOB_WHERE } from "@/lib/jobStatus";
+import { needsReconnect } from "@/lib/quickbooks";
 import { resolveDateRange, resolveStatusFilter, RANGE_OPTIONS, STATUS_OPTIONS } from "@/lib/dateRange";
 import { NO_VALUE, confidenceLabel, formatCurrency, formatDate, formatDateTime, formatPct } from "@/lib/format";
 import { SeverityBadge } from "@/components/dashboard/Badges";
@@ -56,11 +57,14 @@ export default async function DashboardPage(props: {
 
   const connection = connections[0];
   const now = new Date();
+  // Periods follow the customer's own calendar (the connection's timezone,
+  // the same one the Weekly Profit Brief is scheduled in), not the server's.
   const { range: dateRange, key: rangeKey, label: rangeLabel } = resolveDateRange(
     searchParams.range,
     searchParams.from,
     searchParams.to,
-    now
+    now,
+    connections[0]?.emailTimezone ?? "UTC"
   );
   const statusFilter = resolveStatusFilter(searchParams.status);
   const trendGranularity = searchParams.trend === "quarterly" ? "quarterly" : "monthly";
@@ -109,7 +113,7 @@ export default async function DashboardPage(props: {
 
       {connections.length === 0 || !connection || !profitData ? (
         <div className="mt-8 rounded-xl border border-gray-200 p-8 text-center">
-          <p className="text-gray-600">Connect your QuickBooks Online company to get your first digest.</p>
+          <p className="text-gray-600">Connect your QuickBooks Online company to see your job profitability.</p>
           <a
             href="/api/quickbooks/connect"
             className="mt-4 inline-block rounded-lg bg-brand px-5 py-2.5 font-semibold text-white hover:bg-blue-700"
@@ -129,9 +133,22 @@ export default async function DashboardPage(props: {
               {connection.companyName ?? decryptToken(connection.realmId)}
             </p>
             <p className="mt-1 text-xs text-gray-400">
-              Cost tracking mode: {connection.costTrackingMode} · Last synced:{" "}
+              Last synced:{" "}
               {connection.lastSyncedAt ? formatDateTime(connection.lastSyncedAt, connection.emailTimezone) : "never"}
             </p>
+            {/* A revoked connection still counts as connected, so the
+                Connect button is hidden. This is the way back. */}
+            {needsReconnect(connection.lastSyncError) ? (
+              <div className="mt-3 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800">
+                {connection.lastSyncError}{" "}
+                <a
+                  href={`/api/quickbooks/connect?reconnect=${connection.id}`}
+                  className="font-semibold underline"
+                >
+                  Reconnect QuickBooks
+                </a>
+              </div>
+            ) : null}
             <DashboardActions connectionId={connection.id} />
           </div>
 
@@ -170,19 +187,24 @@ export default async function DashboardPage(props: {
               reading the whole job. Without this line the two sets of figures
               on one screen look like they disagree. */}
           <p className="mt-2 text-xs text-gray-400">
-            Showing {rangeLabel.toLowerCase()}, {statusFilter} jobs. Tiles marked &ldquo;whole
-            job&rdquo;, and the sections below, cover each job from start to finish, so they
-            don&apos;t change with the period.
+            Showing {rangeLabel.toLowerCase()}, {statusFilter} jobs. The top row and the two charts
+            follow the period. Tiles marked &ldquo;whole job&rdquo;, Needs Your Attention and the
+            margin trend cover each job from start to finish. Data Health always covers every job.
           </p>
 
           {/* KPI cards */}
           <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-            {/* Follows the Active / Completed / All tab above it. A tile
-                reading "Active Jobs: 0" while the customer is looking at six
-                completed jobs is technically correct and reads as a bug. */}
+            {/* Follows the tab AND the period: jobs with money in the period.
+                Named for that, because "Active Jobs" also means "every open
+                job" on the billing page, where the plan limit counts them,
+                and the two numbers are different on purpose. */}
             <KpiCard
               label={
-                statusFilter === "open" ? "Active Jobs" : statusFilter === "closed" ? "Completed Jobs" : "Total Jobs"
+                statusFilter === "open"
+                  ? "Active Jobs With Activity"
+                  : statusFilter === "closed"
+                    ? "Completed Jobs With Activity"
+                    : "Jobs With Activity"
               }
               value={String(profitData.totals.jobsInView)}
             />
@@ -213,13 +235,13 @@ export default async function DashboardPage(props: {
                  a clean bill of health. The period is not mentioned because
                  this panel no longer depends on it. */
               <p className="mt-2 text-sm text-gray-500">
-                {profitData.dataHealth.totalJobs === 0
+                {profitData.jobsInTab === 0
                   ? statusFilter === "all"
                     ? "No jobs have synced from QuickBooks yet, so there is nothing to check."
                     : `No ${statusFilter === "open" ? "active" : "completed"} jobs to check. Try the All jobs tab.`
-                  : `Nothing needs attention across your ${profitData.dataHealth.totalJobs} ${
+                  : `Nothing needs attention on any of your ${profitData.jobsInTab} ${
                       statusFilter === "open" ? "active " : statusFilter === "closed" ? "completed " : ""
-                    }${profitData.dataHealth.totalJobs === 1 ? "job" : "jobs"}.`}
+                    }${profitData.jobsInTab === 1 ? "job" : "jobs"}, looking at each whole job.`}
               </p>
             ) : (
               <div className="mt-3 overflow-hidden rounded-xl border border-gray-200">
@@ -258,6 +280,13 @@ export default async function DashboardPage(props: {
                       ))}
                   </tbody>
                 </table>
+                {/* The list stops at 15; the tiles above count everything. */}
+                {profitData.needsAttention.length > 15 ? (
+                  <p className="border-t border-gray-100 px-4 py-2 text-xs text-gray-500">
+                    Showing the 15 most serious of {profitData.needsAttention.length} items. Each job
+                    page lists everything for that job.
+                  </p>
+                ) : null}
               </div>
             )}
           </div>
@@ -267,10 +296,19 @@ export default async function DashboardPage(props: {
             <div className="rounded-xl border border-gray-200 p-5">
               <h3 className="text-sm font-semibold text-navy">Job Margin by Job</h3>
               <div className="mt-3">
+                {/* Each bar is coloured against that job's own target (its
+                    job-type target when one is set), the same target Needs
+                    Your Attention and Jobs Below Target use. Coloured against
+                    the company target, a 25% kitchen job with a 30% kitchen
+                    target drew green while being listed as below target. */}
                 <JobMarginBarChart
                   data={profitData.jobs
                     .filter((j) => j.grossMarginPct != null)
-                    .map((j) => ({ jobName: j.jobName, marginPct: j.grossMarginPct! * 100 }))}
+                    .map((j) => ({
+                      jobName: j.jobName,
+                      marginPct: j.grossMarginPct! * 100,
+                      targetMarginPct: j.targetMarginPct,
+                    }))}
                   targetMarginPct={profitData.totals.targetMarginPct}
                 />
               </div>
@@ -323,9 +361,15 @@ export default async function DashboardPage(props: {
           {latestDigest && (
             <div className="mt-6 rounded-xl border border-gray-200 p-6">
               <div className="flex items-center justify-between gap-3">
-                <p className="text-sm text-gray-500">Digest for week of {formatDate(latestDigest.weekStarting)}</p>
+                <p className="text-sm text-gray-500">
+                  Weekly Profit Brief, week of {formatDate(latestDigest.weekStarting)}
+                </p>
+                {/* The "What changed" part is calculated, not written by AI,
+                    so the badge says which part is which. */}
                 {latestDigest.kind === "narrative" ? (
-                  <span className="text-xs font-semibold uppercase tracking-wide text-brand">AI Analysis</span>
+                  <span className="text-xs font-semibold uppercase tracking-wide text-brand">
+                    Calculated changes, AI summary
+                  </span>
                 ) : (
                   <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">Data Health notice</span>
                 )}

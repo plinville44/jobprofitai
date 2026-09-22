@@ -558,9 +558,25 @@ These are deliberate and documented in the product; none of them are half-finish
 2. **No annual billing and no enterprise tier.** Monthly only, two plans. The pricing
    page says so.
 
-3. **Legal pages are working drafts.** `/privacy` and `/terms` predate this work and are
-   flagged inline as not attorney-reviewed. They need a lawyer before you take money from
-   strangers, particularly now that payments and a partner commission programme exist.
+3. **Legal pages were rewritten on September 22, 2026 but are not attorney-reviewed.**
+   `/terms` and `/privacy` now describe what the product actually does (read-only
+   QuickBooks access, what is stored, the six service providers, AI data flow, cookies,
+   self-service deletion and what survives it, automatic renewal, referral and partner
+   terms). The draft banner is gone, so the pages read as final. Before real customers,
+   have an Indiana attorney confirm: the liability cap (greater of 12 months of fees or
+   $100), the Indiana courts venue clause (no arbitration clause was added on purpose),
+   the indemnity, the 30-day notice commitments for price and Terms changes, and the
+   refund-on-discontinuation promise. Also decide whether to publish a mailing address:
+   CAN-SPAM requires a physical postal address in commercial email (the testimonial
+   request is the closest thing the product sends to one), and a PO box or registered
+   agent address satisfies it. When either page changes, update `LEGAL_LAST_UPDATED` in
+   `src/components/marketing/Legal.tsx`.
+
+   The Terms promise things the Stripe account must actually do. Confirm in the Customer
+   Portal settings (section 2c) that **cancellation is "at end of billing period", not
+   "immediately"**, and that proration is on for plan switches. Stripe Checkout now shows
+   an automatic-renewal notice above the pay button (`custom_text.submit` in
+   `src/lib/stripe/billing.ts`); check it appears on a test-mode checkout.
 
 4. **No testimonials or customer logos anywhere**, by design. There are no real ones yet,
    and inventing them was off the table. The testimonial request email exists and fires
@@ -580,13 +596,11 @@ These are deliberate and documented in the product; none of them are half-finish
    says so explicitly, because a customer who assumes it carries over from QuickBooks
    will finish job after job and watch Profit Intelligence stay empty.
 
-8. **No pagination. Every sync query is capped at `MAXRESULTS 1000`.** A contractor with
-   more than a thousand customers, or more than a thousand expenses, is silently
-   truncated: no error, just missing data, and every number downstream quietly wrong.
-   Most small contractors are nowhere near this. A busy remodeler several years in could
-   pass it on expenses without noticing. **This is the most likely way the product gives
-   a paying customer a wrong number**, and it should be fixed before any customer with a
-   large history is onboarded.
+8. **Pagination: fixed.** Every full-sync query (Customer, Purchase, Invoice, Bill,
+   TimeActivity, Estimate) now goes through `qboQueryAll` in `src/lib/quickbooks.ts`,
+   which pages with `STARTPOSITION`/`MAXRESULTS 1000` until a short page, de-duplicates by
+   Id, and stops at 200 pages as a safety limit. Still worth testing against a company with
+   more than 1000 of something (smoke test checklist).
 
 9. **Labor logged as non-billable time carries no cost.** QuickBooks only stores an
    hourly rate on billable time (section 3, item 4). Those hours are real work counted as

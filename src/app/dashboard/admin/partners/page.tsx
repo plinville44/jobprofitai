@@ -1,19 +1,14 @@
 import { prisma } from "@/lib/prisma";
 import { countPayingClients } from "@/lib/partners";
 import { partnerTierFor } from "@/lib/plans";
-import { NO_VALUE, formatDate } from "@/lib/format";
+import { NO_VALUE, formatDate, formatCents } from "@/lib/format";
 import { AdminSection, AdminTable, Pill, Td } from "@/components/dashboard/AdminTable";
 import { MarkPaidButton, PartnerStatusActions } from "./PartnerAdminActions";
 
 export const dynamic = "force-dynamic";
 
-function money(cents: number): string {
-  return (cents / 100).toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-  });
-}
+/** Shared, so every screen shows the same amount to the cent. */
+const money = formatCents;
 
 export default async function AdminPartnersPage() {
   const partners = await prisma.partner.findMany({

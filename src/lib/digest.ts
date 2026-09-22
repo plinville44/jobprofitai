@@ -95,22 +95,36 @@ const TOO_LOW_FOR_NARRATIVE = new Set<DataHealthReport["overallConfidence"]>(["l
  * skip the narrative entirely rather than have AI editorialize around gaps.
  */
 export function buildDataHealthDigestBody(dataHealth: DataHealthReport, companyName: string): string {
+  // What actually decides this email is sent: more than half of all jobs
+  // have no calculable profit yet (see computeDataHealth). The notice used to
+  // list other gaps instead, missing estimates and untagged expenses, which
+  // don't affect that rating at all. A reader who fixed every item it named
+  // got the same notice next week. So it now leads with the real reason and
+  // names those jobs, then lists the other checks as secondary.
   const lines: string[] = [];
+  const total = dataHealth.totalJobs;
+  const without = dataHealth.jobsWithoutEnoughData;
+
+  if (total === 0) {
+    lines.push(
+      `We didn't write a profitability summary for ${companyName} this week because no jobs have synced from QuickBooks yet. JobProfitAI reads QuickBooks Projects, so once a Project has invoices or costs on it, it shows up here.`
+    );
+    return lines.join("\n");
+  }
+
   lines.push(
-    `We didn't write a profitability take for ${companyName} this week. There isn't enough complete data synced yet to say anything reliable about your job margins. Here's exactly what's missing:`
+    `We didn't write a profitability summary for ${companyName} this week. ${without.length} of your ${total} jobs don't have both revenue and costs in QuickBooks yet, so their profit can't be calculated, and a summary built on the rest would be misleading.`
   );
   lines.push("");
+  lines.push("Jobs without enough data yet:");
+  for (const job of without.slice(0, 8)) lines.push(`- ${job.jobName}: ${job.reason}`);
+  if (without.length > 8) lines.push(`- and ${without.length - 8} more, listed on your Data Health page`);
 
-  const bullet = (n: number | null, label: string) => {
-    if (n == null) return null;
-    if (n === 0) return null;
-    return `- ${n} ${label}`;
-  };
-
-  const items = [
+  const bullet = (n: number | null, label: string) => (n == null || n === 0 ? null : `- ${n} ${label}`);
+  const other = [
     bullet(dataHealth.jobsMissingEstimates.length, "job(s) with no cost estimate on file"),
-    bullet(dataHealth.jobsMissingCosts.length, "job(s) with revenue but no costs recorded yet"),
     bullet(dataHealth.staleJobs.length, "open job(s) with no synced activity in 30+ days"),
+    bullet(dataHealth.completedJobsWithUnresolvedActivity.length, "completed job(s) with unresolved activity"),
     bullet(
       dataHealth.unassignedExpenseCount,
       `expense(s) not tagged to any customer${
@@ -123,17 +137,19 @@ export function buildDataHealthDigestBody(dataHealth: DataHealthReport, companyN
         dataHealth.unresolvedExpenseAmount ? ` (${formatCurrency(dataHealth.unresolvedExpenseAmount)})` : ""
       }`
     ),
+    bullet(dataHealth.timeEntriesWithoutRate, "time entry(ies) with no hourly rate"),
+    bullet(dataHealth.possibleDuplicates.length, "possible duplicate cost(s)"),
   ].filter((l): l is string => l != null);
 
-  if (items.length > 0) {
-    lines.push(...items);
-  } else {
-    lines.push("- Not enough jobs synced yet to compute company-wide numbers.");
+  if (other.length > 0) {
+    lines.push("");
+    lines.push("Also worth a look, though these don't stop the summary:");
+    lines.push(...other);
   }
 
   lines.push("");
   lines.push(
-    "Most of this is fixed in QuickBooks by tagging costs to the right job. A missing cost estimate is added in JobProfitAI instead: open the job and use Edit job. Once enough is filled in, next week's email comes back with a full write-up. The complete breakdown is always current on your Data Health page."
+    "The summary comes back once most jobs have both invoices and costs in QuickBooks. That usually means tagging expenses and bills to the right Project. The full breakdown is always current on your Data Health page."
   );
 
   return lines.join("\n");

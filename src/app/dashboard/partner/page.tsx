@@ -3,20 +3,15 @@ import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getPartnerCommissionHistory, getPartnerDashboardData } from "@/lib/partners";
-import { PARTNER_COMMISSION_MONTHS, PARTNER_FREE_ACCOUNT_THRESHOLD, PARTNER_TIERS } from "@/lib/plans";
-import { formatDate } from "@/lib/format";
+import { PARTNER_COMMISSION_MONTHS, PARTNER_FREE_ACCOUNT_THRESHOLD, PARTNER_TIERS, PLANS, TRIAL_DAYS } from "@/lib/plans";
+import { formatDate, formatCents } from "@/lib/format";
 import CopyLinkButton from "@/components/dashboard/CopyLinkButton";
 import PartnerApplicationForm from "./PartnerApplicationForm";
 
 export const dynamic = "force-dynamic";
 
-function money(cents: number): string {
-  return (cents / 100).toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-  });
-}
+/** Shared, so every screen shows the same amount to the cent. */
+const money = formatCents;
 
 export default async function PartnerPage() {
   const session = await getSession();
@@ -32,8 +27,9 @@ export default async function PartnerPage() {
           <h1 className="text-2xl font-bold text-navy">JobProfitAI Partner Program</h1>
           <p className="mt-2 text-[15px] leading-relaxed text-gray-600">
             For accountants, bookkeepers, fractional CFOs and QuickBooks ProAdvisors who work with
-            contractor clients. Earn recurring commission on every client you refer, 20% to
-            30% of subscription revenue for their first {PARTNER_COMMISSION_MONTHS} paid months.
+            contractor clients. Earn recurring commission on every client you refer,{" "}
+            {PARTNER_TIERS[PARTNER_TIERS.length - 1].ratePct}% to {PARTNER_TIERS[0].ratePct}% of
+            subscription revenue for their first {PARTNER_COMMISSION_MONTHS} paid months.
           </p>
         </header>
 
@@ -61,8 +57,9 @@ export default async function PartnerPage() {
         <section className="rounded-xl border border-gray-200 bg-white p-6">
           <h2 className="text-base font-semibold text-navy">Apply</h2>
           <p className="mt-1 text-sm text-gray-600">
-            Free to join. At around {PARTNER_FREE_ACCOUNT_THRESHOLD} active paying clients your firm
-            also earns a complimentary JobProfitAI account.
+            Free to join. Once you have {PARTNER_FREE_ACCOUNT_THRESHOLD} clients paying at the same
+            time, your firm also earns a complimentary {PLANS.profit_intelligence_pro.name} account,
+            which we set up with you.
           </p>
           <div className="mt-5">
             <PartnerApplicationForm />
@@ -159,7 +156,7 @@ export default async function PartnerPage() {
           <p className="mt-3 text-sm text-gray-600">
             Referral code{" "}
             <span className="font-mono font-semibold text-navy">{data.code}</span>. Clients who sign
-            up through this link start a 14-day free trial with no credit card required.
+            up through this link start a {TRIAL_DAYS}-day free trial with no credit card required.
           </p>
         </section>
       ) : null}
@@ -234,7 +231,10 @@ export default async function PartnerPage() {
       {data.freeAccountEarned ? (
         <section className="rounded-xl border border-green-300 bg-green-50 p-5">
           <p className="text-sm text-green-900">
-            <strong>Your firm has earned a complimentary JobProfitAI account.</strong> Email{" "}
+            <strong>
+              Your firm has earned a complimentary {PLANS.profit_intelligence_pro.name} account.
+            </strong>{" "}
+            Email{" "}
             <a href="mailto:support@jobprofitai.com" className="font-medium underline">
               support@jobprofitai.com
             </a>{" "}

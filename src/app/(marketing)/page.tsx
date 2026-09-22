@@ -355,7 +355,7 @@ export default function HomePage() {
             <SectionHeading
               eyebrow="Weekly Profit Brief"
               title="Your most important profit insights, delivered automatically"
-              intro="You shouldn't have to remember to go looking for problems. Once a week, at a day and time you choose, JobProfitAI emails the things that actually moved, the job furthest over budget, the margins trending down, the profit at risk right now."
+              intro="You shouldn't have to remember to go looking for problems. Once a week, at a day and time you choose, JobProfitAI emails what changed since the last brief: new costs and billing on each job, jobs that just went over their estimate, margins that moved. A short written summary follows, leading with the job that most needs a look."
             />
             <ul className="space-y-3 text-[15px] text-jp-slate">
               {[

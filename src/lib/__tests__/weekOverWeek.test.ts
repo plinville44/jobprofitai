@@ -65,8 +65,10 @@ describe("computeWeekOverWeek", () => {
   it("totals what moved across all jobs", () => {
     expect(report.revenueAdded).toBe(9000); // the new job's billing
     expect(report.costAdded).toBe(11650); // 2,400 + 1,250 + 8,000
-    expect(report.marginBefore).toBeCloseTo((95800 - 64500) / 95800, 6);
-    expect(report.marginAfter).toBeCloseTo((104800 - 76150) / 104800, 6);
+    // Blended margin leaves out the punchlist, which has revenue and no
+    // costs, so it matches the dashboard's Job Gross Profit basis.
+    expect(report.marginBefore).toBeCloseTo((93400 - 64500) / 93400, 6);
+    expect(report.marginAfter).toBeCloseTo((102400 - 76150) / 102400, 6);
   });
 
   it("finds each kind of change and counts the rest as unchanged", () => {

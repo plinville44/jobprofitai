@@ -3,8 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { tryMarkFirstAnalysis } from "@/lib/trial";
 import { tryAnnounceAnalysisReady } from "@/lib/email/lifecycle";
-import { getEntitlements } from "@/lib/entitlements";
-import { getConnectionProfitData } from "@/lib/profitability";
+import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
+import { getConnectionProfitData, type ProfitOpportunity } from "@/lib/profitability";
 import { generateProfitInsights } from "@/lib/intelligence";
 
 /**
@@ -36,11 +36,7 @@ export async function POST(req: NextRequest) {
     const entitlements = await getEntitlements(session.userId);
     if (!entitlements.active) {
       return NextResponse.json(
-        {
-          error:
-            "Your JobProfitAI trial has ended. Choose a plan to continue.",
-          code: "entitlement_required",
-        },
+        { error: inactiveMessage(entitlements), code: "entitlement_required" },
         { status: 402 }
       );
     }
@@ -60,11 +56,58 @@ export async function POST(req: NextRequest) {
       orderBy: { generatedAt: "desc" },
     });
 
+    // What the insights are written FROM depends on the plan, and this is
+    // where the plan boundary is actually enforced.
+    //
+    // Company-wide pattern findings are a Pro feature. Insights used to be
+    // generated from them for every plan, so a $149 account saw the Profit
+    // Opportunities section locked and, directly beneath it, AI cards that
+    // restated those same findings with their titles, dollar impacts and job
+    // lists. Now: Pro insights come from the company-wide patterns, and $149
+    // insights from that account's own job-level issues (the Needs Your
+    // Attention list), which the $149 plan does include.
+    const profitData = await getConnectionProfitData(connectionId, new Date());
+    const canSeePatterns = entitlements.has("profit_opportunities");
+    const source: ProfitOpportunity[] = canSeePatterns
+      ? profitData.opportunities
+      : profitData.needsAttention.map((item) => ({
+          type: item.issueCode,
+          title: `${item.jobName}: ${item.issue}`,
+          description: item.issue,
+          financialImpact: item.financialImpact,
+          confidence: item.confidence,
+          supportingJobIds: [item.jobId],
+        }));
+
+    // Refresh when the findings themselves have changed, not only when
+    // QuickBooks has synced. Marking jobs completed or setting job types
+    // changes the findings without touching lastSyncedAt, and the button
+    // used to answer "Already up to date" while a new pattern sat on the
+    // same page with no insight written for it.
+    const fingerprint = (rows: { title: string; impact: number | null }[]) =>
+      rows
+        .map((r) => `${r.title}|${r.impact == null ? "" : Math.round(r.impact)}`)
+        .sort()
+        .join("\n");
+    const stored = await prisma.profitInsight.findMany({
+      where: { connectionId, status: "active" },
+      select: { finding: true, financialImpact: true },
+    });
+    const findingsChanged =
+      fingerprint(source.map((o) => ({ title: o.title, impact: o.financialImpact }))) !==
+      fingerprint(
+        stored.map((r) => ({
+          title: r.finding,
+          impact: r.financialImpact == null ? null : Number(r.financialImpact),
+        }))
+      );
+
     const needsRefresh =
       force === true ||
       !latestRun ||
       !connection.lastSyncedAt ||
-      latestRun.dataSnapshotAt < connection.lastSyncedAt;
+      latestRun.dataSnapshotAt < connection.lastSyncedAt ||
+      findingsChanged;
 
     if (!needsRefresh) {
       const activeCount = await prisma.profitInsight.count({ where: { connectionId, status: "active" } });
@@ -76,8 +119,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const profitData = await getConnectionProfitData(connectionId, new Date());
-    const drafts = await generateProfitInsights(profitData.opportunities);
+    const drafts = await generateProfitInsights(source, canSeePatterns ? "job_category" : "job");
 
     await prisma.$transaction([
       // Insights are regenerated wholesale from the current opportunity set

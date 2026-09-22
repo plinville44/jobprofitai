@@ -82,7 +82,7 @@ export async function POST(req: NextRequest) {
       errors.push(`Not a valid email address: ${invalidEmails.join(", ")}`);
     }
     if (emailEnabled && emailRecipients.length === 0) {
-      errors.push("Add at least one recipient to receive the weekly email, or turn it off.");
+      errors.push("Add at least one recipient for the Weekly Profit Brief, or turn it off.");
     }
 
     const emailDay = Number(body.emailDay);
@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
     }
     const emailTimezone = typeof body.emailTimezone === "string" ? body.emailTimezone.trim() : "";
     if (!emailTimezone) {
-      errors.push("Choose a timezone for the weekly email.");
+      errors.push("Choose a timezone for the Weekly Profit Brief.");
     }
 
     if (errors.length > 0) {

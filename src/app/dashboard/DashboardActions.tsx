@@ -62,8 +62,8 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
   function generateDigest() {
     return callApi(
       "/api/digest/generate",
-      "Generating this week's digest...",
-      () => "Digest generated below. It's emailed on your weekly schedule, set in Settings."
+      "Generating this week's Weekly Profit Brief...",
+      () => "Your Weekly Profit Brief is below. It's emailed on the schedule you set in Settings."
     );
   }
 
@@ -79,7 +79,7 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
         onClick={generateDigest}
         className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
       >
-        Generate this week&apos;s digest
+        Preview this week&apos;s brief
       </button>
       {status && <span className="text-sm text-gray-500">{status}</span>}
     </div>

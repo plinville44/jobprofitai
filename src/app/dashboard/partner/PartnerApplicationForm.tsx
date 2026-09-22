@@ -119,11 +119,11 @@ export default function PartnerApplicationForm() {
             className={inputClass}
           >
             <option value="">Prefer not to say</option>
-            <option value="1-5">1–5</option>
-            <option value="6-15">6–15</option>
-            <option value="16-30">16–30</option>
-            <option value="31-75">31–75</option>
-            <option value="75+">75+</option>
+            <option value="1-5">1 to 5</option>
+            <option value="6-15">6 to 15</option>
+            <option value="16-30">16 to 30</option>
+            <option value="31-75">31 to 75</option>
+            <option value="75+">More than 75</option>
           </select>
         </div>
       </div>

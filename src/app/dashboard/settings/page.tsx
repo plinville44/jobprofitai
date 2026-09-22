@@ -6,6 +6,8 @@ import { StatusDot } from "@/components/dashboard/Badges";
 import { formatDateTime } from "@/lib/format";
 import SettingsForm from "./SettingsForm";
 import ConnectionActions from "./ConnectionActions";
+import DeleteAccountForm from "./DeleteAccountForm";
+import { needsReconnect } from "@/lib/quickbooks";
 
 const SYNC_STATUS_DOT: Record<string, "good" | "warning" | "critical" | "unmeasured"> = {
   success: "good",
@@ -49,9 +51,6 @@ export default async function SettingsPage() {
             <p className="mt-2 text-lg font-semibold text-navy">
               {connection.companyName ?? decryptToken(connection.realmId)}
             </p>
-            <p className="mt-1 text-xs text-gray-400">
-              Environment: {connection.environment} · Cost tracking mode: {connection.costTrackingMode}
-            </p>
             <div className="mt-3 flex items-center gap-2 text-sm text-gray-600">
               <StatusDot status={connection.lastSyncStatus ? SYNC_STATUS_DOT[connection.lastSyncStatus] ?? "unmeasured" : "unmeasured"} />
               <span>
@@ -62,6 +61,14 @@ export default async function SettingsPage() {
             {connection.lastSyncStatus === "error" && connection.lastSyncError && (
               <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{connection.lastSyncError}</p>
             )}
+            {needsReconnect(connection.lastSyncError) ? (
+              <a
+                href={`/api/quickbooks/connect?reconnect=${connection.id}`}
+                className="mt-3 inline-block rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+              >
+                Reconnect QuickBooks
+              </a>
+            ) : null}
             <p className="mt-1 text-xs text-gray-400">
               Last successful sync:{" "}
               {connection.lastSyncedAt ? formatDateTime(connection.lastSyncedAt, connection.emailTimezone) : "never"}
@@ -87,6 +94,18 @@ export default async function SettingsPage() {
           </div>
         </>
       )}
+
+      {/* Outside the connection branch: an account with nothing connected
+          can still be deleted. */}
+      <section className="mt-10 rounded-xl border border-red-100 p-6">
+        <h2 className="text-sm font-semibold text-navy">Delete account</h2>
+        <p className="mt-1 text-sm text-gray-600">
+          Permanently remove your JobProfitAI account and all of its data.
+        </p>
+        <div className="mt-4">
+          <DeleteAccountForm />
+        </div>
+      </section>
     </main>
   );
 }

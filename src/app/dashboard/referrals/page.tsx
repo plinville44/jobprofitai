@@ -3,19 +3,20 @@ import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
 import { getEntitlements } from "@/lib/entitlements";
 import { getReferralHistory, getReferralSummary } from "@/lib/referrals";
-import { REFERRAL_QUALIFY_DAYS, priceCentsForStoredPlan } from "@/lib/plans";
-import { NO_VALUE, formatDate } from "@/lib/format";
+import {
+  PARTNER_COMMISSION_MONTHS,
+  PARTNER_TIERS,
+  REFERRAL_QUALIFY_DAYS,
+  TRIAL_DAYS,
+  priceCentsForStoredPlan,
+} from "@/lib/plans";
+import { NO_VALUE, formatDate, formatCents } from "@/lib/format";
 import CopyLinkButton from "@/components/dashboard/CopyLinkButton";
 
 export const dynamic = "force-dynamic";
 
-function money(cents: number): string {
-  return (cents / 100).toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  });
-}
+/** Shared, so every screen shows the same amount to the cent. */
+const money = formatCents;
 
 const STATUS_COPY: Record<string, { label: string; tone: string; help: string }> = {
   signed_up: {
@@ -103,8 +104,8 @@ export default async function ReferralsPage() {
           <CopyLinkButton value={summary.url} />
         </div>
         <p className="mt-3 text-sm text-gray-600">
-          Anyone who signs up through this link starts a 14-day free trial with no credit card
-          required. Your referral code is{" "}
+          Anyone who signs up through this link starts a {TRIAL_DAYS}-day free trial with no credit
+          card required. Your referral code is{" "}
           <span className="font-mono font-semibold text-navy">{summary.code}</span>.
         </p>
       </section>
@@ -113,7 +114,7 @@ export default async function ReferralsPage() {
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {[
           { label: "Signed up", value: String(summary.signedUp) },
-          { label: "Paying customers", value: String(summary.paying) },
+          { label: "Converted to paid", value: String(summary.paying) },
           { label: "Credits earned", value: money(summary.totalEarnedCents) },
           { label: "Credits applied", value: money(summary.appliedRewardCents) },
         ].map((stat) => (
@@ -167,10 +168,20 @@ export default async function ReferralsPage() {
                     tone: "bg-gray-100 text-gray-700",
                     help: "",
                   };
+                  // A referral disqualified AFTER its credit was earned (a later
+                  // refund) is a different story from one that never
+                  // qualified, and used to be told "refunded before
+                  // qualifying" beside the credit amount it had earned.
                   const status =
                     row.status === "qualified"
                       ? { ...base, help: rewardHelp(row.rewardStatus) }
-                      : base;
+                      : row.status === "disqualified" && row.rewardStatus === "voided"
+                        ? {
+                            ...base,
+                            help: "The customer's payment was refunded after the credit was earned, so the credit was reversed.",
+                          }
+                        : base;
+                  const reversed = row.rewardStatus === "voided";
                   return (
                     <tr key={row.id}>
                       <td className="px-6 py-3.5 text-gray-600">{formatDate(row.signedUpAt)}</td>
@@ -185,14 +196,24 @@ export default async function ReferralsPage() {
                         ) : null}
                       </td>
                       <td className="px-6 py-3.5 font-medium text-navy">
-                        {row.rewardAmountCents != null ? money(row.rewardAmountCents) : NO_VALUE}
+                        {row.rewardAmountCents != null ? (
+                          reversed ? (
+                            <span className="text-gray-400 line-through">{money(row.rewardAmountCents)}</span>
+                          ) : (
+                            money(row.rewardAmountCents)
+                          )
+                        ) : (
+                          NO_VALUE
+                        )}
                       </td>
                       <td className="px-6 py-3.5 text-gray-600">
-                        {row.rewardAppliedAt
-                          ? formatDate(row.rewardAppliedAt)
-                          : row.rewardStatus === "pending"
-                            ? "Pending"
-                            : NO_VALUE}
+                        {reversed
+                          ? "Reversed"
+                          : row.rewardAppliedAt
+                            ? formatDate(row.rewardAppliedAt)
+                            : row.rewardStatus === "pending"
+                              ? "Pending"
+                              : NO_VALUE}
                       </td>
                     </tr>
                   );
@@ -207,8 +228,9 @@ export default async function ReferralsPage() {
         <h2 className="text-base font-semibold text-navy">Are you an accountant or bookkeeper?</h2>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-gray-600">
           If you bring JobProfitAI to several contractor clients, free months aren&rsquo;t the right
-          deal for you. The Partner Program pays 20&ndash;30% recurring commission on subscription
-          revenue for each client&rsquo;s first 12 paid months instead.
+          deal for you. The Partner Program pays {PARTNER_TIERS[PARTNER_TIERS.length - 1].ratePct}% to{" "}
+          {PARTNER_TIERS[0].ratePct}% recurring commission on subscription revenue for each
+          client&rsquo;s first {PARTNER_COMMISSION_MONTHS} paid months instead.
         </p>
         <Link
           href="/dashboard/partner"

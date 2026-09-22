@@ -111,12 +111,26 @@ export default async function DataHealthPage() {
 
         {h.jobsMissingData > 0 ? (
           <p className="mt-2 text-sm text-gray-500">
-            The lists below show exactly which jobs, and what each one is missing. Most of it is
+            The first list below names every one of them and what each is missing. Most of it is
             fixed in QuickBooks by tagging costs to the right job. A missing cost estimate is
-            added here instead: open the job and use Edit job.
+            added here instead: open the job and fill in Job Details.
           </p>
         ) : null}
       </div>
+
+      {/* Every job the headline above counts, by name. The four lists below
+          it each cover one specific gap, and an open job with costs but no
+          invoice yet belongs to none of them, so without this list the
+          headline counted jobs nothing on the page would name. */}
+      {h.jobsWithoutEnoughData.length > 0 ? (
+        <div className="mt-6">
+          <JobListSection
+            title="Jobs we can't calculate profit for yet"
+            help="These are the jobs counted above. Most are simply early: an open job with costs and no invoice yet is normal. Each one says what's missing."
+            items={h.jobsWithoutEnoughData}
+          />
+        </div>
+      ) : null}
 
       <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <JobListSection
@@ -200,7 +214,7 @@ function JobListSection({
 }: {
   title: string;
   help: string;
-  items: { jobId: string; jobName: string }[];
+  items: { jobId: string; jobName: string; reason?: string }[];
 }) {
   const status = statusFor(items.length);
   return (
@@ -219,6 +233,7 @@ function JobListSection({
               <Link href={`/dashboard/jobs/${item.jobId}`} className="text-brand hover:underline">
                 {item.jobName}
               </Link>
+              {item.reason ? <span className="block text-xs text-gray-500">{item.reason}</span> : null}
             </li>
           ))}
         </ul>

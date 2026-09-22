@@ -148,9 +148,14 @@ export default async function JobDetailPage({
         ) : (
           f.varianceVsEstimate != null && (
             <p className="mt-3 text-sm text-gray-600">
+              {/* Only a finished job can come in under its estimate. An open
+                  job below its estimate simply hasn't finished spending, and
+                  "Running $3,500 under" read as good news it wasn't. */}
               {f.varianceVsEstimate > 0
                 ? `Running ${formatCurrency(f.varianceVsEstimate)} over the ${formatCurrency(f.estimatedCost)} estimate.`
-                : `Running ${formatCurrency(Math.abs(f.varianceVsEstimate))} under the ${formatCurrency(f.estimatedCost)} estimate.`}
+                : f.status === "open"
+                  ? `${formatCurrency(f.costs)} spent so far of the ${formatCurrency(f.estimatedCost)} estimate.`
+                  : `Finished ${formatCurrency(Math.abs(f.varianceVsEstimate))} under the ${formatCurrency(f.estimatedCost)} estimate.`}
             </p>
           )
         )}
@@ -197,7 +202,7 @@ export default async function JobDetailPage({
           <p className="text-sm text-gray-500">
             {data.priorMarginPoints.length === 1
               ? "Only one weekly snapshot so far. A trend needs at least two, so this fills in after next week's digest."
-              : "No weekly snapshots for this job yet. The Profit Trend fills in as weekly digests are generated."}
+              : "No weekly snapshots for this job yet. The Profit Trend fills in as each Weekly Profit Brief is generated."}
           </p>
         )}
 
@@ -277,7 +282,7 @@ export default async function JobDetailPage({
                   <td className="px-3 py-2 text-gray-500">{formatDate(i.txnDate)}</td>
                   <td className="px-3 py-2 text-gray-500">Invoice ({i.status})</td>
                   <td className="px-3 py-2 text-gray-600">Revenue</td>
-                  <td className="px-3 py-2 text-gray-600">, </td>
+                  <td className="px-3 py-2 text-gray-600">{NO_VALUE}</td>
                   <td className="px-3 py-2 text-right text-green-700">{formatCurrency(i.amount)}</td>
                 </tr>
               ))}
@@ -286,34 +291,46 @@ export default async function JobDetailPage({
           {data.rawCostEntries.length === 0 && data.rawInvoices.length === 0 && (
             <p className="py-4 text-sm text-gray-500">No transactions synced for this job yet.</p>
           )}
+          {/* The table stops at 50 of each; Actual Cost and Revenue above
+              count everything, so say when rows are hidden. */}
+          {data.rawCostEntries.length > 50 || data.rawInvoices.length > 50 ? (
+            <p className="pt-3 text-xs text-gray-500">
+              Showing the most recent {Math.min(50, data.rawCostEntries.length)} of{" "}
+              {data.rawCostEntries.length} costs and {Math.min(50, data.rawInvoices.length)} of{" "}
+              {data.rawInvoices.length} invoices. The totals above include all of them.
+            </p>
+          ) : null}
         </div>
       </Section>
 
-      {/* 6. AI Analysis */}
-      <Section title="AI Analysis">
-        <div className="rounded-lg border border-brand-light bg-blue-50/40 p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-brand">AI-generated commentary</p>
-          <p className="mt-2 text-sm text-gray-600">
-            Detailed AI-written analysis for individual jobs lands with Profit Intelligence (see the project plan) - for
-            now, the numbers above are the full picture, all computed directly from your synced QuickBooks data, not by AI.
-          </p>
-        </div>
-      </Section>
-
-      {/* 7. Data Quality */}
+      {/* 6. Data Quality. Lists everything Data Health would say about this
+          job, not only the reasons behind the badge. It used to say "No data
+          quality issues detected" on a job Data Health listed as stale and a
+          flag at the top of this same page called out. */}
       <Section title="Data Quality">
         <div className="flex items-center gap-2">
           <DataQualityBadge confidence={f.dataConfidence} />
         </div>
-        {f.confidenceReasons.length > 0 ? (
-          <ul className="mt-3 list-inside list-disc text-sm text-gray-600">
-            {f.confidenceReasons.map((reason, i) => (
-              <li key={i}>{reason}</li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mt-3 text-sm text-gray-500">No data quality issues detected for this job.</p>
-        )}
+        {(() => {
+          const items = [...f.confidenceReasons];
+          if (f.flags.includes("stale_job")) {
+            items.push("No costs or invoices synced on this open job in over 30 days.");
+          }
+          for (const dup of data.possibleDuplicates) {
+            items.push(
+              `Possible duplicate cost: two different QuickBooks transactions of ${formatCurrency(dup.amount)} on ${dup.date}.`
+            );
+          }
+          return items.length > 0 ? (
+            <ul className="mt-3 list-inside list-disc text-sm text-gray-600">
+              {items.map((reason, i) => (
+                <li key={i}>{reason}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-3 text-sm text-gray-500">No data quality issues detected for this job.</p>
+          );
+        })()}
       </Section>
     </main>
   );

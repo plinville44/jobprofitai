@@ -150,7 +150,17 @@ export async function recordCommissionForInvoice(params: {
   // subsequent invoices only - it never retroactively re-prices commissions
   // already earned. That's a deliberate design choice, not an oversight:
   // retroactive re-pricing would make every past month's ledger mutable.
-  const tier = await currentPartnerTier(partnerId);
+  // Counts this client even if their subscription row hasn't caught up
+  // with the payment yet: Stripe may deliver invoice.paid before the
+  // subscription update that marks them active, and the rate frozen onto
+  // this row would otherwise ignore the very client who just paid.
+  const counted = await countPayingClients(partnerId);
+  const referredSub = await prisma.subscription.findUnique({
+    where: { userId: referredUserId },
+    select: { status: true },
+  });
+  const alreadyCounted = referredSub?.status === "active" || referredSub?.status === "past_due";
+  const tier = partnerTierFor(alreadyCounted ? counted : counted + 1);
   const commissionCents = Math.round((revenueCents * tier.rateBps) / 10_000);
 
   try {

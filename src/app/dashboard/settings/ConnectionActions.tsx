@@ -17,7 +17,7 @@ export default function ConnectionActions({ connectionId }: { connectionId: stri
   async function disconnect() {
     if (
       !window.confirm(
-        "Disconnect this QuickBooks company? You'll need to reconnect to get new digests and syncs."
+        "Disconnect this QuickBooks company? Syncing and your Weekly Profit Brief stop until you reconnect. Your existing data is kept."
       )
     ) {
       return;

@@ -165,7 +165,7 @@ export default function SettingsForm({ connectionId, initial }: Props) {
             onChange={(e) => setEmailEnabled(e.target.checked)}
             className="h-4 w-4 rounded border-gray-300"
           />
-          Send the weekly profitability email
+          Send the Weekly Profit Brief
         </label>
 
         <div className="mt-4">

@@ -701,6 +701,7 @@ describe("computeProfitLeakage", () => {
         costs: 11000,
         grossProfit: 3000,
         fullyLoadedProfit: 2500,
+        status: "closed",
       }),
       unavailableForecast
     )!;
@@ -745,12 +746,42 @@ describe("computeProfitLeakage", () => {
     expect(lastOpen.label).toBe("Forecast profit");
     expect(lastOpen.value).toBe(5500); // the forecast wins even over a set Fully Loaded Profit
 
-    const openWithoutForecast = computeProfitLeakage(
-      makeFinancials({ estimatedRevenue: 15000, estimatedCost: 10000, revenue: 14000, costs: 11000, status: "open", grossProfit: 3000 }),
+    // Open with no forecast: no honest endpoint for unfinished work, so no chart.
+    expect(
+      computeProfitLeakage(
+        makeFinancials({ estimatedRevenue: 15000, estimatedCost: 10000, revenue: 14000, costs: 11000, status: "open", grossProfit: 3000 }),
+        unavailableForecast
+      )
+    ).toBeNull();
+  });
+
+  /**
+   * The chart must add up: every step applied to the first bar lands on the
+   * last one. An open job used to mix to-date actuals with a whole-job
+   * forecast, so the steps summed to -$1,000 and the last bar said $8,000.
+   */
+  it("adds up to its own last bar, open or completed", () => {
+    const sums = (steps: { value: number; isTotal: boolean }[]) =>
+      steps.slice(1, -1).reduce((t, s) => t + s.value, steps[0].value);
+
+    const open = computeProfitLeakage(
+      makeFinancials({ estimatedRevenue: 20000, estimatedCost: 12000, revenue: 5000, costs: 6000, status: "open", grossProfit: -1000 }),
+      { available: true, forecastProfit: 8000 }
+    )!;
+    expect(sums(open)).toBe(open[open.length - 1].value);
+    expect(open.some((s) => s.label === "Revenue vs. estimate")).toBe(false);
+
+    const overrun = computeProfitLeakage(
+      makeFinancials({ estimatedRevenue: 20000, estimatedCost: 12000, revenue: 5000, costs: 9000, status: "open", grossProfit: -4000 }),
+      { available: true, forecastProfit: 20000 - 12000 * 1.5 }
+    )!;
+    expect(sums(overrun)).toBe(2000);
+
+    const closed = computeProfitLeakage(
+      makeFinancials({ estimatedRevenue: 15000, estimatedCost: 10000, revenue: 14000, costs: 11000, status: "closed", grossProfit: 3000, fullyLoadedProfit: 2500 }),
       unavailableForecast
     )!;
-    // Open, but no forecast to show - falls back to "Actual profit" rather than mislabeling a non-existent forecast.
-    expect(openWithoutForecast[openWithoutForecast.length - 1].label).toBe("Actual profit");
+    expect(sums(closed)).toBe(closed[closed.length - 1].value);
   });
 
   /**
@@ -1040,6 +1071,7 @@ describe("computeDashboardTotals", () => {
     jobsMissingCosts: [{ jobId: "b", jobName: "B" }],
     staleJobs: [],
     completedJobsWithUnresolvedActivity: [{ jobId: "c", jobName: "C" }],
+    jobsWithoutEnoughData: [],
     unassignedExpenseCount: 4,
     unassignedExpenseAmount: 400,
     unresolvedExpenseCount: null, // unmeasured - must contribute 0, not throw or NaN

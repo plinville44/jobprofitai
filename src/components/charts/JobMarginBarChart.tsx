@@ -5,6 +5,12 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, Cel
 export interface JobMarginBarDatum {
   jobName: string;
   marginPct: number; // 0-100
+  /**
+   * This job's own target (0-100): its job-type target if one is set,
+   * otherwise the company target. Bars are coloured against this, so the
+   * chart agrees with Jobs Below Target and Needs Your Attention.
+   */
+  targetMarginPct?: number | null;
 }
 
 /**
@@ -21,9 +27,11 @@ export default function JobMarginBarChart({
   targetMarginPct: number | null;
 }) {
   const sorted = [...data].sort((a, b) => a.marginPct - b.marginPct);
-  const barColor = (marginPct: number) => {
-    if (targetMarginPct == null) return "#2a78d6"; // no target set - neutral chart-1 blue
-    const gap = targetMarginPct - marginPct;
+  const anyTarget = targetMarginPct != null || data.some((d) => d.targetMarginPct != null);
+  const barColor = (d: JobMarginBarDatum) => {
+    const target = d.targetMarginPct ?? targetMarginPct;
+    if (target == null) return "#2a78d6"; // no target set - neutral chart-1 blue
+    const gap = target - d.marginPct;
     if (gap <= 0) return "#0ca30c"; // at/above target - good
     if (gap <= 5) return "#fab219"; // within 5 points - warning
     return "#d03b3b"; // more than 5 points below - critical
@@ -46,12 +54,21 @@ export default function JobMarginBarChart({
               x={targetMarginPct}
               stroke="#0b0b0b"
               strokeDasharray="4 4"
-              label={{ value: `Target ${targetMarginPct}%`, position: "top", fontSize: 12, fill: "#52514e" }}
+              label={{
+                // "Company target" once any job has its own job-type target,
+                // since that bar is coloured against a different line.
+                value: data.some((d) => d.targetMarginPct != null && d.targetMarginPct !== targetMarginPct)
+                  ? `Company target ${targetMarginPct}%`
+                  : `Target ${targetMarginPct}%`,
+                position: "top",
+                fontSize: 12,
+                fill: "#52514e",
+              }}
             />
           )}
           <Bar dataKey="marginPct" radius={[0, 4, 4, 0]} barSize={16}>
             {sorted.map((d, i) => (
-              <Cell key={i} fill={barColor(d.marginPct)} />
+              <Cell key={i} fill={barColor(d)} />
             ))}
           </Bar>
         </BarChart>
@@ -60,7 +77,7 @@ export default function JobMarginBarChart({
           margin is set. With no target every bar is the same neutral blue,
           and a three-color key underneath it described a chart that wasn't
           on the screen. */}
-      {targetMarginPct != null ? (
+      {anyTarget ? (
         <div className="mt-2 flex flex-wrap gap-4 text-xs text-gray-500">
           <span className="flex items-center gap-1.5">
             <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#0ca30c" }} /> At/above target

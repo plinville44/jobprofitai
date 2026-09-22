@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { qboQuery, qboCompanyInfo, qboCdc, refreshTokens } from "@/lib/quickbooks";
+import { qboQueryAll, qboCompanyInfo, qboCdc, refreshTokens } from "@/lib/quickbooks";
 import { encryptToken, decryptToken } from "@/lib/crypto";
 
 /**
@@ -173,12 +173,12 @@ async function runFullSync(connectionId: string, realmId: string, accessToken: s
   // moment it completes, keeps whatever status it last had, and never
   // becomes "closed" here. Profit Intelligence compares completed jobs, so
   // it could never have produced a single pattern for anybody.
-  const customerResult = await qboQuery(
+  const allCustomers = await qboQueryAll(
     realmId,
     accessToken,
-    "SELECT * FROM Customer WHERE Active IN (true, false) MAXRESULTS 1000"
+    "SELECT * FROM Customer WHERE Active IN (true, false)",
+    "Customer"
   );
-  const allCustomers = customerResult?.QueryResponse?.Customer ?? [];
   const customerNameById = new Map<string, string>();
   for (const c of allCustomers) {
     if (c?.Id && typeof c.DisplayName === "string") {
@@ -194,24 +194,22 @@ async function runFullSync(connectionId: string, realmId: string, accessToken: s
   // a column list (confirmed: explicitly selecting Line returned an empty
   // array for every Purchase/Bill in testing, even though TotalAmt was
   // non-zero - switching to SELECT * fixed it for TimeActivity earlier).
-  const purchaseResult = await qboQuery(realmId, accessToken, "SELECT * FROM Purchase MAXRESULTS 1000");
-  const purchases = purchaseResult?.QueryResponse?.Purchase ?? [];
+  const purchases = await qboQueryAll(realmId, accessToken, "SELECT * FROM Purchase", "Purchase");
   const purchaseCounts = await upsertCostEntriesFromExpenseTxns(connectionId, purchases, "Purchase");
 
-  const invoiceResult = await qboQuery(
+  const invoices = await qboQueryAll(
     realmId,
     accessToken,
-    "SELECT Id, TxnDate, TotalAmt, Balance, CustomerRef FROM Invoice MAXRESULTS 1000"
+    "SELECT Id, TxnDate, TotalAmt, Balance, CustomerRef FROM Invoice",
+    "Invoice"
   );
-  const invoices = invoiceResult?.QueryResponse?.Invoice ?? [];
   await upsertInvoices(connectionId, invoices);
 
   const bills = await runStep(
     "Bill",
     errors,
     async () => {
-      const result = await qboQuery(realmId, accessToken, "SELECT * FROM Bill MAXRESULTS 1000");
-      return result?.QueryResponse?.Bill ?? [];
+      return qboQueryAll(realmId, accessToken, "SELECT * FROM Bill", "Bill");
     },
     [] as any[]
   );
@@ -225,8 +223,7 @@ async function runFullSync(connectionId: string, realmId: string, accessToken: s
       // entities (TimeActivity among them, per community reports) are
       // pickier about which combinations of columns are projectable, and the
       // response shape is identical either way (still keyed by field name).
-      const result = await qboQuery(realmId, accessToken, "SELECT * FROM TimeActivity MAXRESULTS 1000");
-      return result?.QueryResponse?.TimeActivity ?? [];
+      return qboQueryAll(realmId, accessToken, "SELECT * FROM TimeActivity", "TimeActivity");
     },
     [] as any[]
   );
@@ -236,8 +233,7 @@ async function runFullSync(connectionId: string, realmId: string, accessToken: s
     "Estimate",
     errors,
     async () => {
-      const result = await qboQuery(realmId, accessToken, "SELECT Id, TxnDate, TotalAmt, CustomerRef FROM Estimate MAXRESULTS 1000");
-      return result?.QueryResponse?.Estimate ?? [];
+      return qboQueryAll(realmId, accessToken, "SELECT Id, TxnDate, TotalAmt, CustomerRef FROM Estimate", "Estimate");
     },
     [] as any[]
   );

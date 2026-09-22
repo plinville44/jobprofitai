@@ -13,6 +13,22 @@ export function formatCurrency(value: number | null | undefined): string {
   return value.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 }
 
+/**
+ * Money held in cents (credits, commissions), to the cent, everywhere.
+ * These used to be formatted by six separate local helpers, half rounding to
+ * whole dollars, so one $29.80 commission read "$30" on the admin overview
+ * and "$29.80" on the partner table and the Mark paid button.
+ */
+export function formatCents(cents: number | null | undefined): string {
+  if (cents == null) return NO_VALUE;
+  return (cents / 100).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 export function formatPct(fraction: number | null | undefined, digits = 1): string {
   if (fraction == null) return NO_VALUE;
   return `${(fraction * 100).toFixed(digits)}%`;
@@ -94,6 +110,15 @@ export function formatDateTime(
     });
   }
 }
+
+/**
+ * The timezone an account's own moments (trial end, billing dates) are shown
+ * in: its QuickBooks connection's, which is the zone it chose for the Weekly
+ * Profit Brief. An account that hasn't connected yet gets the same default a
+ * new connection starts with. formatDateTime labels the zone, so the result
+ * is exact either way.
+ */
+export const DEFAULT_TIME_ZONE = "America/New_York";
 
 const CATEGORY_LABELS: Record<string, string> = {
   labor: "Labor",

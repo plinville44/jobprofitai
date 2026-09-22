@@ -391,7 +391,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<string> {
       }
 
       if (referral.kind === "partner" && partner?.status === "approved") {
-        const payingClients = await countPayingClients(partner.id);
+        const payingClients = await payingClientsIncluding(partner.id, userId);
         await sendPartnerNewPayingClient({
           partnerUserId: partner.userId,
           referralId: referral.id,
@@ -427,7 +427,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<string> {
         // each tier announceable exactly once, so this cannot spam a partner
         // whose client count hovers around a boundary, and it cannot miss an
         // upgrade that happened while a webhook was being retried.
-        const payingNow = await countPayingClients(referral.partnerId);
+        const payingNow = await payingClientsIncluding(referral.partnerId, userId);
         const tierNow = partnerTierFor(payingNow);
         if (tierNow.minPayingClients > 1) {
           await sendPartnerTierUpgrade({
@@ -450,6 +450,22 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<string> {
   return `Invoice ${invoice.id} paid for user ${userId}${notes.length ? `: ${notes.join("; ")}` : ""}`;
 }
 
+/**
+ * The partner's paying-client count, counting the client whose invoice was
+ * just paid even if their subscription row hasn't caught up yet.
+ *
+ * Stripe doesn't promise event order. When invoice.paid arrives before the
+ * subscription update that marks the account active, the local row still
+ * says "trialing", and the new client wasn't counted: "You now have 0 paying
+ * clients" in the email announcing the first one.
+ */
+async function payingClientsIncluding(partnerId: string, userId: string): Promise<number> {
+  const counted = await countPayingClients(partnerId);
+  const sub = await prisma.subscription.findUnique({ where: { userId }, select: { status: true } });
+  const alreadyCounted = sub?.status === "active" || sub?.status === "past_due";
+  return alreadyCounted ? counted : counted + 1;
+}
+
 async function handleInvoicePaymentFailed(invoice: Stripe.Invoice): Promise<string> {
   const userId = await resolveUserId({
     customerId: idOf(invoice.customer),
@@ -465,6 +481,27 @@ async function handleInvoicePaymentFailed(invoice: Stripe.Invoice): Promise<stri
   await sendPaymentFailed(userId, sub?.plan ?? "profit_intelligence", invoice.id);
 
   return `Payment failed notice sent for user ${userId}`;
+}
+
+/**
+ * Whether a full refund or chargeback should end this customer's referral.
+ *
+ * Customer referrals: yes. The reward is one free month for a customer who
+ * stayed paid, and a refunded payment means they didn't.
+ *
+ * Partner referrals: no. Partner commission is per invoice, so the refunded
+ * invoice's commission is voided (above) and that is the whole remedy.
+ * Disqualifying the referral as well meant one refunded month on a client who
+ * kept paying ended every later month's commission, dropped the client out of
+ * the partner's paying-client count, and could lower their rate on every
+ * other client, which is the opposite of what the partner FAQ promises.
+ */
+async function disqualifiesOnRefund(userId: string): Promise<boolean> {
+  const referral = await prisma.referral.findUnique({
+    where: { referredUserId: userId },
+    select: { kind: true },
+  });
+  return referral?.kind !== "partner";
 }
 
 /**
@@ -516,7 +553,7 @@ async function handleChargeRefunded(charge: Stripe.Charge): Promise<string> {
   }
 
   const userId = await resolveUserId({ customerId: idOf(charge.customer) });
-  if (userId) {
+  if (userId && (await disqualifiesOnRefund(userId))) {
     await disqualifyReferral(userId, "Referred customer's payment was refunded");
     notes.push("disqualified referral");
   }
@@ -542,7 +579,7 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<string> {
       if (flagged) notes.push(`flagged ${flagged} already-paid commission for review`);
     }
     const userId = await resolveUserId({ customerId: idOf(charge.customer) });
-    if (userId) {
+    if (userId && (await disqualifiesOnRefund(userId))) {
       await disqualifyReferral(userId, "Referred customer's payment was disputed");
       notes.push("disqualified referral");
     }

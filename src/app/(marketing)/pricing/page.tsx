@@ -66,8 +66,9 @@ const FAQ_ITEMS = [
       <>
         Yes, in either direction, from your billing settings. Stripe prorates the change
         automatically. If you move down to a plan that covers fewer jobs or companies than
-        you&rsquo;re currently using, nothing is deleted. We show you what&rsquo;s over the limit
-        and what that restricts.
+        you&rsquo;re currently using, nothing is deleted. Your Billing page shows your usage
+        against the new plan&rsquo;s limits, and you can&rsquo;t connect another QuickBooks company
+        while you&rsquo;re over the company limit.
       </>
     ),
   },

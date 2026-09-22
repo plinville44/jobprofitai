@@ -177,7 +177,9 @@ export default async function IntelligencePage() {
         </div>
         <p className="mt-1 text-xs text-gray-400">
           {insightsAccess
-            ? "AI-written findings and recommendations, grounded only in the Profit Opportunities above - Claude never sees or calculates a raw number here."
+            ? opportunitiesAccess
+              ? "AI-written explanations and recommendations for the Profit Opportunities above. The dollar figures and job lists come from the calculations, not from the AI."
+              : "AI-written explanations and recommendations for the job-level issues on your dashboard. The dollar figures come from the calculations, not from the AI. Patterns across jobs are part of Profit Intelligence Pro."
             : ""}
         </p>
 
@@ -190,8 +192,9 @@ export default async function IntelligencePage() {
             )}
             {insights.length === 0 ? (
               <p className="mt-3 text-sm text-gray-500">
-                No analysis yet. Click &ldquo;Refresh Analysis&rdquo; once you have a few completed jobs synced to generate
-                AI-written findings from your Profit Opportunities.
+                {opportunitiesAccess
+                  ? "No analysis yet. Click \u201cRefresh Analysis\u201d to write findings for the Profit Opportunities above. It needs at least one pattern to work from, which usually means a few completed jobs with a job type set."
+                  : "No analysis yet. Click \u201cRefresh Analysis\u201d to write findings for the job-level issues on your dashboard."}
               </p>
             ) : (
               <div className="mt-4 space-y-4">

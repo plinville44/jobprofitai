@@ -89,9 +89,15 @@ export async function POST(req: NextRequest) {
     }
 
     // 3. Delete the account. Cascades handle connections, jobs, cost
-    //    entries, invoices, digests, insights, feedback, referral codes and
-    //    email events - see the onDelete: Cascade rules in schema.prisma.
-    await prisma.user.delete({ where: { id: user.id } });
+    //    entries, invoices, digests, insights, trial feedback, referral codes
+    //    and email events - see the onDelete: Cascade rules in schema.prisma.
+    //    In-app feedback rows carry the user's id and email but have no
+    //    foreign key to User (so they are not cascaded), which is why they
+    //    are removed explicitly here. Both deletes run in one transaction.
+    await prisma.$transaction([
+      prisma.feedback.deleteMany({ where: { userId: user.id } }),
+      prisma.user.delete({ where: { id: user.id } }),
+    ]);
 
     await clearSession();
 

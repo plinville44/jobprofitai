@@ -42,7 +42,8 @@ export interface ProfitInsightDraft {
  * there are no opportunities - never spend an AI call summarizing nothing.
  */
 export async function generateProfitInsights(
-  opportunities: ProfitOpportunity[]
+  opportunities: ProfitOpportunity[],
+  dimension: "job_category" | "job" = "job_category"
 ): Promise<ProfitInsightDraft[]> {
   if (opportunities.length === 0) return [];
 
@@ -89,7 +90,7 @@ export async function generateProfitInsights(
   // category-level rollups (see profitability.ts) - "customer"/"cost_category"
   // dimensions are reserved in the schema for opportunity types not built yet.
   return opportunities.map((o, i) => ({
-    dimension: "job_category",
+    dimension,
     finding: o.title,
     evidence: drafts[i].evidence,
     financialImpact: o.financialImpact,

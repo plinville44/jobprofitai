@@ -40,7 +40,8 @@ export default function DataHealthSummary({ dataHealth }: { dataHealth: DataHeal
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <StatusDot status={flagged.length === 0 ? "good" : "warning"} />
-          <h3 className="text-sm font-semibold text-navy">Data Health</h3>
+          {/* Every job, whatever tab is selected, like the page it links to. */}
+          <h3 className="text-sm font-semibold text-navy">Data Health, all jobs</h3>
           <DataQualityBadge confidence={dataHealth.overallConfidence} />
         </div>
         <Link href="/dashboard/data-health" className="text-sm text-brand hover:underline">

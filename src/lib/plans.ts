@@ -149,6 +149,23 @@ export function priceCentsForStoredPlan(plan: string): number {
   return PLANS.profit_intelligence.priceCents;
 }
 
+/**
+ * How each subscription status is named to a person, on every screen. The
+ * billing page and the admin trials tab used to have their own versions,
+ * so the same account read "Payment overdue" in one and "past_due" in the
+ * other, and a checkout that never completed showed as "Trial ended".
+ */
+export const SUBSCRIPTION_STATUS_LABELS: Record<string, string> = {
+  trialing: "Free trial",
+  trial_expired: "Trial ended",
+  active: "Active",
+  past_due: "Payment overdue",
+  canceled: "Canceled",
+  incomplete: "Checkout not completed",
+  incomplete_expired: "Checkout not completed",
+  unpaid: "Unpaid, access paused",
+};
+
 export function planDisplayName(plan: string): string {
   if (isPlanId(plan)) return PLANS[plan].name;
   if (plan === "profit_monitor") return "Profit Monitor (legacy)";

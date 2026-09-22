@@ -120,8 +120,8 @@ export default function SecurityPage() {
                 Disconnecting from Settings calls Intuit&rsquo;s token revocation endpoint to
                 invalidate the connection on Intuit&rsquo;s side, then marks the connection inactive
                 here. You can also revoke access from within QuickBooks itself at any time; if you
-                do, JobProfitAI detects it on the next sync and asks you to reconnect rather than
-                silently retrying.
+                do, JobProfitAI detects it on the next sync and shows a Reconnect QuickBooks button
+                rather than silently retrying.
               </p>
             </Item>
           </div>
@@ -136,11 +136,12 @@ export default function SecurityPage() {
             <Item title="What is stored">
               <p>
                 To produce profitability analysis, JobProfitAI stores a copy of the job-related data
-                it reads from QuickBooks: jobs (QuickBooks Projects), cost line items from bills,
+                it reads from QuickBooks: jobs (QuickBooks Projects) and the customer each belongs to,
+                cost line items from bills,
                 expenses, purchases and time activities, invoice totals and status, estimate values,
-                and the profitability figures calculated from them. It also stores the weekly
-                digests and profit insights generated for you, and your own settings such as target
-                margin and email recipients.
+                and the profitability figures calculated from them. It also stores each Weekly
+                Profit Brief and the profit insights generated for you, and your own settings such as
+                target margin and email recipients.
               </p>
             </Item>
 
@@ -178,12 +179,15 @@ export default function SecurityPage() {
               <p>
                 You can permanently delete your account from Settings. Doing so revokes any live
                 QuickBooks connection with Intuit, cancels any active subscription, and deletes your
-                account together with the jobs, cost data, invoices, digests and insights derived
-                from it. Deletion is irreversible and requires re-entering your password.
+                account together with the jobs, cost data, invoices, weekly briefs and insights
+                derived from it. Deletion is irreversible and requires re-entering your password.
               </p>
               <p>
-                Records of commissions already earned by an accounting partner are retained as
-                financial records, without the deleted account&rsquo;s identifying details.
+                Two kinds of record outlive a deleted account. If an accounting partner referred you,
+                the commission records for payments you made are kept so the partner can be paid
+                correctly: they hold amounts, dates and internal and Stripe reference numbers, not
+                your name, email or any QuickBooks data. And Stripe keeps its own record of your
+                payments, as a payment processor must.
               </p>
             </Item>
           </div>
@@ -218,9 +222,9 @@ export default function SecurityPage() {
               <p>
                 JobProfitAI runs on Vercel, with a managed PostgreSQL database hosted by Neon.
                 Database access is restricted to the application via a credential held in the server
-                environment. Secrets. Database credentials, the token encryption key, API keys
-. Are stored as environment variables in the hosting platform, never committed
-                to source control, and never exposed to the browser.
+                environment. Secrets, meaning database credentials, the token encryption key and API
+                keys, are stored as environment variables in the hosting platform, never committed to
+                source control, and never exposed to the browser.
               </p>
             </Item>
 
@@ -240,17 +244,20 @@ export default function SecurityPage() {
 
             <Item title="Email">
               <p>
-                Transactional email. Your Weekly Profit Brief, trial and billing notices
-. Is sent through Resend from a verified JobProfitAI sending domain. Emails go
-                only to the addresses on your own account and the recipients you configure.
+                Transactional email, meaning your Weekly Profit Brief and trial and billing notices,
+                is sent through Resend from a verified JobProfitAI sending domain. Emails go only to
+                the address on your account and the recipients you configure, and the Weekly Profit
+                Brief isn&rsquo;t sent until you&rsquo;ve confirmed your own address.
               </p>
             </Item>
 
             <Item title="Artificial intelligence">
               <p>
-                Profit insights and the weekly digest narrative are written by Anthropic&rsquo;s
-                Claude API. What is sent is the calculated profitability data for your jobs,
-                job names, categories and computed figures. The model writes explanatory prose only.
+                Profit insights and the written summary in the Weekly Profit Brief are produced by
+                Anthropic&rsquo;s Claude API. What is sent is the calculated profitability data for
+                your jobs: job names, the customer names attached to them, job types and computed
+                figures. The model writes explanatory prose only; the &ldquo;What changed&rdquo;
+                section of the brief is calculated, not written by it.
                 Every dollar amount, percentage and confidence level in a finding is calculated by
                 the application and stored separately from the text, and each finding names the jobs
                 it came from, so you can check any figure against the job pages. Your QuickBooks

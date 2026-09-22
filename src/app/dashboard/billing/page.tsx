@@ -5,20 +5,22 @@ import { prisma } from "@/lib/prisma";
 import { getEntitlements, getUsageAgainstLimits } from "@/lib/entitlements";
 import { getTrialState } from "@/lib/trial";
 import { getReferralSummary } from "@/lib/referrals";
-import { PLANS, PLAN_LIST, type PlanId } from "@/lib/plans";
+import {
+  PLANS,
+  PLAN_LIST,
+  REFERRAL_QUALIFY_DAYS,
+  SUBSCRIPTION_STATUS_LABELS,
+  TRIAL_EXTENSION_DAYS,
+  type PlanId,
+} from "@/lib/plans";
 import { isStripeConfigured } from "@/lib/stripe/client";
-import { NO_VALUE, formatDate } from "@/lib/format";
+import { DEFAULT_TIME_ZONE, NO_VALUE, formatDateTime, formatCents } from "@/lib/format";
 import { CheckoutButton, ManageBillingButton } from "./BillingActions";
 
 export const dynamic = "force-dynamic";
 
-function money(cents: number): string {
-  return (cents / 100).toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  });
-}
+/** Shared, so every screen shows the same amount to the cent. */
+const money = formatCents;
 
 function Panel({
   title,
@@ -52,15 +54,7 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  trialing: "Free trial",
-  trial_expired: "Trial ended",
-  active: "Active",
-  past_due: "Payment overdue",
-  canceled: "Canceled",
-  incomplete: "Incomplete",
-  unpaid: "Unpaid",
-};
+const STATUS_LABELS = SUBSCRIPTION_STATUS_LABELS;
 
 export default async function BillingPage(props: {
   // Next.js 16: searchParams arrives as a Promise.
@@ -70,11 +64,19 @@ export default async function BillingPage(props: {
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const [entitlements, trial, subscription] = await Promise.all([
+  const [entitlements, trial, subscription, connection] = await Promise.all([
     getEntitlements(session.userId),
     getTrialState(session.userId),
     prisma.subscription.findUnique({ where: { userId: session.userId } }),
+    prisma.quickBooksConnection.findFirst({
+      where: { userId: session.userId, disconnectedAt: null },
+      select: { emailTimezone: true },
+    }),
   ]);
+  // Trial and billing dates are moments, shown in the account's own zone
+  // and labelled. "Full access through Sep 16" was printed from a UTC date
+  // for a trial that ended at 7pm Pacific on Sep 15.
+  const timeZone = connection?.emailTimezone ?? DEFAULT_TIME_ZONE;
 
   const [usage, referrals] = await Promise.all([
     getUsageAgainstLimits(session.userId, entitlements),
@@ -101,8 +103,8 @@ export default async function BillingPage(props: {
       {searchParams?.checkout === "success" ? (
         <Panel tone="positive">
           <p className="text-sm text-green-900">
-            <strong>Payment received.</strong> Your subscription is being activated, if the
-            plan below still says trial, give it a few seconds and refresh. Stripe confirms
+            <strong>Payment received.</strong> Your subscription is being activated. If the plan
+            below still says trial, give it a few seconds and refresh: Stripe confirms
             subscriptions to us in the background.
           </p>
         </Panel>
@@ -130,8 +132,8 @@ export default async function BillingPage(props: {
                 free trial
               </p>
               <p className="mt-1 text-sm text-gray-600">
-                Full access through {formatDate(trial.trialEndsAt)}. No credit card on file.
-                {trial.extensionClaimed ? " Includes your 14-day extension." : ""}
+                Your trial ends {formatDateTime(trial.trialEndsAt, timeZone)}. No credit card on file.
+                {trial.extensionClaimed ? ` Includes your ${TRIAL_EXTENSION_DAYS}-day extension.` : ""}
               </p>
             </div>
             {trial.extensionOffered ? (
@@ -139,15 +141,15 @@ export default async function BillingPage(props: {
                 href="/dashboard/billing/feedback"
                 className="rounded-lg bg-navy px-5 py-2.5 text-sm font-semibold text-white hover:bg-gray-800"
               >
-                Get 14 More Days Free
+                Get {TRIAL_EXTENSION_DAYS} More Days Free
               </Link>
             ) : null}
           </div>
 
           {trial.extensionOffered ? (
             <p className="mt-3 border-t border-gray-200 pt-3 text-sm text-gray-600">
-              Give us 5 minutes of feedback and we&rsquo;ll extend your trial another 14 days. No
-              testimonial required, just honest answers.
+              Give us 5 minutes of feedback and we&rsquo;ll extend your trial another{" "}
+              {TRIAL_EXTENSION_DAYS} days. No testimonial required, just honest answers.
             </p>
           ) : null}
 
@@ -168,18 +170,31 @@ export default async function BillingPage(props: {
         <Panel tone="critical">
           <p className="text-lg font-semibold text-red-900">Your JobProfitAI trial has ended.</p>
           <p className="mt-1 text-sm text-red-800">
-            Choose a plan to continue accessing your profit intelligence. Nothing has been deleted
-. Your account, QuickBooks connection and analyzed jobs are all still here.
+            Choose a plan to continue accessing your profit intelligence. Nothing has been
+            deleted: your account, QuickBooks connection and analyzed jobs are all still here.
           </p>
+          {/* Still claimable for a few days after expiry, and this panel
+              used to be one of the places that never said so. */}
+          {trial.extensionOffered ? (
+            <p className="mt-3 text-sm text-red-800">
+              Not ready to decide?{" "}
+              <Link href="/dashboard/billing/feedback" className="font-semibold underline">
+                Answer a few questions for {TRIAL_EXTENSION_DAYS} more days free.
+              </Link>
+            </p>
+          ) : null}
         </Panel>
       ) : null}
 
       {entitlements.paymentIssue ? (
-        <Panel tone="warning" title="There's a problem with your payment">
+        <Panel
+          tone={entitlements.access === "past_due" ? "warning" : "critical"}
+          title="There's a problem with your payment"
+        >
           <p className="text-sm text-amber-900">
-            Your most recent payment didn&rsquo;t go through, usually an expired card. Your
-            account is still fully active while Stripe retries, but updating your card now avoids
-            any interruption.
+            {entitlements.access === "past_due"
+              ? "Your most recent payment didn\u2019t go through, usually an expired card. Your account stays active while Stripe retries, and updating your card now avoids any interruption."
+              : "Your payment didn\u2019t go through after several attempts, so access is paused. Update your card to turn everything back on. Nothing has been deleted."}
           </p>
           <div className="mt-4">
             <ManageBillingButton label="Update payment method" />
@@ -217,7 +232,7 @@ export default async function BillingPage(props: {
           {entitlements.currentPeriodEnd ? (
             <Row
               label={entitlements.cancelAtPeriodEnd ? "Access ends" : "Next billing date"}
-              value={formatDate(entitlements.currentPeriodEnd)}
+              value={formatDateTime(entitlements.currentPeriodEnd, timeZone)}
             />
           ) : null}
           <Row
@@ -305,7 +320,13 @@ export default async function BillingPage(props: {
               ))}
             </div>
             <p className="mt-4 text-xs text-gray-500">
-              Month to month. Cancel anytime.{" "}
+              Plans renew automatically every month at the price shown until you cancel. Cancel
+              anytime from Manage Billing on this page; cancellation takes effect at the end of the
+              month you have already paid for. See our{" "}
+              <Link href="/terms" className="font-medium text-brand hover:underline">
+                Terms of Service
+              </Link>
+              .{" "}
               <Link href="/pricing" className="font-medium text-brand hover:underline">
                 Compare plans in detail
               </Link>
@@ -317,13 +338,14 @@ export default async function BillingPage(props: {
       {/* ── Referrals ────────────────────────────────────────────── */}
       <Panel title="Referral credits">
         <p className="text-sm text-gray-600">
-          Refer a paying customer and earn one free month of your current plan as an account credit.
-          Credits stack and come off future invoices automatically.
+          Refer someone who becomes a paying customer and, once they&rsquo;ve paid for{" "}
+          {REFERRAL_QUALIFY_DAYS} days, you earn one free month of your current plan as an account
+          credit. Credits stack and come off future invoices automatically.
         </p>
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
             { label: "Signed up", value: String(referrals.signedUp) },
-            { label: "Paying", value: String(referrals.paying) },
+            { label: "Converted to paid", value: String(referrals.paying) },
             { label: "Credit earned", value: money(referrals.totalEarnedCents) },
             { label: "Credit applied", value: money(referrals.appliedRewardCents) },
           ].map((stat) => (

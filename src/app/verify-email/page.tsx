@@ -4,6 +4,7 @@ import { LogoLink } from "@/components/marketing/Logo";
 import { getSession } from "@/lib/auth";
 import { verifyEmailToken, type VerifyOutcome } from "@/lib/emailVerification";
 import { sendTrialWelcome } from "@/lib/email/lifecycle";
+import { getTrialState } from "@/lib/trial";
 import ResendVerificationButton from "@/components/dashboard/ResendVerificationButton";
 
 export const metadata: Metadata = {
@@ -35,9 +36,16 @@ export default async function VerifyEmailPage(props: {
 
   // The welcome email used to go at signup. It now follows the first
   // successful verification, once, guarded by its own dedupe key.
+  //
+  // Only while it still makes sense. Verification can happen days after
+  // signup, after connecting QuickBooks, after the trial ended, or after
+  // subscribing, and the welcome says "your trial is live, connect
+  // QuickBooks". Sent in any of those states it tells the customer
+  // something untrue.
   if (result.ok && result.firstTime) {
     try {
-      await sendTrialWelcome(result.userId);
+      const trial = await getTrialState(result.userId);
+      if (trial.onTrial && !trial.quickbooksConnected) await sendTrialWelcome(result.userId);
     } catch (err) {
       console.error("verify-email: welcome failed:", err instanceof Error ? err.message : "Unknown error");
     }
@@ -65,8 +73,8 @@ function Outcome({ result, signedIn }: { result: VerifyOutcome; signedIn: boolea
       <>
         <h1 className="text-xl font-bold text-jp-ink">Your email is confirmed</h1>
         <p className="mt-3 text-sm leading-relaxed text-jp-slate">
-          {result.email} is verified. Your Weekly Profit Brief will be sent there on the day and
-          time you choose in Settings.
+          {result.email} is verified, so your Weekly Profit Brief can now be sent. Choose who
+          receives it, and when, in Settings.
         </p>
         <Link
           href={next.href}

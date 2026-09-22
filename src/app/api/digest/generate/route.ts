@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import { tryMarkFirstAnalysis } from "@/lib/trial";
 import { tryAnnounceAnalysisReady } from "@/lib/email/lifecycle";
-import { getEntitlements } from "@/lib/entitlements";
+import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
 import { generateWeeklyDigestForConnection } from "@/lib/digest";
 
 /**
@@ -28,11 +28,7 @@ export async function POST(req: NextRequest) {
     const entitlements = await getEntitlements(session.userId);
     if (!entitlements.active) {
       return NextResponse.json(
-        {
-          error:
-            "Your JobProfitAI trial has ended. Choose a plan to continue.",
-          code: "entitlement_required",
-        },
+        { error: inactiveMessage(entitlements), code: "entitlement_required" },
         { status: 402 }
       );
     }

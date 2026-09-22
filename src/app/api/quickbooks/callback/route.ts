@@ -34,6 +34,7 @@ export async function GET(req: NextRequest) {
   }
 
   let userId: string;
+  let reconnectId: string | null = null;
   try {
     const { payload } = await jwtVerify(
       state,
@@ -41,6 +42,7 @@ export async function GET(req: NextRequest) {
     );
     if (typeof payload.userId !== "string") throw new Error("bad state payload");
     userId = payload.userId;
+    reconnectId = typeof payload.reconnect === "string" ? payload.reconnect : null;
   } catch {
     // Expired/forged state token - refuse rather than trust the realmId blindly.
     return NextResponse.redirect(
@@ -105,9 +107,24 @@ export async function GET(req: NextRequest) {
       accessTokenExpiresAt: new Date(now + tokens.expires_in * 1000),
       refreshTokenExpiresAt: new Date(now + tokens.x_refresh_token_expires_in * 1000),
       disconnectedAt: null,
+      // A fresh grant clears the error that sent them here, so the
+      // Reconnect prompt goes away without waiting for the next sync.
+      lastSyncStatus: null,
+      lastSyncError: null,
       ...(ownershipChanged ? { emailRecipients: defaultRecipients } : {}),
     },
   });
+
+  // A reconnect that ended with a DIFFERENT company chosen on Intuit's
+  // screen replaces the dead connection rather than adding to it. The
+  // connect route skipped the plan's company limit for a reconnect, so this
+  // is what keeps a one-company plan at one company.
+  if (reconnectId && reconnectId !== connection.id) {
+    await prisma.quickBooksConnection.updateMany({
+      where: { id: reconnectId, userId, disconnectedAt: null },
+      data: { disconnectedAt: new Date() },
+    });
+  }
 
   // Figure out up front whether this contractor tracks job cost via Projects
   // or Classes - the sync job (see /api/quickbooks/sync) branches on this.

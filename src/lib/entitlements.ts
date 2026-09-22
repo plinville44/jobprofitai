@@ -402,6 +402,20 @@ export function isAdminEmail(email: string | null | undefined): boolean {
   return allowed.includes(email.trim().toLowerCase());
 }
 
+/**
+ * What a paid route says when it refuses an inactive account. Chosen from
+ * the actual state: these routes used to tell every inactive account "Your
+ * JobProfitAI trial has ended", including paying customers who had
+ * cancelled and customers whose card had failed.
+ */
+export function inactiveMessage(e: Pick<Entitlements, "access" | "paymentIssue">): string {
+  if (e.access === "trial_expired") return "Your JobProfitAI trial has ended. Choose a plan to continue.";
+  if (e.paymentIssue) {
+    return "Your last payment didn't go through, so access is paused. Update your card on the Billing page to turn it back on.";
+  }
+  return "Your subscription isn't active. Choose a plan on the Billing page to continue.";
+}
+
 /** Resolves the session user and checks the admin allowlist. */
 export async function isAdminUser(userId: string): Promise<boolean> {
   const user = await prisma.user.findUnique({

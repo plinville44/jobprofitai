@@ -1,13 +1,12 @@
 import { prisma } from "@/lib/prisma";
-import { NO_VALUE, formatDate } from "@/lib/format";
+import { NO_VALUE, formatDate, formatCents } from "@/lib/format";
 import { AdminSection, AdminTable, Pill, Td } from "@/components/dashboard/AdminTable";
+import { planDisplayName } from "@/lib/plans";
 
 export const dynamic = "force-dynamic";
 
-function money(cents: number | null | undefined): string {
-  if (cents == null) return NO_VALUE;
-  return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-}
+/** Shared, so every screen shows the same amount to the cent. */
+const money = formatCents;
 
 const TONE: Record<string, "neutral" | "good" | "warn" | "bad" | "info"> = {
   signed_up: "neutral",
@@ -56,7 +55,16 @@ export default async function AdminReferralsPage() {
             <Td className="whitespace-nowrap">
               {r.referredUser?.email ?? <span className="text-gray-400">account deleted</span>}
             </Td>
-            <Td>{r.referredUser?.subscription?.plan ?? NO_VALUE}</Td>
+            {/* The plan is only meaningful once they pay. Every new account
+                carries the default plan id while on trial, so this column used
+                to show a raw "profit_intelligence" for people paying nothing. */}
+            <Td>
+              {r.referredUser?.subscription?.status === "active" || r.referredUser?.subscription?.status === "past_due"
+                ? planDisplayName(r.referredUser.subscription.plan)
+                : r.referredUser?.subscription?.status === "trialing"
+                  ? "On trial"
+                  : NO_VALUE}
+            </Td>
             <Td>
               <Pill tone={TONE[r.status] ?? "neutral"}>{r.status}</Pill>
               {r.disqualifiedReason ? (
@@ -65,12 +73,14 @@ export default async function AdminReferralsPage() {
             </Td>
             <Td className="font-medium text-navy">{money(r.reward?.amountCents)}</Td>
             <Td className="whitespace-nowrap">
-              {r.reward?.appliedAt ? (
-                formatDate(r.reward.appliedAt)
+              {/* Status first: a reversed credit keeps its applied date, and
+                  used to show that date instead of saying it was voided. */}
+              {r.reward?.status === "voided" ? (
+                <Pill tone="bad">voided</Pill>
               ) : r.reward?.status === "pending" ? (
                 <Pill tone="warn">pending</Pill>
-              ) : r.reward?.status === "voided" ? (
-                <Pill tone="bad">voided</Pill>
+              ) : r.reward?.appliedAt ? (
+                formatDate(r.reward.appliedAt)
               ) : (
                 NO_VALUE
               )}

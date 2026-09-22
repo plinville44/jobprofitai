@@ -113,11 +113,17 @@ function readSnapshot(raw: unknown): Snapshot | null {
   // `totals` block, so the company line always agrees with the job lines.
   const totalRevenue = jobs.reduce((s, j) => s + j.actualRevenue, 0);
   const totalCost = jobs.reduce((s, j) => s + j.actualCost, 0);
+  // Blended margin over jobs with both revenue and costs only: the same basis
+  // as the dashboard's Job Gross Profit, so the brief and the dashboard can't
+  // quote two different company margins for the same books.
+  const basis = jobs.filter((j) => j.actualRevenue > 0 && j.actualCost > 0);
+  const basisRevenue = basis.reduce((s, j) => s + j.actualRevenue, 0);
+  const basisCost = basis.reduce((s, j) => s + j.actualCost, 0);
   return {
     jobs,
     totalRevenue,
     totalCost,
-    marginPct: totalRevenue > 0 ? (totalRevenue - totalCost) / totalRevenue : null,
+    marginPct: basisRevenue > 0 ? (basisRevenue - basisCost) / basisRevenue : null,
   };
 }
 
@@ -371,7 +377,7 @@ export function renderWeekOverWeek(report: WeekOverWeekReport): string {
 
   const hidden = report.changes.length - shown.length;
   const tail: string[] = [];
-  if (hidden > 0) tail.push(`${hidden} more ${hidden === 1 ? "job" : "jobs"} changed, listed on your dashboard.`);
+  if (hidden > 0) tail.push(`${hidden} more ${hidden === 1 ? "job" : "jobs"} also changed. Each job page has its full history.`);
   if (report.unchangedJobs > 0) {
     tail.push(`${report.unchangedJobs} other ${report.unchangedJobs === 1 ? "job" : "jobs"} had no changes.`);
   }

@@ -90,8 +90,8 @@ export default function UpgradeRequired({
           and{" "}
           <Link href="/dashboard/settings" className="font-medium text-brand hover:underline">
             account settings
-          </Link>{" "}
-, including disconnecting QuickBooks, at any time.
+          </Link>
+          , including disconnecting QuickBooks, at any time.
         </p>
       </div>
     </div>

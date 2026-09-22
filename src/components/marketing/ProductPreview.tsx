@@ -17,12 +17,17 @@ import { formatCurrency } from "@/lib/format";
  * deliberately doesn't do.
  */
 
+// Labels and issue wording are copied from the real dashboard and from
+// computeNeedsAttentionForJob, and the example jobs agree with the Weekly
+// Profit Brief preview below (Harborview is 14% over a $72,600 estimate in
+// both). The two previews used to describe the same example company with
+// different numbers.
 const EXAMPLE_KPIS = [
-  { label: "Active Jobs", value: "18" },
+  { label: "Active Jobs With Activity", value: "18" },
   { label: "Revenue", value: formatCurrency(1_284_500) },
-  { label: "Job Costs", value: formatCurrency(982_140) },
-  { label: "Gross Profit", value: formatCurrency(302_360) },
-  { label: "Avg Job Margin", value: "23.5%" },
+  { label: "Tracked Job Costs", value: formatCurrency(982_140) },
+  { label: "Job Gross Profit", value: formatCurrency(302_360) },
+  { label: "Average Job Margin", value: "23.5%" },
   { label: "Your Target Margin", value: "28%" },
   { label: "Jobs Below Target", value: "5", tone: "warning" as const },
   { label: "Profit At Risk", value: formatCurrency(58_420), tone: "critical" as const },
@@ -31,28 +36,28 @@ const EXAMPLE_KPIS = [
 const EXAMPLE_ATTENTION = [
   {
     job: "Harborview Roof Replacement",
-    issue: "Actual cost is 18% over the estimate with the job still open",
-    impact: formatCurrency(21_400),
+    issue: "Actual costs are 14% over the estimate",
+    impact: formatCurrency(10_200),
     severity: "high" as const,
     confidence: "Strong evidence",
   },
   {
-    job: "Maple St. Kitchen Remodel",
-    issue: "Margin has declined in each of the last three months",
+    job: "Cedar Ln. Deck Rebuild",
+    issue: "Margin has declined over the last several weekly briefs",
     impact: formatCurrency(14_900),
     severity: "high" as const,
     confidence: "Some evidence",
   },
   {
     job: "Riverside HVAC Retrofit",
-    issue: "Labor cost is an outlier versus comparable completed jobs",
+    issue: "Labor cost is unusually high vs. similar completed jobs",
     impact: formatCurrency(9_260),
     severity: "medium" as const,
     confidence: "Some evidence",
   },
   {
     job: "Oakfield Warehouse Fit-Out",
-    issue: "Below your 28% target margin",
+    issue: "Margin is 6.2 points below your 28% target",
     impact: formatCurrency(12_860),
     severity: "medium" as const,
     confidence: "Strong evidence",
@@ -255,7 +260,8 @@ export function WeeklyBriefPreview() {
           <p>
             Harborview Roof Replacement is the one to look at. It is now{" "}
             {formatCurrency(10_200)} over its {formatCurrency(72_600)} estimate with the job still
-            open. It is still profitable, at 17.2%, but well under your 28% target.
+            open. It is still profitable, at 17.2% margin, so this is an overrun to watch, not a
+            loss.
           </p>
           <p>
             Two jobs still have no cost estimate on file, so they&rsquo;re left out of the

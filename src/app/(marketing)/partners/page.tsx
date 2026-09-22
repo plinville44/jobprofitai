@@ -14,12 +14,13 @@ import {
   PARTNER_COMMISSION_MONTHS,
   PARTNER_FREE_ACCOUNT_THRESHOLD,
   PLANS,
+  TRIAL_DAYS,
 } from "@/lib/plans";
 
 export const metadata: Metadata = {
   title: "Partner Program for Accountants & Bookkeepers",
   description:
-    "Earn 20-30% recurring commission for 12 months on every contractor client you refer to JobProfitAI. Built for accountants, bookkeepers, fractional CFOs and QuickBooks ProAdvisors.",
+    "Earn 20% to 30% recurring commission for 12 months on every contractor client you refer to JobProfitAI. Built for accountants, bookkeepers, fractional CFOs and QuickBooks ProAdvisors.",
   alternates: { canonical: "/partners" },
   openGraph: {
     title: "JobProfitAI Partner Program",
@@ -91,10 +92,10 @@ const FAQ_ITEMS = [
     q: "How and when do I get paid?",
     a: (
       <>
-        Honestly: commissions are tracked automatically in a ledger you can see at any time, and
-        paid out by our team. There is no automated payout system yet, that requires
-        connected-account onboarding, identity verification and tax reporting that we haven&rsquo;t
-        built, and we&rsquo;d rather say so than imply money moves on its own. You&rsquo;ll see
+        Commissions are tracked automatically in a ledger you can see at any time, and paid out
+        by our team. There is no automated payout system yet: that needs connected-account
+        onboarding, identity verification and tax reporting we haven&rsquo;t built, and we&rsquo;d
+        rather say so than imply money moves on its own. You&rsquo;ll see
         every commission as it&rsquo;s earned, and a confirmation when a payout is recorded.
       </>
     ),
@@ -103,7 +104,8 @@ const FAQ_ITEMS = [
     q: "Do my clients get a discount?",
     a: (
       <>
-        Your clients get the same 14-day free trial as anyone else, with no credit card required.
+        Your clients get the same {TRIAL_DAYS}-day free trial as anyone else, with no credit card
+        required.
         Pricing is the same published {PLANS.profit_intelligence.priceLabel} and{" "}
         {PLANS.profit_intelligence_pro.priceLabel} per month. We don&rsquo;t discount, which
         is part of what makes the commission worth having.
@@ -115,8 +117,8 @@ const FAQ_ITEMS = [
     a: (
       <>
         No, applying is free. Once you have {PARTNER_FREE_ACCOUNT_THRESHOLD} clients paying at the
-        same time, your firm gets its own {PLANS.profit_intelligence_pro.name} account at no charge,
-        for as long as those clients stay. That is a real account with its own QuickBooks
+        same time, your firm earns its own {PLANS.profit_intelligence_pro.name} account at no
+        charge, which we set up with you by hand. That is a real account with its own QuickBooks
         connections, for your own books or for a client who doesn&rsquo;t use JobProfitAI
         themselves. A QuickBooks company can only be connected to one JobProfitAI account at a
         time, so connecting one a client has already connected moves it to your account and out
@@ -158,7 +160,7 @@ export default function PartnersPage() {
       <Section tone="surface">
         <SectionHeading
           eyebrow="Commission"
-          title="20% to 30% of subscription revenue, for 12 months per client"
+          title={`${PARTNER_TIERS[PARTNER_TIERS.length - 1].ratePct}% to ${PARTNER_TIERS[0].ratePct}% of subscription revenue, for ${PARTNER_COMMISSION_MONTHS} months per client`}
           intro="Free months don't scale for a firm bringing in ten, twenty or fifty contractors. A recurring percentage does, so accountants earn on a different model from individual customer referrals."
           align="center"
         />
@@ -234,7 +236,7 @@ export default function PartnersPage() {
           <StepCard
             number={3}
             title="Refer clients"
-            body="Anyone signing up through your link starts a 14-day free trial with no credit card, attributed to your firm automatically."
+            body={`Anyone signing up through your link starts a ${TRIAL_DAYS}-day free trial with no credit card, attributed to your firm automatically.`}
           />
           <StepCard
             number={4}

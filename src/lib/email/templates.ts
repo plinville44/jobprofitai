@@ -1,4 +1,13 @@
 import { SUPPORT_EMAIL } from "./client";
+import {
+  PARTNER_COMMISSION_MONTHS,
+  PARTNER_TIERS,
+  PLANS,
+  REFERRAL_QUALIFY_DAYS,
+  TRIAL_DAYS,
+  TRIAL_EXTENSION_DAYS,
+} from "@/lib/plans";
+import { DEFAULT_TIME_ZONE, formatDateTime } from "@/lib/format";
 
 // Branded transactional email templates.
 //
@@ -183,8 +192,16 @@ export function formatMoney(cents: number): string {
   });
 }
 
-export function formatDay(date: Date): string {
-  return date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+/**
+ * A trial or access end date, as the moment it actually is, in the account's
+ * timezone and labelled with it.
+ *
+ * These used to print a bare date from the server's clock under "Your trial
+ * runs through", for trials that end at a time of day, not at midnight. A
+ * trial ending at 7pm Pacific on Sep 15 read "through September 16".
+ */
+export function formatDay(date: Date, timeZone: string = DEFAULT_TIME_ZONE): string {
+  return formatDateTime(date, timeZone);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -231,8 +248,8 @@ export function verifyEmailEmail(verifyUrl: string, name: string | null, expiryH
     preheader: "One click to confirm this is your address.",
     heading: `Confirm your email${name ? `, ${name.split(" ")[0]}` : ""}`,
     body: [
-      "Thanks for starting a JobProfitAI trial. Please confirm this is your email address.",
-      "Your Weekly Profit Brief goes to this address, so we hold it until you confirm. That way a mistyped address never means someone else receiving your job numbers.",
+      "Please confirm this is the email address for your JobProfitAI account.",
+      "We hold the Weekly Profit Brief until you confirm. That way a mistyped address never means someone else receiving your job numbers.",
     ],
     cta: { label: "Confirm my email", url: verifyUrl },
     footnote: `This link expires in ${expiryHours} hours. If you didn't create a JobProfitAI account, you can ignore this email. If the button doesn't work, copy and paste this address into your browser: ${verifyUrl}`,
@@ -265,7 +282,7 @@ export function trialWelcomeEmail(name: string | null): RenderedEmail {
     preheader: "One step to see which jobs are actually making you money.",
     heading: `Welcome${name ? `, ${name.split(" ")[0]}` : ""}.`,
     body: [
-      "Your 14-day free trial is live. No credit card needed.",
+      `Your ${TRIAL_DAYS}-day free trial is live. No credit card needed.`,
       "There's one step to get value out of JobProfitAI: connect your QuickBooks Online company. From there we organize your jobs, revenue and costs, and show you which jobs are making money and which ones are quietly costing you.",
     ],
     bullets: [
@@ -330,22 +347,26 @@ export function analysisReadyEmail(companyName: string): RenderedEmail {
   });
 }
 
-export function trialEndingWithOfferEmail(daysLeft: number, newEndDate: Date): RenderedEmail {
-  return buildEmail("Want another 14 days of JobProfitAI, free?", {
-    preheader: "Five minutes of feedback gets you another 14 days.",
-    heading: "Want another 14 days free?",
+export function trialEndingWithOfferEmail(
+  daysLeft: number,
+  newEndDate: Date,
+  timeZone?: string
+): RenderedEmail {
+  return buildEmail(`Want another ${TRIAL_EXTENSION_DAYS} days of JobProfitAI, free?`, {
+    preheader: `Five minutes of feedback gets you another ${TRIAL_EXTENSION_DAYS} days.`,
+    heading: `Want another ${TRIAL_EXTENSION_DAYS} days free?`,
     body: [
       `Your trial ends in ${daysLeft} ${daysLeft === 1 ? "day" : "days"}.`,
-      "Help us improve JobProfitAI. Complete a short 5-minute feedback survey and we'll extend your full-access trial another 14 days.",
+      `Help us improve JobProfitAI. Complete a short 5-minute feedback survey and we'll extend your full-access trial another ${TRIAL_EXTENSION_DAYS} days.`,
     ],
-    callout: { label: "Your trial would run through", value: formatDay(newEndDate) },
-    cta: { label: "Give Feedback & Get 14 More Days", url: appUrl("/dashboard/billing/feedback") },
+    callout: { label: "Your trial would end", value: formatDay(newEndDate, timeZone) },
+    cta: { label: `Give Feedback & Get ${TRIAL_EXTENSION_DAYS} More Days`, url: appUrl("/dashboard/billing/feedback") },
     footnote:
       "No credit card, and no testimonial required. We just want honest answers about what's working and what isn't.",
   });
 }
 
-export function trialEndingNoOfferEmail(daysLeft: number, trialEndsAt: Date): RenderedEmail {
+export function trialEndingNoOfferEmail(daysLeft: number, trialEndsAt: Date, timeZone?: string): RenderedEmail {
   return buildEmail(`Your JobProfitAI trial ends in ${daysLeft} ${daysLeft === 1 ? "day" : "days"}`, {
     preheader: "Choose a plan to keep your profit intelligence running.",
     heading: "Your trial is ending soon",
@@ -353,21 +374,21 @@ export function trialEndingNoOfferEmail(daysLeft: number, trialEndsAt: Date): Re
       "To keep your job profitability dashboard, insights and Weekly Profit Brief running without a gap, choose a plan before your trial ends.",
       "Your data and QuickBooks connection stay exactly as they are either way. Nothing is deleted when a trial ends.",
     ],
-    callout: { label: "Trial ends", value: formatDay(trialEndsAt) },
+    callout: { label: "Trial ends", value: formatDay(trialEndsAt, timeZone) },
     cta: { label: "Choose Your Plan", url: appUrl("/dashboard/billing") },
     footnote: "Cancel anytime from your billing settings.",
   });
 }
 
-export function trialExtendedEmail(newEndDate: Date): RenderedEmail {
-  return buildEmail("Your JobProfitAI trial has been extended by 14 days", {
-    preheader: `Your trial now runs through ${formatDay(newEndDate)}.`,
+export function trialExtendedEmail(newEndDate: Date, timeZone?: string): RenderedEmail {
+  return buildEmail(`Your JobProfitAI trial has been extended by ${TRIAL_EXTENSION_DAYS} days`, {
+    preheader: `Your trial now ends ${formatDay(newEndDate, timeZone)}.`,
     heading: "Thanks. Your trial has been extended",
     body: [
       "We got your feedback, and it genuinely helps shape what gets built next.",
-      "Your full-access trial has been extended by 14 days. Nothing else changes: same features, same data, still no credit card.",
+      `Your full-access trial has been extended by ${TRIAL_EXTENSION_DAYS} days. Nothing else changes: same features, same data, still no credit card.`,
     ],
-    callout: { label: "Your trial now runs through", value: formatDay(newEndDate) },
+    callout: { label: "Your trial now ends", value: formatDay(newEndDate, timeZone) },
     cta: { label: "Back to your dashboard", url: appUrl("/dashboard") },
   });
 }
@@ -381,7 +402,7 @@ export function trialExpiredEmail(): RenderedEmail {
       "Nothing has been deleted. Your account, your QuickBooks connection and every job we've analyzed are all still here. Choosing a plan turns everything back on exactly as you left it.",
     ],
     cta: { label: "Choose Your Plan", url: appUrl("/dashboard/billing") },
-    footnote: "Profit Intelligence is $149/month, Profit Intelligence Pro is $299/month. Cancel anytime.",
+    footnote: `${PLANS.profit_intelligence.name} is ${PLANS.profit_intelligence.priceLabel}/month, ${PLANS.profit_intelligence_pro.name} is ${PLANS.profit_intelligence_pro.priceLabel}/month. Cancel anytime.`,
   });
 }
 
@@ -427,7 +448,7 @@ export function paymentFailedEmail(planName: string): RenderedEmail {
   });
 }
 
-export function subscriptionCanceledEmail(accessUntil: Date | null): RenderedEmail {
+export function subscriptionCanceledEmail(accessUntil: Date | null, timeZone?: string): RenderedEmail {
   return buildEmail("Your JobProfitAI subscription has been canceled", {
     preheader: "Here's what happens to your data.",
     heading: "Your subscription is canceled",
@@ -436,9 +457,9 @@ export function subscriptionCanceledEmail(accessUntil: Date | null): RenderedEma
         ? "Your subscription won't renew. You keep full access until the end of the period you've already paid for."
         : "Your subscription has been canceled and the paid features are now switched off.",
       "Your data isn't deleted. If you come back, resubscribing restores everything as it was.",
-      "If something about the product drove this, I'd genuinely like to know, just reply to this email.",
+      "If something about the product drove this, I'd like to know. Just reply to this email.",
     ],
-    ...(accessUntil ? { callout: { label: "Access continues through", value: formatDay(accessUntil) } } : {}),
+    ...(accessUntil ? { callout: { label: "Access ends", value: formatDay(accessUntil, timeZone) } } : {}),
     cta: { label: "Reactivate", url: appUrl("/dashboard/billing") },
   });
 }
@@ -453,7 +474,7 @@ export function referralSignupEmail(): RenderedEmail {
     heading: "Someone joined through your link",
     body: [
       "A new contractor started a JobProfitAI trial using your referral link.",
-      "If they become a paying customer and stay subscribed for 30 days, you'll earn a free month of your current plan as an account credit.",
+      `If they become a paying customer and stay subscribed for ${REFERRAL_QUALIFY_DAYS} days, you'll earn a free month of your current plan as an account credit.`,
     ],
     cta: { label: "See your referrals", url: appUrl("/dashboard/referrals") },
     footnote: "We don't share who they are. That's their business, not ours to pass along.",
@@ -462,11 +483,11 @@ export function referralSignupEmail(): RenderedEmail {
 
 export function referralConvertedEmail(): RenderedEmail {
   return buildEmail("One of your referrals just subscribed", {
-    preheader: "30 days of paid subscription and your free month is earned.",
+    preheader: `${REFERRAL_QUALIFY_DAYS} days of paid subscription and your free month is earned.`,
     heading: "Your referral subscribed",
     body: [
       "Someone who signed up through your link is now a paying JobProfitAI customer.",
-      "Once they've been subscribed for 30 days, your free month is earned automatically and shows up as a credit on your account.",
+      `Once they've been subscribed for ${REFERRAL_QUALIFY_DAYS} days, your free month is earned automatically and shows up as a credit on your account.`,
     ],
     cta: { label: "See your referrals", url: appUrl("/dashboard/referrals") },
   });
@@ -477,7 +498,7 @@ export function referralRewardEarnedEmail(amountCents: number, applied: boolean)
     preheader: `A ${formatMoney(amountCents)} credit is on your account.`,
     heading: "You earned a free month",
     body: [
-      "One of your referrals has been a paying customer for 30 days, so you've earned a free month of your current plan.",
+      `One of your referrals has been a paying customer for ${REFERRAL_QUALIFY_DAYS} days, so you've earned a free month of your current plan.`,
       applied
         ? "The credit is on your account now and will automatically come off your next invoice. If it's larger than one invoice, the remainder carries over."
         : "The credit is recorded and will be applied automatically as soon as you have an active subscription.",
@@ -510,8 +531,12 @@ export function partnerApprovedEmail(firmName: string, url: string): RenderedEma
     heading: "You're approved",
     body: [
       `${firmName} is now a JobProfitAI partner.`,
-      "Here's your referral link. Any contractor who signs up through it starts a 14-day free trial with no credit card, and is attributed to your firm automatically.",
-      "You earn 20% of their subscription revenue for their first 12 paid months, rising to 25% at 10 paying clients and 30% at 25.",
+      `Here's your referral link. Any contractor who signs up through it starts a ${TRIAL_DAYS}-day free trial with no credit card, and is attributed to your firm automatically.`,
+      (() => {
+        const [entry, ...higher] = [...PARTNER_TIERS].reverse();
+        const steps = higher.map((t) => `${t.ratePct}% at ${t.minPayingClients}`).join(" and ");
+        return `You earn ${entry.ratePct}% of their subscription revenue for their first ${PARTNER_COMMISSION_MONTHS} paid months${steps ? `, rising to ${steps} paying clients` : ""}.`;
+      })(),
     ],
     callout: { label: "Your referral link", value: url },
     cta: { label: "Open your partner dashboard", url: appUrl("/dashboard/partner") },
@@ -536,7 +561,7 @@ export function partnerNewPayingClientEmail(payingClients: number, ratePct: numb
     heading: "New paying client",
     body: [
       "A contractor you referred has converted to a paid JobProfitAI subscription. Commission starts accruing from their first paid invoice.",
-      `You now have ${payingClients} paying ${payingClients === 1 ? "client" : "clients"}, earning ${ratePct}% of subscription revenue for each client's first 12 paid months.`,
+      `You now have ${payingClients} paying ${payingClients === 1 ? "client" : "clients"}, earning ${ratePct}% of subscription revenue for each client's first ${PARTNER_COMMISSION_MONTHS} paid months.`,
     ],
     cta: { label: "Open your partner dashboard", url: appUrl("/dashboard/partner") },
   });
@@ -559,7 +584,7 @@ export function partnerCommissionEarnedEmail(amountCents: number, monthNumber: n
     preheader: `${formatMoney(amountCents)} added to your partner ledger.`,
     heading: "Commission earned",
     body: [
-      `A referred client's subscription invoice was paid, so ${formatMoney(amountCents)} has been added to your commission ledger (month ${monthNumber} of 12 for this client).`,
+      `A referred client's subscription invoice was paid, so ${formatMoney(amountCents)} has been added to your commission ledger (month ${monthNumber} of ${PARTNER_COMMISSION_MONTHS} for this client).`,
       "Commissions are tracked in your dashboard and paid out by our team. You'll get a confirmation when a payout is recorded.",
     ],
     callout: { label: "Commission earned", value: formatMoney(amountCents) },

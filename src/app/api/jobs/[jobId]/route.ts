@@ -65,8 +65,16 @@ export async function PATCH(
         data.estimatedCost = null;
       } else {
         const n = Number(body.estimatedCost);
-        if (!Number.isFinite(n) || n < 0) {
-          return NextResponse.json({ error: "Estimated cost must be a positive number" }, { status: 400 });
+        // Zero is refused along with negatives. A $0 estimate was accepted
+        // here and then read as "present" by Data Health and "missing" by the
+        // forecast, and the job page printed "over the $0 estimate". The
+        // engine treats <= 0 as no estimate anyway; saying so at entry is
+        // clearer than silently ignoring it. To remove an estimate, clear it.
+        if (!Number.isFinite(n) || n <= 0) {
+          return NextResponse.json(
+            { error: "Estimated cost must be more than $0. Leave it blank if there is no estimate." },
+            { status: 400 }
+          );
         }
         data.estimatedCost = n;
       }

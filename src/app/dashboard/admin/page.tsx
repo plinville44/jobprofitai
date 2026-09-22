@@ -1,16 +1,12 @@
+import { formatCents } from "@/lib/format";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { StatGrid } from "@/components/dashboard/AdminTable";
 
 export const dynamic = "force-dynamic";
 
-function money(cents: number): string {
-  return (cents / 100).toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  });
-}
+/** Shared, so every screen shows the same amount to the cent. */
+const money = formatCents;
 
 /**
  * Growth-systems overview. Deliberately counts only - the detail views
@@ -40,9 +36,9 @@ export default async function AdminOverviewPage() {
     prisma.subscription.count({ where: { activatedAt: { not: null } } }),
     prisma.subscription.count({ where: { trialExtendedAt: { not: null } } }),
     prisma.subscription.count({ where: { status: "active" } }),
-    prisma.subscription.count({ where: { status: { in: ["past_due", "unpaid"] } } }),
-    prisma.referral.count(),
-    prisma.referral.count({ where: { status: "qualified" } }),
+    prisma.subscription.count({ where: { status: "past_due" } }),
+    prisma.referral.count({ where: { kind: "customer" } }),
+    prisma.referral.count({ where: { kind: "customer", status: "qualified" } }),
     prisma.referralReward.findMany({ select: { status: true, amountCents: true } }),
     prisma.partner.count({ where: { status: "pending" } }),
     prisma.partner.count({ where: { status: "approved" } }),
@@ -50,6 +46,9 @@ export default async function AdminOverviewPage() {
     prisma.contactSubmission.count(),
     prisma.emailEvent.count({ where: { status: "failed" } }),
   ]);
+  // Counted separately from past_due: unpaid accounts have lost access,
+  // past_due ones haven't, and the overview used to report both as "past due".
+  const unpaid = await prisma.subscription.count({ where: { status: "unpaid" } });
 
   const sum = <T extends { status: string }>(
     rows: (T & { amountCents?: number; commissionCents?: number })[],
@@ -71,13 +70,15 @@ export default async function AdminOverviewPage() {
             { label: "On trial now", value: String(trialing) },
             { label: "Activated", value: `${activated} (${activationRate}%)` },
             { label: "Trials extended", value: String(extended) },
-            { label: "Paying", value: String(paying) },
+            { label: "Paying (active)", value: String(paying) },
           ]}
         />
         <p className="mt-2 text-xs text-gray-500">
-          &ldquo;Activated&rdquo; means QuickBooks connected <em>and</em> a first analysis run
-, the conversion metric worth watching.
-          {pastDue > 0 ? ` ${pastDue} account(s) currently past due.` : ""}
+          &ldquo;Activated&rdquo; means QuickBooks connected <em>and</em> a first analysis run: the
+          conversion metric worth watching. &ldquo;Paying&rdquo; counts active subscriptions only;
+          partner tiers also count accounts in their payment-retry period.
+          {pastDue > 0 ? ` ${pastDue} account(s) in the payment-retry period, still with access.` : ""}
+          {unpaid > 0 ? ` ${unpaid} account(s) unpaid, access paused.` : ""}
         </p>
       </section>
 
@@ -114,7 +115,7 @@ export default async function AdminOverviewPage() {
         />
         {partnersPending > 0 ? (
           <p className="mt-2 text-xs font-medium text-amber-700">
-            {partnersPending} partner application(s) waiting on review, {" "}
+            {partnersPending} partner application(s) waiting on review:{" "}
             <Link href="/dashboard/admin/partners" className="underline">
               review them
             </Link>
@@ -130,14 +131,14 @@ export default async function AdminOverviewPage() {
         <StatGrid
           stats={[
             { label: "Contact submissions", value: String(contactUnread) },
-            { label: "Failed emails", value: String(emailFailures) },
+            { label: "Failed sends (all time)", value: String(emailFailures) },
           ]}
         />
         {emailFailures > 0 ? (
           <p className="mt-2 text-xs font-medium text-amber-700">
-            {emailFailures} lifecycle email(s) failed to send. They&rsquo;re retried automatically
-            on the next cron run, but a persistent count usually means a Resend domain or API key
-            problem.
+            {emailFailures} send attempt(s) have failed since launch. Each failure is retried on the
+            next cron run and this count never goes down, so what matters is whether it keeps
+            rising. If it does, check the Resend domain and API key.
           </p>
         ) : null}
       </section>
