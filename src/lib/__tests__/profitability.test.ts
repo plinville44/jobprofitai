@@ -1106,6 +1106,25 @@ describe("computeDashboardTotals", () => {
     expect(totals.profitAtRisk).toBe(750); // only the below_target_margin item counts, not the over_budget one
   });
 
+  /**
+   * On a windowed view the job list can show no margin at all (a month with
+   * billing and no costs) while the lifetime Needs Attention items still say
+   * the job is below target. The two tiles must tell the same story.
+   */
+  it("counts jobs below target from the same items as Profit At Risk", () => {
+    const quietThisMonth = [
+      makeFinancials({ jobId: "b", revenue: 9000, costs: 0, grossMarginPct: null, profitabilityAvailable: false, flags: [] }),
+    ];
+    const lifetimeItems: NeedsAttentionItem[] = [
+      { jobId: "b", jobName: "B", issueCode: "below_target_margin", issue: "...", financialImpact: 800, severity: "medium", confidence: "high" },
+    ];
+
+    const totals = computeDashboardTotals(quietThisMonth, lifetimeItems, dataHealth, 20);
+
+    expect(totals.jobsBelowTarget).toBe(1);
+    expect(totals.profitAtRisk).toBe(800);
+  });
+
   it("returns a null average margin when no job has a computable margin", () => {
     const jobs = [makeFinancials({ grossMarginPct: null }), makeFinancials({ grossMarginPct: null })];
     expect(computeDashboardTotals(jobs, [], dataHealth, null).avgJobMarginPct).toBeNull();

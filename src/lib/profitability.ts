@@ -985,10 +985,20 @@ export function computeDashboardTotals(
   const avgJobMarginPct =
     withMargin.length > 0 ? withMargin.reduce((s, j) => s + j.grossMarginPct!, 0) / withMargin.length : null;
 
-  const jobsBelowTarget = jobs.filter((j) => j.flags.includes("below_target_margin")).length;
-  const profitAtRisk = needsAttention
-    .filter((i) => i.issueCode === "below_target_margin")
-    .reduce((s, i) => s + (i.financialImpact ?? 0), 0);
+  // Both from the same Needs Attention items, which are computed on each
+  // job's whole life (see getConnectionProfitData).
+  //
+  // The count used to come from `jobs`, the period-windowed list, while
+  // Profit At Risk came from these lifetime items. Pick "This month" and the
+  // dashboard read "Jobs Below Target: 0" directly beside "Profit At Risk:
+  // $800", where Profit At Risk is DEFINED as the shortfall on jobs below
+  // target. Whether a job is below its target margin is a question about the
+  // whole job, same as whether it is over its estimate: a month in which a
+  // job billed and spent nothing has no margin to compare. So both tiles are
+  // lifetime, and both are named as such under the period picker.
+  const belowTargetItems = needsAttention.filter((i) => i.issueCode === "below_target_margin");
+  const jobsBelowTarget = new Set(belowTargetItems.map((i) => i.jobId)).size;
+  const profitAtRisk = belowTargetItems.reduce((s, i) => s + (i.financialImpact ?? 0), 0);
 
   // "costsMatchedViaParentCount" is deliberately excluded here - it's a
   // successful (if judgment-call) match, not a problem, so it doesn't count

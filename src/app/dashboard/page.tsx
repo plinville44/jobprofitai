@@ -170,8 +170,9 @@ export default async function DashboardPage(props: {
               reading the whole job. Without this line the two sets of figures
               on one screen look like they disagree. */}
           <p className="mt-2 text-xs text-gray-400">
-            Showing {rangeLabel.toLowerCase()}, {statusFilter} jobs. Needs Your Attention, Data
-            Health and Profit At Risk always cover the whole job.
+            Showing {rangeLabel.toLowerCase()}, {statusFilter} jobs. Tiles marked &ldquo;whole
+            job&rdquo;, and the sections below, cover each job from start to finish, so they
+            don&apos;t change with the period.
           </p>
 
           {/* KPI cards */}
@@ -193,13 +194,14 @@ export default async function DashboardPage(props: {
               label="Your Target Margin"
               value={profitData.totals.targetMarginPct != null ? `${profitData.totals.targetMarginPct}%` : "Not set"}
             />
-            <KpiCard label="Jobs Below Target" value={String(profitData.totals.jobsBelowTarget)} tone={profitData.totals.jobsBelowTarget > 0 ? "warning" : undefined} />
+            <KpiCard label="Jobs Below Target" wholeJob value={String(profitData.totals.jobsBelowTarget)} tone={profitData.totals.jobsBelowTarget > 0 ? "warning" : undefined} />
             <KpiCard
               label="Profit At Risk"
+              wholeJob
               value={formatCurrency(profitData.totals.profitAtRisk)}
               tone={profitData.totals.profitAtRisk > 0 ? "critical" : undefined}
             />
-            <KpiCard label="Data Issues" value={String(profitData.totals.dataIssues)} tone={profitData.totals.dataIssues > 0 ? "warning" : undefined} />
+            <KpiCard label="Data Issues" wholeJob value={String(profitData.totals.dataIssues)} tone={profitData.totals.dataIssues > 0 ? "warning" : undefined} />
           </div>
 
           {/* Needs Attention */}
@@ -361,12 +363,26 @@ function aggregateCostByCategory(jobs: { costByCategory: Record<string, number> 
     .map(([category, actual]) => ({ category, actual, estimated: null }));
 }
 
-function KpiCard({ label, value, tone }: { label: string; value: string; tone?: "warning" | "critical" }) {
+function KpiCard({
+  label,
+  value,
+  tone,
+  wholeJob = false,
+}: {
+  label: string;
+  value: string;
+  tone?: "warning" | "critical";
+  /** Marks a tile the period picker does not change, on the tile itself. */
+  wholeJob?: boolean;
+}) {
   const toneClass =
     tone === "critical" ? "border-red-200 bg-red-50" : tone === "warning" ? "border-amber-200 bg-amber-50" : "border-gray-200";
   return (
     <div className={`rounded-xl border p-4 ${toneClass}`}>
-      <p className="text-xs text-gray-500">{label}</p>
+      <p className="text-xs text-gray-500">
+        {label}
+        {wholeJob ? <span className="ml-1.5 text-gray-400">· whole job</span> : null}
+      </p>
       <p className="mt-1 text-xl font-bold text-navy">{value}</p>
     </div>
   );
