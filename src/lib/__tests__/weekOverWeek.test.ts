@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { computeWeekOverWeek, renderWeekOverWeek } from "../weekOverWeek";
-import { cleanDigestText } from "../digestText";
+import { cleanDigestText, withoutOpenJobUnderspend } from "../digestText";
 import type { ConnectionMetrics, JobMetrics } from "../profitability";
 
 const LAST_WEEK = new Date("2026-09-14T00:00:00Z");
@@ -178,5 +178,28 @@ describe("cleanDigestText", () => {
   it("leaves ordinary text alone", () => {
     const text = "Torres Kitchen is 28% over budget.\n\nIt stayed profitable.";
     expect(cleanDigestText(text)).toBe(text);
+  });
+});
+
+describe("withoutOpenJobUnderspend", () => {
+  // Torres Bath from the real test brief: open, $8,000 spent of $11,500.
+  const torresBath = job("tb", "Torres Bath Remodel", 9000, 8000, 11500);
+
+  it("replaces an open job's negative variance with spend against the estimate", () => {
+    const shaped = withoutOpenJobUnderspend(torresBath);
+    expect(shaped.varianceVsEstimate).toBeNull();
+    expect(shaped.varianceVsEstimatePct).toBeNull();
+    expect(shaped.spentOfEstimatePct).toBeCloseTo(8000 / 11500, 6);
+    expect(shaped.actualCost).toBe(8000); // the facts themselves are untouched
+  });
+
+  it("keeps variance on an open job that is already over its estimate", () => {
+    const over = job("h3", "Harborview Unit 3 Kitchen", 13000, 11400, 10150);
+    expect(withoutOpenJobUnderspend(over).varianceVsEstimate).toBe(1250);
+  });
+
+  it("keeps a completed job's underspend, which is a real result", () => {
+    const roof = job("rf", "Harborview Roof Replacement", 16400, 9000, 9600, "closed");
+    expect(withoutOpenJobUnderspend(roof).varianceVsEstimate).toBe(-600);
   });
 });

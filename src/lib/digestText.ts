@@ -1,4 +1,5 @@
-// Deterministic clean-up of the AI-written part of the Weekly Profit Brief.
+// Deterministic guard rails around the AI-written part of the Weekly Profit
+// Brief: what the model is given, and what comes back.
 //
 // The prompt asks for all of this. This makes it true whether or not the
 // model listened, because the text goes straight into a customer's inbox.
@@ -30,4 +31,45 @@ export function cleanDigestText(text: string): string {
     .replace(/[ \t]+[—–][ \t]+/g, ", ")
     .replace(/[—–]/g, "-")
     .trim();
+}
+
+// --- Shaping what the model is given -----------------------------------
+
+interface VarianceFields {
+  status: string;
+  estimatedCost: number | null;
+  actualCost: number;
+  varianceVsEstimate: number | null;
+  varianceVsEstimatePct: number | null;
+}
+
+/**
+ * Removes "under budget" from open jobs before the model ever sees it.
+ *
+ * Variance is costs minus estimate, so every job in progress starts deeply
+ * negative and climbs toward zero as the work gets done. Handed that number,
+ * the model wrote "You're actually $3,500 under budget on costs" about a job
+ * that had simply not finished spending yet - the same defect as the job page
+ * praising a job with no costs for being "$12,000 under the estimate".
+ *
+ * Only a completed job can come in under budget. An open job that has gone
+ * OVER its estimate is already over, finished or not, so a positive variance
+ * is kept. For an open job still inside its estimate, the variance is
+ * replaced by how much of the estimate has been spent, which is the true
+ * statement: "$8,000 spent of an $11,500 estimate".
+ *
+ * Done here, deterministically, because a prompt rule alone is a request.
+ */
+export function withoutOpenJobUnderspend<T extends VarianceFields>(
+  job: T
+): T & { spentOfEstimatePct?: number } {
+  const stillInsideEstimate =
+    job.status === "open" && job.varianceVsEstimate != null && job.varianceVsEstimate <= 0;
+  if (!stillInsideEstimate) return job;
+  return {
+    ...job,
+    varianceVsEstimate: null,
+    varianceVsEstimatePct: null,
+    ...(job.estimatedCost ? { spentOfEstimatePct: job.actualCost / job.estimatedCost } : {}),
+  };
 }

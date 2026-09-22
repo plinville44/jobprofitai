@@ -9,7 +9,7 @@ import {
   weekOverWeekForModel,
   type WeekOverWeekReport,
 } from "./weekOverWeek";
-import { cleanDigestText } from "./digestText";
+import { cleanDigestText, withoutOpenJobUnderspend } from "./digestText";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -23,13 +23,16 @@ What the data means. Read this before anything else:
 Accuracy rules, no exceptions:
 - Use ONLY the numbers provided. Never estimate, round persuasively, or invent a figure. Every claim must be traceable to a field in the input.
 - Over budget is not a loss. A job "lost money" only when its actual cost exceeds its actual revenue (marginPct below zero). A job that ran $6,600 over its estimate but still has a 28% margin went over budget and stayed profitable; say exactly that.
+- Only a completed job can be under budget. An open job that has spent less than its estimate is not under budget, it is unfinished. Where an open job has spentOfEstimatePct instead of a variance, describe it as spend so far against the estimate ("$8,000 spent of an $11,500 estimate").
+- Do not guess at causes. Say what the numbers show, not why they might be that way. If something looks worth checking, say what to check.
 - If a number is missing (no estimate on file, for example), say so plainly instead of guessing.
 - Do not give tax, legal, or accounting advice. Only report what happened on these jobs.
 
 What to write:
 - Lead with the most consequential thing for the owner: a job losing money if there is one, otherwise the job furthest over its estimate, otherwise the most important change since last week.
 - Write like a sharp project manager talking to the owner. Plain English, specific dollar amounts, no jargon.
-- 3 to 5 short paragraphs, then a one-line closer.
+- 3 to 5 short paragraphs, then a one-line closer. When weekOverWeek shows no changes, keep it to 2 short paragraphs: the reader has seen these job-to-date figures before.
+- Write about the jobs, not about the data. Never explain to the reader what kind of figures these are ("these are job-to-date totals") or restate that nothing changed; the section above already says so.
 
 Format:
 - Plain text only. No markdown, no headings, no bullets.
@@ -53,7 +56,16 @@ Week starting: ${metrics.weekStarting.toISOString().slice(0, 10)}
 
 Job-to-date figures for every job, plus what changed since the previous brief. Write the narrative as described.
 
-${JSON.stringify({ ...metrics, weekOverWeek: weekOverWeekForModel(weekOverWeek) }, null, 2)}`,
+${JSON.stringify(
+  {
+    ...metrics,
+    jobs: metrics.jobs.map(withoutOpenJobUnderspend),
+    topConcerns: metrics.topConcerns.map(withoutOpenJobUnderspend),
+    weekOverWeek: weekOverWeekForModel(weekOverWeek),
+  },
+  null,
+  2
+)}`,
       },
     ],
   });
