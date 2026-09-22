@@ -1,3 +1,4 @@
+import { COMPANY_LEGAL_NAME, COMPANY_MAILING_ADDRESS } from "@/lib/company";
 import { SUPPORT_EMAIL } from "./client";
 import {
   PARTNER_COMMISSION_MONTHS,
@@ -134,7 +135,8 @@ export function renderHtml(content: EmailContent): string {
             <a href="mailto:${SUPPORT_EMAIL}" style="color:${NAVY};">${SUPPORT_EMAIL}</a>.
           </p>
           <p style="margin:0;font-size:12px;line-height:1.5;color:${MUTED};">
-            JobProfitAI: Profit Intelligence for QuickBooks. A product of PWL Solutions LLC.<br>
+            JobProfitAI: Profit Intelligence for QuickBooks. A product of ${COMPANY_LEGAL_NAME},<br>
+            ${COMPANY_MAILING_ADDRESS}.<br>
             QuickBooks is a trademark of Intuit Inc. JobProfitAI is not affiliated with or endorsed by Intuit.
           </p>
         </div>
@@ -165,7 +167,7 @@ export function renderText(content: EmailContent): string {
     "",
     "---",
     `Questions? Reply to this email or write to ${SUPPORT_EMAIL}.`,
-    "JobProfitAI: Profit Intelligence for QuickBooks. A product of PWL Solutions LLC.",
+    `JobProfitAI: Profit Intelligence for QuickBooks. A product of ${COMPANY_LEGAL_NAME}, ${COMPANY_MAILING_ADDRESS}.`,
     "QuickBooks is a trademark of Intuit Inc. JobProfitAI is not affiliated with or endorsed by Intuit."
   );
   return parts.join("\n");

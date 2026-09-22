@@ -6,6 +6,7 @@ import {
   LegalSection,
   LegalSub,
   LEGAL_LAST_UPDATED,
+  MailingAddress,
   SupportEmail,
 } from "@/components/marketing/Legal";
 
@@ -453,8 +454,9 @@ export default function PrivacyPage() {
           <Link href="/contact" className="font-medium text-jp-blue hover:underline">
             contact form
           </Link>
-          .
+          , or write to us at:
         </p>
+        <MailingAddress />
       </LegalSection>
     </LegalPage>
   );

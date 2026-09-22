@@ -7,6 +7,7 @@ import {
   LegalSection,
   LegalSub,
   LEGAL_LAST_UPDATED,
+  MailingAddress,
   SupportEmail,
 } from "@/components/marketing/Legal";
 import {
@@ -17,6 +18,7 @@ import {
   TRIAL_DAYS,
   TRIAL_EXTENSION_DAYS,
 } from "@/lib/plans";
+import { COMPANY_LEGAL_NAME, COMPANY_MAILING_ADDRESS } from "@/lib/company";
 
 export const metadata: Metadata = {
   title: "Terms of Service",
@@ -511,8 +513,9 @@ export default function TermsPage() {
           </li>
           <li>
             <span className="font-medium text-jp-ink">Notices.</span> We send notices to the email
-            address on your account. You can send notices to <SupportEmail />. You agree to receive
-            these communications electronically.
+            address on your account. You can send notices to <SupportEmail />, or by mail to{" "}
+            {COMPANY_LEGAL_NAME}, {COMPANY_MAILING_ADDRESS}. You agree to receive our
+            communications electronically.
           </li>
           <li>
             <span className="font-medium text-jp-ink">Events outside our control.</span> We are
@@ -543,8 +546,9 @@ export default function TermsPage() {
           <Link href="/contact" className="font-medium text-jp-blue hover:underline">
             contact form
           </Link>
-          .
+          . Our mailing address is:
         </p>
+        <MailingAddress />
       </LegalSection>
     </LegalPage>
   );

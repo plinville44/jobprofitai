@@ -566,15 +566,14 @@ These are deliberate and documented in the product; none of them are half-finish
    have an Indiana attorney confirm: the liability cap (greater of 12 months of fees or
    $100), the Indiana courts venue clause (no arbitration clause was added on purpose),
    the indemnity, the 30-day notice commitments for price and Terms changes, and the
-   refund-on-discontinuation promise. Also decide whether to publish a mailing address:
-   CAN-SPAM requires a physical postal address in commercial email (the testimonial
-   request is the closest thing the product sends to one), and a PO box or registered
-   agent address satisfies it. When either page changes, update `LEGAL_LAST_UPDATED` in
+   refund-on-discontinuation promise. The mailing address (PO Box 955, Shelbyville, IN
+   46176) lives in `src/lib/company.ts` and appears in every email footer (CAN-SPAM), the
+   site footer, the contact page and both legal pages. When either page changes, update `LEGAL_LAST_UPDATED` in
    `src/components/marketing/Legal.tsx`.
 
-   The Terms promise things the Stripe account must actually do. Confirm in the Customer
-   Portal settings (section 2c) that **cancellation is "at end of billing period", not
-   "immediately"**, and that proration is on for plan switches. Stripe Checkout now shows
+   The Terms promise things the Stripe account must actually do. Customer Portal
+   cancellation is set to "at end of billing period" (done September 2026); keep it that
+   way, and keep proration on for plan switches. Stripe Checkout now shows
    an automatic-renewal notice above the pay button (`custom_text.submit` in
    `src/lib/stripe/billing.ts`); check it appears on a test-mode checkout.
 

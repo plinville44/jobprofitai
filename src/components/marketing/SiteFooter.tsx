@@ -1,3 +1,4 @@
+import { COMPANY_MAILING_ADDRESS } from "@/lib/company";
 import Link from "next/link";
 import { Logo } from "./Logo";
 
@@ -50,7 +51,7 @@ export default function SiteFooter() {
         <div className="mt-12 border-t border-jp-line pt-7">
           <p className="text-xs leading-relaxed text-jp-muted">
             &copy; {year} PWL Solutions LLC. All rights reserved. JobProfitAI is a product of PWL
-            Solutions LLC.
+            Solutions LLC, {COMPANY_MAILING_ADDRESS}.
           </p>
           <p className="mt-2 text-xs leading-relaxed text-jp-muted">
             QuickBooks and QuickBooks Online are trademarks of Intuit Inc., registered in the United

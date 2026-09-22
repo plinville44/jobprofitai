@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { COMPANY_LEGAL_NAME, COMPANY_MAILING_ADDRESS_LINES } from "@/lib/company";
 
 /**
  * Shared layout for the Terms of Service and Privacy Policy. The site has no
@@ -63,3 +64,17 @@ export function SupportEmail() {
 
 /** Shown on both legal pages. Change it whenever either document changes. */
 export const LEGAL_LAST_UPDATED = "September 22, 2026";
+
+/** The postal address, formatted for the Contact section of each legal page. */
+export function MailingAddress() {
+  return (
+    <address className="not-italic">
+      <span className="block">{COMPANY_LEGAL_NAME}</span>
+      {COMPANY_MAILING_ADDRESS_LINES.map((line) => (
+        <span key={line} className="block">
+          {line}
+        </span>
+      ))}
+    </address>
+  );
+}

@@ -1,3 +1,4 @@
+import { COMPANY_LEGAL_NAME, COMPANY_MAILING_ADDRESS_LINES } from "@/lib/company";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Card, Eyebrow, Section } from "@/components/marketing/ui";
@@ -42,6 +43,20 @@ export default function ContactPage() {
             <p className="mt-3 text-sm leading-relaxed text-jp-slate">
               That address reaches us for everything. Product questions, support, billing and
               security.
+            </p>
+            <h2 className="mt-6 text-sm font-semibold uppercase tracking-[0.1em] text-jp-muted">
+              By mail
+            </h2>
+            <address className="mt-2 text-sm not-italic leading-relaxed text-jp-slate">
+              {COMPANY_LEGAL_NAME}
+              {COMPANY_MAILING_ADDRESS_LINES.map((line) => (
+                <span key={line} className="block">
+                  {line}
+                </span>
+              ))}
+            </address>
+            <p className="mt-2 text-xs leading-relaxed text-jp-muted">
+              Email is much faster. Use mail for legal notices or anything that has to be on paper.
             </p>
           </Card>
 
