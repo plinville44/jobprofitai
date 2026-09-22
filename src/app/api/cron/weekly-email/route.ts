@@ -6,6 +6,7 @@ import { runSyncForConnection } from "@/lib/quickbooksSync";
 import { authorizeCron } from "@/lib/cronAuth";
 import { sendEmail } from "@/lib/email/client";
 import { getEntitlements } from "@/lib/entitlements";
+import { formatDate } from "@/lib/format";
 
 // Vercel Cron Jobs send a GET request on the configured schedule (see
 // vercel.json - hourly, "0 * * * *"). This route runs once per hour and, for
@@ -132,10 +133,15 @@ export async function GET(req: NextRequest) {
       // digests as successfully emailed - and then stamped emailedAt, which
       // permanently suppressed the retry. sendEmail() checks the returned
       // error as well as catching thrown ones.
+      // "Weekly Profit Brief" is what the site, Settings and the dashboard
+      // call this email; the subject was the only place still calling it a
+      // "Job Profitability Digest". The date goes through formatDate so it
+      // reads "Sep 14, 2026" in every inbox instead of whatever
+      // toLocaleDateString produces on the server.
       const subject =
         kind === "narrative"
-          ? `${companyName} - Job Profitability Digest, week of ${weekStarting.toLocaleDateString()}`
-          : `${companyName} - Data Health notice, week of ${weekStarting.toLocaleDateString()}`;
+          ? `${companyName}: Weekly Profit Brief, week of ${formatDate(weekStarting)}`
+          : `${companyName}: Data Health notice, week of ${formatDate(weekStarting)}`;
 
       const sendResult = await sendEmail({
         to: connection.emailRecipients,

@@ -212,6 +212,17 @@ export function InsightPreview() {
 }
 
 /** The Weekly Profit Brief, as it arrives in an inbox. */
+/**
+ * The Weekly Profit Brief as it actually arrives: the deterministic "What
+ * changed" section first, then the written summary. An illustration with
+ * made-up jobs, but everything shown is something the real email produces,
+ * and the figures are consistent with each other (the Harborview lines
+ * imply $100,000 billed, $82,800 spent against a $72,600 estimate).
+ *
+ * The previous version showed a subject line the email no longer uses, a
+ * "profit at risk" total the brief is never given, and a margin "fallen in
+ * each of the last three months" that no part of the brief computes.
+ */
 export function WeeklyBriefPreview() {
   return (
     <AppFrame label="Weekly Profit Brief. Monday, 8:00am">
@@ -221,22 +232,33 @@ export function WeeklyBriefPreview() {
             <span className="font-medium text-jp-ink">JobProfitAI</span> &lt;noreply@jobprofitai.com&gt;
           </p>
           <p className="mt-1 text-sm font-semibold text-jp-ink">
-            Job Profitability Digest, week of March 3
+            Weekly Profit Brief, week of Mar 10
           </p>
         </div>
         <div className="mt-4 space-y-3 text-sm leading-relaxed text-jp-slate">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-jp-ink">
+              What changed since the brief for the week of Mar 3
+            </p>
+            <ul className="mt-2 space-y-1">
+              <li>
+                Harborview Roof Replacement: {formatCurrency(6_800)} in new costs. Margin 24.0% to
+                17.2%. Now 14% over its estimate.
+              </li>
+              <li>Maple St. Kitchen Remodel: Marked completed. Finished at 31.4% margin.</li>
+              <li>
+                Oak Ave Bath: New job, {formatCurrency(18_200)} billed and {formatCurrency(4_650)} in
+                costs so far.
+              </li>
+            </ul>
+          </div>
           <p>
-            The thing worth looking at this week is Harborview Roof Replacement. It&rsquo;s{" "}
-            {formatCurrency(21_400)} over its estimate with the job still open, and material costs
-            drove almost all of it.
+            Harborview Roof Replacement is the one to look at. It is now{" "}
+            {formatCurrency(10_200)} over its {formatCurrency(72_600)} estimate with the job still
+            open. It is still profitable, at 17.2%, but well under your 28% target.
           </p>
           <p>
-            Five jobs are running below your 28% target margin, putting about{" "}
-            {formatCurrency(58_420)} of expected profit at risk. Maple St. Kitchen Remodel is the one
-            trending the wrong way. Its margin has fallen in each of the last three months.
-          </p>
-          <p>
-            Two jobs still have no cost estimate on file, so they&rsquo;re excluded from the
+            Two jobs still have no cost estimate on file, so they&rsquo;re left out of the
             over-budget numbers rather than guessed at.
           </p>
         </div>

@@ -208,8 +208,11 @@ export default function HowItWorksPage() {
           >
             <p>
               Once a week, on the day and hour you choose in your own timezone, JobProfitAI syncs
-              the latest data and emails a short brief covering what actually matters: the job
-              furthest over budget, margins moving the wrong way, and the profit currently at risk.
+              the latest data and emails a short brief. It opens with what changed since the last
+              one: new costs and billing on each job, margins that moved, jobs that just went over
+              their estimate, and jobs you marked completed. That part is calculated, not written
+              by AI. A short written summary follows, leading with the job that most needs your
+              attention.
             </p>
             <p>
               It goes to as many recipients as you like. You, your project manager, your

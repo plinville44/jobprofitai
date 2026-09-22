@@ -2,23 +2,44 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { ConnectionMetrics, DataHealthReport } from "./profitability";
 import { computeConnectionMetrics } from "./profitability";
 import { formatCurrency } from "./format";
+import { prisma } from "./prisma";
+import {
+  computeWeekOverWeek,
+  renderWeekOverWeek,
+  weekOverWeekForModel,
+  type WeekOverWeekReport,
+} from "./weekOverWeek";
+import { cleanDigestText } from "./digestText";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-const SYSTEM_PROMPT = `You write a weekly job-cost digest email for a contractor who runs their business on QuickBooks Online.
+const SYSTEM_PROMPT = `You write the narrative part of a weekly job-cost email for a contractor who runs their business on QuickBooks Online.
 
-Rules, no exceptions:
-- Use ONLY the numbers provided in the JSON you're given. Never estimate, round persuasively, or invent a figure that isn't in the data.
-- If a number is missing (e.g. no estimate on file for a job), say so plainly instead of guessing.
-- Lead with the most consequential thing: the job losing the most money or furthest over budget, not an evenly-weighted summary of everything.
-- Write like a sharp project manager talking to the owner, not like a BI dashboard. Plain English, specific dollar amounts, no jargon like "variance analysis."
-- Every claim must be traceable to a field in the input JSON.
-- Keep it skimmable: a short headline take, then 3-6 short paragraphs or bullet callouts for the jobs that matter, then a one-line closer.
-- Do not give tax, legal, or accounting advice - only report what happened on these jobs.`;
+What the data means. Read this before anything else:
+- "jobs" and "totals" are JOB-TO-DATE figures: everything billed and spent on each job over its whole life. They are NOT this week's activity. Never say a job did something "this week" based on them, and never describe the totals as what "the week" produced.
+- "weekOverWeek" is the only source for what changed since the last brief. A deterministic "What changed" section built from it is shown to the reader directly above your text, word for word. Do not repeat it line by line. You may refer to it ("the new costs on Torres Kitchen above").
+- If weekOverWeek.noComparisonReason is set, there is no previous brief to compare against. Do not speculate about what changed.
+
+Accuracy rules, no exceptions:
+- Use ONLY the numbers provided. Never estimate, round persuasively, or invent a figure. Every claim must be traceable to a field in the input.
+- Over budget is not a loss. A job "lost money" only when its actual cost exceeds its actual revenue (marginPct below zero). A job that ran $6,600 over its estimate but still has a 28% margin went over budget and stayed profitable; say exactly that.
+- If a number is missing (no estimate on file, for example), say so plainly instead of guessing.
+- Do not give tax, legal, or accounting advice. Only report what happened on these jobs.
+
+What to write:
+- Lead with the most consequential thing for the owner: a job losing money if there is one, otherwise the job furthest over its estimate, otherwise the most important change since last week.
+- Write like a sharp project manager talking to the owner. Plain English, specific dollar amounts, no jargon.
+- 3 to 5 short paragraphs, then a one-line closer.
+
+Format:
+- Plain text only. No markdown, no headings, no bullets.
+- No subject line, no greeting, no sign-off. Start with your first sentence.
+- Do not use em dashes or en dashes. Use commas, colons or full stops.`;
 
 export async function generateWeeklyDigest(
   metrics: ConnectionMetrics,
-  companyName: string
+  companyName: string,
+  weekOverWeek: WeekOverWeekReport
 ): Promise<string> {
   const message = await anthropic.messages.create({
     model: "claude-sonnet-4-5",
@@ -30,9 +51,9 @@ export async function generateWeeklyDigest(
         content: `Company: ${companyName}
 Week starting: ${metrics.weekStarting.toISOString().slice(0, 10)}
 
-Here is this week's job-cost data. Write the digest email body (plain text, no HTML, no markdown headers - a few short paragraphs is fine):
+Job-to-date figures for every job, plus what changed since the previous brief. Write the narrative as described.
 
-${JSON.stringify(metrics, null, 2)}`,
+${JSON.stringify({ ...metrics, weekOverWeek: weekOverWeekForModel(weekOverWeek) }, null, 2)}`,
       },
     ],
   });
@@ -41,7 +62,7 @@ ${JSON.stringify(metrics, null, 2)}`,
   if (!textBlock || textBlock.type !== "text") {
     throw new Error("Claude did not return a text response for the digest.");
   }
-  return textBlock.text;
+  return cleanDigestText(textBlock.text);
 }
 
 // Confidence levels below which a Claude-written profitability narrative
@@ -63,7 +84,7 @@ const TOO_LOW_FOR_NARRATIVE = new Set<DataHealthReport["overallConfidence"]>(["l
 export function buildDataHealthDigestBody(dataHealth: DataHealthReport, companyName: string): string {
   const lines: string[] = [];
   lines.push(
-    `We didn't write a profitability take for ${companyName} this week - there isn't enough complete data synced yet to say anything reliable about your job margins. Here's exactly what's missing:`
+    `We didn't write a profitability take for ${companyName} this week. There isn't enough complete data synced yet to say anything reliable about your job margins. Here's exactly what's missing:`
   );
   lines.push("");
 
@@ -99,7 +120,7 @@ export function buildDataHealthDigestBody(dataHealth: DataHealthReport, companyN
 
   lines.push("");
   lines.push(
-    "Fix any of the above in QuickBooks (or set a target margin/estimate in Settings) and next week's email should come back with a real narrative. In the meantime, the full breakdown is always up to date on your Data Health page."
+    "Most of this is fixed in QuickBooks by tagging costs to the right job. A missing cost estimate is added in JobProfitAI instead: open the job and use Edit job. Once enough is filled in, next week's email comes back with a full write-up. The complete breakdown is always current on your Data Health page."
   );
 
   return lines.join("\n");
@@ -116,13 +137,42 @@ export async function generateWeeklyDigestForConnection(
   connectionId: string,
   weekStarting: Date,
   companyName: string
-): Promise<{ narrative: string; kind: "narrative" | "data_health"; metrics: ConnectionMetrics }> {
+): Promise<{
+  narrative: string;
+  kind: "narrative" | "data_health";
+  metrics: ConnectionMetrics & { weekOverWeek: ReturnType<typeof weekOverWeekForModel> };
+}> {
   const metrics = await computeConnectionMetrics(connectionId, weekStarting);
 
+  // The comparison point is the most recent brief from an EARLIER week.
+  // Strictly earlier, so regenerating this week's brief compares against
+  // last week rather than against itself. If a week was skipped, this
+  // compares against the last one that exists, and the section's heading
+  // names that week so the gap is visible rather than implied away.
+  const prior = await prisma.weeklyDigest.findFirst({
+    where: { connectionId, weekStarting: { lt: weekStarting } },
+    orderBy: { weekStarting: "desc" },
+    select: { weekStarting: true, metrics: true },
+  });
+  const weekOverWeek = computeWeekOverWeek(prior, metrics);
+  const changesSection = renderWeekOverWeek(weekOverWeek);
+
+  // Stored with the snapshot. Next week's comparison only reads `jobs`, so
+  // this is for the record: what the brief said changed, alongside the
+  // figures it was computed from.
+  const stored = { ...metrics, weekOverWeek: weekOverWeekForModel(weekOverWeek) };
+
+  // The changes section goes on both kinds of brief. It is arithmetic on
+  // stored numbers, so it stays trustworthy even in a week when the data is
+  // too thin for the AI narrative to be.
   if (TOO_LOW_FOR_NARRATIVE.has(metrics.dataHealth.overallConfidence)) {
-    return { narrative: buildDataHealthDigestBody(metrics.dataHealth, companyName), kind: "data_health", metrics };
+    return {
+      narrative: `${changesSection}\n\n${buildDataHealthDigestBody(metrics.dataHealth, companyName)}`,
+      kind: "data_health",
+      metrics: stored,
+    };
   }
 
-  const narrative = await generateWeeklyDigest(metrics, companyName);
-  return { narrative, kind: "narrative", metrics };
+  const body = await generateWeeklyDigest(metrics, companyName, weekOverWeek);
+  return { narrative: `${changesSection}\n\n${body}`, kind: "narrative", metrics: stored };
 }
