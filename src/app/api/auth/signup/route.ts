@@ -5,7 +5,8 @@ import { prisma } from "@/lib/prisma";
 import { hashPassword, createSession } from "@/lib/auth";
 import { newTrialSubscriptionData } from "@/lib/trial";
 import { attributeReferral, REFERRAL_COOKIE } from "@/lib/referrals";
-import { sendPartnerNewSignup, sendReferralSignup, sendTrialWelcome } from "@/lib/email/lifecycle";
+import { sendEmailVerification, sendPartnerNewSignup, sendReferralSignup } from "@/lib/email/lifecycle";
+import { createEmailVerification, VERIFY_TOKEN_TTL_HOURS } from "@/lib/emailVerification";
 
 export const runtime = "nodejs";
 
@@ -23,7 +24,7 @@ const SignupSchema = z.object({
  * object, no payment method - none of that exists until the customer chooses
  * a plan later.
  *
- * Referral attribution, the welcome email and referrer notifications all run
+ * Referral attribution, the verification email and referrer notifications all run
  * AFTER the account is committed and are individually fault-tolerant: none
  * of them can fail a signup. Someone creating an account is the single most
  * valuable thing that happens in this app, and nothing secondary gets to
@@ -113,11 +114,24 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // The verification link, not the welcome. The welcome now goes out once
+  // the address is confirmed (see src/app/verify-email/page.tsx), so a new
+  // account gets one email at signup instead of two in the same second, and
+  // the one it gets is the one that has to be acted on.
   try {
-    await sendTrialWelcome(user.id);
+    const created = await createEmailVerification(user.id);
+    if (created.ok) {
+      const sent = await sendEmailVerification({
+        ...created.verification,
+        expiryHours: VERIFY_TOKEN_TTL_HOURS,
+      });
+      if (!sent.ok && !sent.skipped) {
+        console.error(`signup: verification email failed for user ${user.id}: ${sent.error}`);
+      }
+    }
   } catch (err) {
     console.error(
-      "signup: welcome email failed:",
+      "signup: verification email failed:",
       err instanceof Error ? err.message : "Unknown error"
     );
   }

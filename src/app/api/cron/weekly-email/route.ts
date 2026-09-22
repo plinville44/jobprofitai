@@ -75,6 +75,25 @@ export async function GET(req: NextRequest) {
         continue;
       }
 
+      // Nothing is sent until the account owner has verified their address.
+      // A new connection sends to the owner's own address by default, so an
+      // unverified signup typo meant a stranger received one company's job
+      // revenue, costs and margins every week. Recipients the owner adds in
+      // Settings are held too: until the owner has proved who they are, the
+      // account isn't trusted to direct financial data anywhere.
+      const owner = await prisma.user.findUnique({
+        where: { id: connection.userId },
+        select: { emailVerifiedAt: true },
+      });
+      if (!owner?.emailVerifiedAt) {
+        results.push({
+          connectionId: connection.id,
+          status: "skipped",
+          detail: "account owner has not verified their email address",
+        });
+        continue;
+      }
+
       // Entitlement, enforced here like every other paid path. Without it an
       // expired trial kept receiving the Weekly Profit Brief and kept
       // spending Anthropic tokens generating it, while the trial-expired

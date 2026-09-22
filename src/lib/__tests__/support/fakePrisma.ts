@@ -290,6 +290,11 @@ export function createFakePrisma(): FakePrisma {
       [{ fields: ["tokenHash"] }],
       () => ({ createdAt: new Date(), usedAt: null })
     ),
+    emailVerificationToken: new FakeModel(
+      "emailVerificationToken",
+      [{ fields: ["tokenHash"] }],
+      () => ({ createdAt: new Date(), usedAt: null })
+    ),
     // userId unique is THE constraint that makes the trial extension
     // unrepeatable - see extendTrialWithFeedback.
     trialFeedback: new FakeModel("trialFeedback", [{ fields: ["userId"] }], () => ({

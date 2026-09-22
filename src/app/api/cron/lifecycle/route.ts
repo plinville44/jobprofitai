@@ -4,6 +4,7 @@ import { authorizeCron } from "@/lib/cronAuth";
 import { TRIAL_EXTENSION_OFFER_DAY } from "@/lib/plans";
 import { computeTrialState, expireFinishedTrials } from "@/lib/trial";
 import { purgeExpiredPasswordResets } from "@/lib/passwordReset";
+import { purgeExpiredEmailVerifications } from "@/lib/emailVerification";
 import { qualifyDueReferrals, retryPendingRewards } from "@/lib/referrals";
 import {
   sendReferralRewardEarned,
@@ -54,6 +55,7 @@ interface Counters {
   strandedRewardsApplied: number;
   testimonialRequests: number;
   passwordResetsPurged: number;
+  emailVerificationsPurged: number;
   errors: string[];
 }
 
@@ -74,6 +76,7 @@ export async function GET(req: NextRequest) {
     strandedRewardsApplied: 0,
     testimonialRequests: 0,
     passwordResetsPurged: 0,
+    emailVerificationsPurged: 0,
     errors: [],
   };
 
@@ -91,6 +94,7 @@ export async function GET(req: NextRequest) {
   // never be the reason a lifecycle email fails to send.
   await runStage(counters, "password-reset-cleanup", async () => {
     counters.passwordResetsPurged = await purgeExpiredPasswordResets(now);
+    counters.emailVerificationsPurged = await purgeExpiredEmailVerifications(now);
   });
 
   return NextResponse.json({ ok: true, checkedAt: now.toISOString(), ...counters });

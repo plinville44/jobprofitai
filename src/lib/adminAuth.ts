@@ -21,9 +21,13 @@ export async function getAdminSession(): Promise<AdminSession | null> {
 
   const user = await prisma.user.findUnique({
     where: { id: session.userId },
-    select: { id: true, email: true },
+    select: { id: true, email: true, emailVerifiedAt: true },
   });
-  if (!user || !isAdminEmail(user.email)) return null;
+  // Verified, not just listed. An allowlisted address with no account yet
+  // was otherwise a claimable admin slot: anyone who signed up with it
+  // first had the admin area. Signing up proves nothing; receiving the
+  // verification email at that address does.
+  if (!user || !user.emailVerifiedAt || !isAdminEmail(user.email)) return null;
 
   return { userId: user.id, email: user.email };
 }

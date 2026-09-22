@@ -530,6 +530,31 @@ export async function sendPasswordReset(input: {
 }
 
 /**
+ * The verification link. Dedupe key carries the link's expiry, so each
+ * resend is its own email while a retried request for the same link is not.
+ */
+export async function sendEmailVerification(input: {
+  userId: string;
+  email: string;
+  name: string | null;
+  token: string;
+  expiresAt: Date;
+  expiryHours: number;
+}): Promise<SendEmailResult> {
+  const verifyUrl = T.appUrl(`/verify-email?token=${encodeURIComponent(input.token)}`);
+  const email = T.verifyEmailEmail(verifyUrl, input.name, input.expiryHours);
+
+  return sendLifecycleEmail({
+    userId: input.userId,
+    emailType: "email_verification",
+    dedupeKey: `email_verification:${input.userId}:${input.expiresAt.toISOString()}`,
+    to: input.email,
+    replyTo: SUPPORT_EMAIL,
+    ...email,
+  });
+}
+
+/**
  * Sent after a password actually changes.
  *
  * This is the account's alarm bell: if someone else reset the password, this

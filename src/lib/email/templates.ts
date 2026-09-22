@@ -218,6 +218,28 @@ export function passwordResetEmail(resetUrl: string, expiryMinutes: number): Ren
 }
 
 /**
+ * The first email a new account receives. It has two jobs and does both:
+ * confirm the address, and get them to QuickBooks. The welcome email that
+ * used to go out at signup now follows verification, so a new customer gets
+ * one message at signup rather than two within the same second.
+ *
+ * It says plainly what waits on verification, because "why hasn't my weekly
+ * email arrived" is the question an unverified account will otherwise ask.
+ */
+export function verifyEmailEmail(verifyUrl: string, name: string | null, expiryHours: number): RenderedEmail {
+  return buildEmail("Confirm your email for JobProfitAI", {
+    preheader: "One click to confirm this is your address.",
+    heading: `Confirm your email${name ? `, ${name.split(" ")[0]}` : ""}`,
+    body: [
+      "Thanks for starting a JobProfitAI trial. Please confirm this is your email address.",
+      "Your Weekly Profit Brief goes to this address, so we hold it until you confirm. That way a mistyped address never means someone else receiving your job numbers.",
+    ],
+    cta: { label: "Confirm my email", url: verifyUrl },
+    footnote: `This link expires in ${expiryHours} hours. If you didn't create a JobProfitAI account, you can ignore this email. If the button doesn't work, copy and paste this address into your browser: ${verifyUrl}`,
+  });
+}
+
+/**
  * Sent after the password actually changes. Not a courtesy: this is the
  * message that lets a customer notice a reset they did not perform, which is
  * the only way they would ever find out.

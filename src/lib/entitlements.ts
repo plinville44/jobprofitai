@@ -404,8 +404,12 @@ export function isAdminEmail(email: string | null | undefined): boolean {
 
 /** Resolves the session user and checks the admin allowlist. */
 export async function isAdminUser(userId: string): Promise<boolean> {
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
-  return isAdminEmail(user?.email);
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true, emailVerifiedAt: true },
+  });
+  // Same rule as getAdminSession: on the allowlist AND verified.
+  return Boolean(user?.emailVerifiedAt) && isAdminEmail(user?.email);
 }
 
 export { PLANS };

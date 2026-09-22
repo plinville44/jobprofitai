@@ -7,6 +7,7 @@ import LogoutButton from "@/components/LogoutButton";
 import FeedbackModal from "@/components/dashboard/FeedbackModal";
 import TrialBanner from "@/components/dashboard/TrialBanner";
 import { Logo } from "@/components/marketing/Logo";
+import ResendVerificationButton from "@/components/dashboard/ResendVerificationButton";
 
 /**
  * Shared nav across every /dashboard/* page. Only links to pages that
@@ -18,11 +19,15 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const [isAdmin, partner] = await Promise.all([
+  const [isAdmin, partner, user] = await Promise.all([
     isAdminUser(session.userId),
     prisma.partner.findUnique({
       where: { userId: session.userId },
       select: { status: true },
+    }),
+    prisma.user.findUnique({
+      where: { id: session.userId },
+      select: { email: true, emailVerifiedAt: true },
     }),
   ]);
 
@@ -59,6 +64,18 @@ export default async function DashboardLayout({ children }: { children: React.Re
           same entitlement source the access checks use, so what the banner
           says and what the app actually allows can't disagree. */}
       <TrialBanner userId={session.userId} />
+
+      {/* Shown on every dashboard page until the address is confirmed, and
+          it says the one consequence that matters to the customer. */}
+      {user && !user.emailVerifiedAt ? (
+        <div className="border-b border-amber-200 bg-amber-50">
+          <p className="mx-auto max-w-6xl px-6 py-2.5 text-sm text-amber-900">
+            <strong className="font-semibold">Confirm your email.</strong> We sent a link to{" "}
+            {user.email}. Your Weekly Profit Brief won&apos;t be sent until it&apos;s confirmed.{" "}
+            <ResendVerificationButton compact />
+          </p>
+        </div>
+      ) : null}
 
       <div className="mx-auto max-w-6xl px-6 py-8">{children}</div>
     </div>

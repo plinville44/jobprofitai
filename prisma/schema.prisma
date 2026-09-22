@@ -17,6 +17,13 @@ model User {
   email         String    @unique
   passwordHash  String
   name          String?
+  // Set the first time the owner proves they receive mail at `email`, by
+  // clicking a verification link or by completing a password reset (which
+  // proves the same thing). Null until then. Nullable, so adding it cannot
+  // fail on existing rows: every account created before this column simply
+  // starts unverified and is asked to verify. See src/lib/emailVerification.ts
+  // for what is withheld until it is set.
+  emailVerifiedAt DateTime?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -36,6 +43,7 @@ model User {
   partner           Partner?
   emailEvents       EmailEvent[]
   passwordResets    PasswordResetToken[]
+  emailVerifications EmailVerificationToken[]
 }
 
 // A single-use, time-limited password reset.
@@ -49,6 +57,25 @@ model User {
 // `tokenHash` is unique so a token can only ever identify one row, and
 // `usedAt` makes the reset single-use: consuming it stamps a time, and the
 // same link stops working immediately afterwards.
+model EmailVerificationToken {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash   String    @unique
+  // The address the link was sent to. A link verifies that address and no
+  // other, so if the account's email ever changes, every link issued for
+  // the old one stops working rather than verifying the new one.
+  email       String
+  expiresAt   DateTime
+  usedAt      DateTime?
+
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+}
+
 model PasswordResetToken {
   id          String    @id @default(cuid())
   userId      String

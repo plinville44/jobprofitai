@@ -160,6 +160,15 @@ export async function completePasswordReset(
       data: { passwordHash },
     });
 
+    // Completing a reset proves exactly what email verification proves:
+    // this person received mail at the account's address. So an unverified
+    // account that resets its password is verified by it. Only stamped when
+    // still null, so an earlier verification date is never overwritten.
+    await tx.user.updateMany({
+      where: { id: check.userId, emailVerifiedAt: null },
+      data: { emailVerifiedAt: now },
+    });
+
     // Any other live link for this account dies here too. A customer who
     // clicked "forgot password" three times should not be left with two
     // working links sitting in their inbox after the reset succeeds.

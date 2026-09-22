@@ -160,6 +160,27 @@ describe("completePasswordReset", () => {
     expect(row.usedAt).not.toBeNull();
   });
 
+  // A completed reset proves the same thing a verification link does.
+  it("marks an unverified address as verified", async () => {
+    await makeUser();
+    const reset = await createPasswordReset("owner@example.com", NOW);
+    await completePasswordReset(reset!.token, "brand-new-password", NOW);
+
+    const user = await fake.client.user.findUnique({ where: { id: "u1" } });
+    expect(user.emailVerifiedAt.getTime()).toBe(NOW.getTime());
+  });
+
+  it("keeps an earlier verification date", async () => {
+    await makeUser();
+    const earlier = new Date("2026-08-01T00:00:00Z");
+    await fake.client.user.update({ where: { id: "u1" }, data: { emailVerifiedAt: earlier } });
+    const reset = await createPasswordReset("owner@example.com", NOW);
+    await completePasswordReset(reset!.token, "brand-new-password", NOW);
+
+    const user = await fake.client.user.findUnique({ where: { id: "u1" } });
+    expect(user.emailVerifiedAt.getTime()).toBe(earlier.getTime());
+  });
+
   it("refuses to reuse a link", async () => {
     await makeUser();
     const reset = await createPasswordReset("owner@example.com", NOW);

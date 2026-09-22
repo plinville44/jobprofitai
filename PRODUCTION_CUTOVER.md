@@ -597,11 +597,16 @@ These are deliberate and documented in the product; none of them are half-finish
     Revoking them would need a `passwordChangedAt` column and a database read inside
     `getSession` on every request. Documented rather than hidden.
 
-11. **Signup has no email verification.** Anyone can create an account with any address.
-    The contained consequence is a free 14-day trial with no card. The sharp edge is
-    `ADMIN_EMAILS`: an address on that list with no account attached is a claimable admin
-    slot, since whoever registers it first becomes an admin. **Every address in
-    `ADMIN_EMAILS` must already have an account.** Email verification is the real fix.
+11. ~~**Signup has no email verification.**~~ **Fixed 2026-09-22.** Signup now sends a
+    verification link (48 hours, single use, hashed at rest, 5 per hour). Two things wait
+    on it, and only two: the admin area (allowlisted *and* verified, which closes the
+    claimable-admin-slot hole) and the Weekly Profit Brief (not sent until the owner is
+    verified, so a signup typo can't send job financials to a stranger). Everything else
+    works unverified, with a banner. Completing a password reset also verifies, since it
+    proves the same thing. The welcome email now follows verification instead of signup.
+    Accounts created before this shipped start unverified, including yours: verify from
+    the banner or you'll lose the Admin link and your brief. See
+    `src/lib/emailVerification.ts`.
 
 ---
 
