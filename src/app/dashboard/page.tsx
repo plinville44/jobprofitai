@@ -12,6 +12,7 @@ import { resolveDateRange, resolveStatusFilter, RANGE_OPTIONS, STATUS_OPTIONS } 
 import { NO_VALUE, confidenceLabel, formatCurrency, formatDate, formatDateTime, formatPct } from "@/lib/format";
 import { SeverityBadge } from "@/components/dashboard/Badges";
 import DashboardActions from "./DashboardActions";
+import FirstRunSetup from "@/components/dashboard/FirstRunSetup";
 import JobMarginBarChart from "@/components/charts/JobMarginBarChart";
 import EstimateVsActualChart from "@/components/charts/EstimateVsActualChart";
 import MarginTrendChart from "@/components/charts/MarginTrendChart";
@@ -100,9 +101,11 @@ export default async function DashboardPage(props: {
     <main>
       <h1 className="text-2xl font-bold text-navy">Profit Dashboard</h1>
 
-      {searchParams.qbo_connected && (
+      {/* The first sync now starts on its own (FirstRunSetup below), so
+          this only confirms the connection instead of asking for a click. */}
+      {searchParams.qbo_connected && connection?.lastSyncedAt && (
         <p className="mt-4 rounded-lg bg-green-50 px-4 py-3 text-sm text-green-800">
-          QuickBooks connected. Click &quot;Sync now&quot; below to pull your job data.
+          QuickBooks connected.
         </p>
       )}
       {searchParams.qbo_error && (
@@ -150,6 +153,12 @@ export default async function DashboardPage(props: {
               </div>
             ) : null}
             <DashboardActions connectionId={connection.id} />
+            {/* A company that has never synced gets its first sync and first
+                brief run automatically, instead of a dashboard of zeros. */}
+            {(!connection.lastSyncedAt || searchParams.qbo_connected) &&
+            !needsReconnect(connection.lastSyncError) ? (
+              <FirstRunSetup connectionId={connection.id} neverSynced={!connection.lastSyncedAt} />
+            ) : null}
           </div>
 
           {/* Filters */}
@@ -237,7 +246,7 @@ export default async function DashboardPage(props: {
               <p className="mt-2 text-sm text-gray-500">
                 {profitData.jobsInTab === 0
                   ? statusFilter === "all"
-                    ? "No jobs have synced from QuickBooks yet, so there is nothing to check."
+                    ? "No jobs have synced from QuickBooks yet, so there is nothing to check. JobProfitAI reads jobs from QuickBooks Projects: turn on Projects in QuickBooks (Settings, Account and settings, Advanced), tag invoices and costs to each project, then click Sync now."
                     : `No ${statusFilter === "open" ? "active" : "completed"} jobs to check. Try the All jobs tab.`
                   : `Nothing needs attention on any of your ${profitData.jobsInTab} ${
                       statusFilter === "open" ? "active " : statusFilter === "closed" ? "completed " : ""

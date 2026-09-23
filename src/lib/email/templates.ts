@@ -349,6 +349,50 @@ export function analysisReadyEmail(companyName: string): RenderedEmail {
   });
 }
 
+/**
+ * Two days after the first analysis: one plain question, no pitch.
+ *
+ * With no sales call in the funnel, this is the only moment we find out
+ * whether the numbers looked right to the person who knows the jobs. A reply
+ * lands in the support inbox (the default Reply-To), so the question is real,
+ * not decoration.
+ */
+export function trialCheckInEmail(name: string | null): RenderedEmail {
+  return buildEmail("Did your jobs show up the way you expected?", {
+    preheader: "One question. Just hit reply.",
+    heading: "Quick question",
+    body: [
+      `${name ? `${name.split(" ")[0]}, y` : "Y"}our QuickBooks jobs have been in JobProfitAI for a couple of days now.`,
+      "Did they show up the way you expected? If a job is missing, a number looks off, or something is confusing, reply to this email and tell me. A real person reads every reply, usually within one business day.",
+      "If everything looks right, a one-word \"yes\" helps too.",
+    ],
+    cta: { label: "Open your dashboard", url: appUrl("/dashboard") },
+    footnote: "Numbers that look off are usually a gap in QuickBooks, not a mistake. The Data Health page shows exactly what is missing.",
+  });
+}
+
+/**
+ * About a week into an activated trial: how to read the three numbers that
+ * matter, before the ending-soon email asks them to decide. Stands in for the
+ * walkthrough a sales call would have given.
+ */
+export function reportGuideEmail(name: string | null): RenderedEmail {
+  return buildEmail("How to read your job profit numbers in 5 minutes", {
+    preheader: "The three numbers to check each week, and what to do about each.",
+    heading: "Three numbers worth 5 minutes a week",
+    body: [
+      `${name ? `${name.split(" ")[0]}, h` : "H"}ere is the short version of how contractors use JobProfitAI each week. Open the dashboard and look at these three, in this order:`,
+    ],
+    bullets: [
+      "Jobs Below Target. Every job under the margin you set in Settings. If this shows \"Not set\", set your target margin first; it takes 30 seconds and everything else depends on it.",
+      "Profit At Risk. The dollars at stake on jobs that are over estimate or slipping. Start with the biggest one in Needs Your Attention and check whether a bill was coded to the wrong job or costs are really running over.",
+      "Data Issues. Costs or invoices QuickBooks has not tied to a job. Fixing these in QuickBooks makes every other number more accurate.",
+    ],
+    cta: { label: "Check your three numbers", url: appUrl("/dashboard") },
+    footnote: "Mark finished jobs as completed on the Jobs page. QuickBooks does not share project status with outside apps, so the margin trend and Profit Intelligence stay empty until you do.",
+  });
+}
+
 export function trialEndingWithOfferEmail(
   daysLeft: number,
   newEndDate: Date,

@@ -165,8 +165,8 @@ export default function HomePage() {
             <ButtonLink href="/signup" size="lg" className="w-full sm:w-auto">
               Start Your 14-Day Free Trial
             </ButtonLink>
-            <ButtonLink href="/how-it-works" size="lg" variant="secondary" className="w-full sm:w-auto">
-              See How It Works
+            <ButtonLink href="/demo" size="lg" variant="secondary" className="w-full sm:w-auto">
+              See It With Sample Data
             </ButtonLink>
           </div>
 

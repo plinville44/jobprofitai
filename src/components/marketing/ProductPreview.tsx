@@ -158,6 +158,68 @@ export function DashboardPreview() {
   );
 }
 
+// The same example company as the previews above and below: Harborview is
+// $100,000 billed and $82,800 spent (17.2%, 14% over its $72,600 estimate),
+// Oakfield sits 6.2 points under the 28% target, and Maple St. finished at
+// 31.4%. Used on /demo so a visitor can see a whole job list, not just the
+// attention table.
+const EXAMPLE_JOBS = [
+  { job: "Harborview Roof Replacement", status: "Active", revenue: 100_000, costs: 82_800, note: "14% over estimate" },
+  { job: "Cedar Ln. Deck Rebuild", status: "Active", revenue: 64_000, costs: 52_300, note: "Margin falling" },
+  { job: "Oakfield Warehouse Fit-Out", status: "Active", revenue: 206_000, costs: 161_100, note: "Below target" },
+  { job: "Riverside HVAC Retrofit", status: "Active", revenue: 88_500, costs: 67_700, note: "Labor running high" },
+  { job: "Pine Ridge Addition", status: "Active", revenue: 142_000, costs: 98_700, note: "On target" },
+  { job: "Maple St. Kitchen Remodel", status: "Completed", revenue: 54_000, costs: 37_040, note: "On target" },
+  { job: "Elm Ct. Siding", status: "Completed", revenue: 31_500, costs: 21_900, note: "On target" },
+];
+
+const EXAMPLE_TARGET_MARGIN_PCT = 28;
+
+/** A job list with margin against target, mirroring the real Jobs page. */
+export function JobListPreview() {
+  return (
+    <AppFrame label="Jobs">
+      <div className="p-4 sm:p-6">
+        <div className="overflow-x-auto rounded-lg border border-jp-line">
+          <table className="w-full min-w-[680px] text-left text-sm">
+            <thead className="bg-jp-surface text-[11px] uppercase tracking-wide text-jp-muted">
+              <tr>
+                <th scope="col" className="px-4 py-2.5 font-semibold">Job</th>
+                <th scope="col" className="px-4 py-2.5 font-semibold">Status</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Revenue</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Job Costs</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Margin</th>
+                <th scope="col" className="px-4 py-2.5 font-semibold">Note</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-jp-line">
+              {EXAMPLE_JOBS.map((row) => {
+                const marginPct = ((row.revenue - row.costs) / row.revenue) * 100;
+                const below = marginPct < EXAMPLE_TARGET_MARGIN_PCT;
+                return (
+                  <tr key={row.job}>
+                    <td className="px-4 py-3 font-medium text-jp-ink">{row.job}</td>
+                    <td className="px-4 py-3 text-jp-slate">{row.status}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-jp-ink">{formatCurrency(row.revenue)}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-jp-ink">{formatCurrency(row.costs)}</td>
+                    <td className={`px-4 py-3 text-right font-semibold tabular-nums ${below ? "text-amber-600" : "text-green-700"}`}>
+                      {marginPct.toFixed(1)}%
+                    </td>
+                    <td className="px-4 py-3 text-jp-muted">{row.note}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-3 text-xs text-jp-muted">
+          Margin is colored against a {EXAMPLE_TARGET_MARGIN_PCT}% target margin, which you set in Settings.
+        </p>
+      </div>
+    </AppFrame>
+  );
+}
+
 /**
  * A Profit Insight card, matching the real Finding / Evidence / Impact /
  * Action / Confidence structure that src/lib/intelligence.ts produces and

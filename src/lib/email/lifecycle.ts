@@ -112,6 +112,36 @@ export async function sendAnalysisReady(
   });
 }
 
+/** Two days after the first analysis. One per account, ever. */
+export async function sendTrialCheckIn(userId: string): Promise<SendEmailResult> {
+  const contact = await contactFor(userId);
+  if (!contact) return { ok: false, error: "User not found" };
+  const email = T.trialCheckInEmail(contact.name);
+
+  return sendLifecycleEmail({
+    userId,
+    emailType: "trial_checkin",
+    dedupeKey: `trial_checkin:${userId}`,
+    to: contact.email,
+    ...email,
+  });
+}
+
+/** About a week after the first analysis. One per account, ever. */
+export async function sendReportGuide(userId: string): Promise<SendEmailResult> {
+  const contact = await contactFor(userId);
+  if (!contact) return { ok: false, error: "User not found" };
+  const email = T.reportGuideEmail(contact.name);
+
+  return sendLifecycleEmail({
+    userId,
+    emailType: "report_guide",
+    dedupeKey: `report_guide:${userId}`,
+    to: contact.email,
+    ...email,
+  });
+}
+
 /**
  * The day-12 email. Which version goes out depends on whether the account is
  * eligible for the feedback extension - an unactivated account gets the

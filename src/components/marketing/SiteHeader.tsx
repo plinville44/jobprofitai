@@ -15,6 +15,7 @@ import { LogoLink } from "./Logo";
 
 const NAV = [
   { href: "/how-it-works", label: "How It Works" },
+  { href: "/demo", label: "Demo" },
   { href: "/pricing", label: "Pricing" },
   { href: "/security", label: "Security" },
   { href: "/contact", label: "Contact" },

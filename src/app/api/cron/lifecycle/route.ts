@@ -6,9 +6,12 @@ import { computeTrialState, expireFinishedTrials } from "@/lib/trial";
 import { purgeExpiredPasswordResets } from "@/lib/passwordReset";
 import { purgeExpiredEmailVerifications } from "@/lib/emailVerification";
 import { qualifyDueReferrals, retryPendingRewards } from "@/lib/referrals";
+import { dueTrialNudges } from "@/lib/trialNudges";
 import {
   sendReferralRewardEarned,
+  sendReportGuide,
   sendSetupReminder,
+  sendTrialCheckIn,
   sendTestimonialRequest,
   sendTrialEndingSoon,
   sendTrialExpired,
@@ -48,6 +51,8 @@ const TESTIMONIAL_AFTER_PAID_DAYS = 21;
 interface Counters {
   trialsExpired: number;
   setupReminders: number;
+  checkInEmails: number;
+  reportGuideEmails: number;
   endingSoonEmails: number;
   expiredEmails: number;
   referralsQualified: number;
@@ -69,6 +74,8 @@ export async function GET(req: NextRequest) {
   const counters: Counters = {
     trialsExpired: 0,
     setupReminders: 0,
+    checkInEmails: 0,
+    reportGuideEmails: 0,
     endingSoonEmails: 0,
     expiredEmails: 0,
     referralsQualified: 0,
@@ -138,7 +145,20 @@ async function processTrialEmails(counters: Counters, now: Date): Promise<void> 
         if (result.ok && !result.skipped) counters.setupReminders++;
       }
 
-      // 2. Trial ending soon (from day 12). Activated and eligible accounts
+      // 2. Mid-trial check-in and "how to read your numbers" guide, timed
+      //    from the first analysis (see lib/trialNudges.ts). These stand in
+      //    for the sales call the funnel deliberately does not have.
+      const nudges = dueTrialNudges(state, sub.firstAnalysisAt, now);
+      if (nudges.checkIn) {
+        const result = await sendTrialCheckIn(sub.userId);
+        if (result.ok && !result.skipped) counters.checkInEmails++;
+      }
+      if (nudges.guide) {
+        const result = await sendReportGuide(sub.userId);
+        if (result.ok && !result.skipped) counters.reportGuideEmails++;
+      }
+
+      // 3. Trial ending soon (from day 12). Activated and eligible accounts
       //    get the feedback-extension offer; everyone else gets the plain
       //    "choose a plan" version.
       if (
@@ -157,7 +177,7 @@ async function processTrialEmails(counters: Counters, now: Date): Promise<void> 
         if (result.ok && !result.skipped) counters.endingSoonEmails++;
       }
 
-      // 3. Trial has ended. Keyed to the expiry date, so an extended trial
+      // 4. Trial has ended. Keyed to the expiry date, so an extended trial
       //    correctly gets one of these for its new date too.
       if (state.expired && state.trialEndsAt) {
         const result = await sendTrialExpired(sub.userId, state.trialEndsAt);
