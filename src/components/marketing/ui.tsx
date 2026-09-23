@@ -92,7 +92,7 @@ export function SectionHeading({
 type ButtonProps = {
   href: string;
   children: ReactNode;
-  variant?: "primary" | "secondary" | "ghost";
+  variant?: "primary" | "secondary" | "ghost" | "onDark";
   className?: string;
   size?: "md" | "lg";
 };
@@ -114,6 +114,11 @@ export function ButtonLink({
     primary: "bg-jp-blue text-white hover:bg-jp-navy",
     secondary: "border border-jp-line bg-white text-jp-ink hover:border-jp-blue hover:text-jp-blue",
     ghost: "text-jp-ink hover:text-jp-blue",
+    // Outline button for dark bands. Its own variant, not "secondary" plus
+    // overrides: secondary's bg-white and text-jp-ink won over the
+    // bg-transparent and text-white passed in className, so on the dark
+    // closing band the button rendered as a blank white box.
+    onDark: "border border-white/25 bg-transparent text-white hover:border-white",
   } as const;
 
   return (
@@ -245,8 +250,8 @@ export function FinalCta({
           <ButtonLink
             href="/pricing"
             size="lg"
-            variant="secondary"
-            className="w-full border-white/25 bg-transparent text-white hover:border-white hover:text-white sm:w-auto"
+            variant="onDark"
+            className="w-full sm:w-auto"
           >
             See Pricing
           </ButtonLink>

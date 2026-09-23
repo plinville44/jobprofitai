@@ -291,8 +291,8 @@ export default function PartnersPage() {
             <ButtonLink
               href="/how-it-works"
               size="lg"
-              variant="secondary"
-              className="w-full border-white/25 bg-transparent text-white hover:border-white hover:text-white sm:w-auto"
+              variant="onDark"
+              className="w-full sm:w-auto"
             >
               See how the product works
             </ButtonLink>
