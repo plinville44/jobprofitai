@@ -6,6 +6,9 @@ import { useRouter } from "next/navigation";
 export default function DashboardActions({ connectionId }: { connectionId: string }) {
   const router = useRouter();
   const [status, setStatus] = useState<string | null>(null);
+  // Shown when this week's brief was already emailed: the preview is not
+  // saved over it, so it is displayed here instead of on the page below.
+  const [preview, setPreview] = useState<string | null>(null);
 
   // Shared fetch wrapper: guarantees `status` always ends up with a real
   // message. Without this, a network error, a timeout, or the server
@@ -33,7 +36,7 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
       if (res.ok && data) {
         setStatus(onSuccess(data));
       } else {
-        setStatus(`Failed: ${data?.error ?? `Server returned status ${res.status}. Check Vercel logs.`}`);
+        setStatus(`Failed: ${data?.error ?? `Server returned status ${res.status}. Please try again, or email support@jobprofitai.com.`}`);
       }
     } catch (err) {
       setStatus(`Failed: ${err instanceof Error ? err.message : "Network error - please try again."}`);
@@ -42,6 +45,7 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
   }
 
   function sync() {
+    setPreview(null);
     return callApi(
       "/api/quickbooks/sync",
       "Syncing with QuickBooks...",
@@ -63,7 +67,14 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
     return callApi(
       "/api/digest/generate",
       "Generating this week's Weekly Profit Brief...",
-      () => "Your Weekly Profit Brief is below. It's emailed on the schedule you set in Settings."
+      (data) => {
+        if (data.preview) {
+          setPreview(data.narrative ?? null);
+          return "This week's brief has already been emailed, so this preview isn't saved over it. Here it is with today's numbers:";
+        }
+        setPreview(null);
+        return "Your Weekly Profit Brief is below. It's emailed on the schedule you set in Settings.";
+      }
     );
   }
 
@@ -82,6 +93,11 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
         Preview this week&apos;s brief
       </button>
       {status && <span className="text-sm text-gray-500">{status}</span>}
+      {preview && (
+        <pre className="mt-2 w-full whitespace-pre-wrap rounded-lg border border-gray-200 bg-gray-50 p-4 font-sans text-sm text-navy">
+          {preview}
+        </pre>
+      )}
     </div>
   );
 }

@@ -52,6 +52,21 @@ const FAQ_ITEMS = [
     ),
   },
   {
+    q: "QuickBooks already shows project profitability. What does this add?",
+    a: (
+      <>
+        QuickBooks Online Plus shows income and cost for a project when you go and open it.
+        JobProfitAI works across every job and comes to you: it compares each job to the margin you
+        want, flags the ones drifting, emails you when a job goes over its estimate or gets ahead of
+        its billing, builds the WIP (over and under billing) report your bank or bonding company
+        asks for, and sends a weekly brief of what changed. It also shows what&rsquo;s missing from
+        your books before you trust a number, and any job can be checked against QuickBooks&rsquo;
+        own figures in one click. QuickBooks Online Advanced has project tools that cover some of
+        this; JobProfitAI is built for contractors on Plus who want it without moving to Advanced.
+      </>
+    ),
+  },
+  {
     q: "How does JobProfitAI connect to QuickBooks?",
     a: (
       <>
@@ -70,11 +85,13 @@ const FAQ_ITEMS = [
     q: "Do I need to change the way I use QuickBooks?",
     a: (
       <>
-        No, but JobProfitAI does need your job costs tracked as QuickBooks{" "}
-        <strong>Projects</strong> (sub-customers). If you track job cost by Class instead, it
-        won&rsquo;t find your jobs yet. Classes are on the roadmap, not in the product. Beyond that,
-        you will get more out of it if costs are consistently tagged to jobs, and the built-in Data
-        Health page tells you exactly where that&rsquo;s incomplete rather than quietly guessing.
+        No. JobProfitAI reads your jobs from QuickBooks <strong>Projects</strong>{" "}
+        (sub-customers), or, if you make one customer per job, from your customers. It works out
+        which on the first sync, and you can switch in Settings. If you track job cost by Class
+        instead, it won&rsquo;t find your jobs yet. Classes are on the roadmap, not in the product.
+        Beyond that, you will get more out of it if costs are consistently tagged to jobs, and the
+        built-in Data Health page tells you exactly where that&rsquo;s incomplete rather than
+        quietly guessing.
       </>
     ),
   },
@@ -111,10 +128,10 @@ const FAQ_ITEMS = [
         <Link href="/partners" className="font-medium text-jp-blue hover:underline">
           partner program
         </Link>{" "}
-        for firms that work with several. To be clear about how that works today: an account belongs
-        to one person, there is no way to share it, and a QuickBooks company can only be connected
-        to one JobProfitAI account at a time. If you want your accountant to see your numbers, add
-        their email address to the recipients for your Weekly Profit Brief in Settings.
+        for firms that work with several. Give your accountant or bookkeeper their own login from
+        Settings: Profit Intelligence includes 3 team logins and Pro includes 10. They see the same
+        jobs and reports you do; billing and who has access stay with you. A QuickBooks company can
+        be connected to one JobProfitAI account at a time.
       </>
     ),
   },
@@ -360,7 +377,7 @@ export default function HomePage() {
             <ul className="space-y-3 text-[15px] text-jp-slate">
               {[
                 "Sent on the day and hour you pick, in your timezone",
-                "Goes to you, your PM, your bookkeeper, as many recipients as you want",
+                "Goes to up to 10 people: you, your PM, your bookkeeper",
                 "Leads with the most consequential thing, not an even summary of everything",
                 "If your data is too incomplete to say anything reliable, it tells you that instead of guessing",
               ].map((item) => (

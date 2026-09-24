@@ -221,6 +221,55 @@ export function formatDay(date: Date, timeZone: string = DEFAULT_TIME_ZONE): str
  * their password is unchanged. That sentence is what stops a reset email
  * triggered by a mistyped address from reading like a breach notification.
  */
+/**
+ * Sent to the owner of a QuickBooks company when someone tries to connect
+ * that company to a different JobProfitAI account. The attempt was refused;
+ * this says so, and how to move the company if it was meant to happen.
+ */
+export function connectAttemptBlockedEmail(companyName: string): RenderedEmail {
+  return buildEmail(`Someone tried to connect ${companyName} to another JobProfitAI account`, {
+    preheader: "The connection was refused. Nothing changed in your account.",
+    heading: "A connection attempt was refused",
+    body: [
+      `Someone signed in to QuickBooks and tried to connect ${companyName} to a different JobProfitAI account. It's already connected to yours, so we refused, and nothing changed.`,
+      "If that was you or someone on your team moving the company to another account, disconnect it from Settings in this account first, then connect it from the other one.",
+      "If you don't recognise it, no action is needed. Anyone who can do this has sign-in access to your QuickBooks company, so it may be worth checking who does in QuickBooks under Settings, Manage users.",
+    ],
+    cta: { label: "Open Settings", url: appUrl("/dashboard/settings") },
+  });
+}
+
+/**
+ * An invitation to join someone's JobProfitAI account as a team member.
+ * Says who sent it and what it gives access to, because an unexpected
+ * "you've been invited" email is otherwise indistinguishable from phishing.
+ */
+export function teamInviteEmail(input: {
+  inviterName: string | null;
+  inviterEmail: string;
+  companyName: string | null;
+  acceptUrl: string;
+  expiryDays: number;
+}): RenderedEmail {
+  const who = input.inviterName ? `${input.inviterName} (${input.inviterEmail})` : input.inviterEmail;
+  const what = input.companyName ? `job profit numbers for ${input.companyName}` : "their job profit numbers";
+  // A fixed subject: the inviter's name is typed by them, and a subject line
+  // of their choosing from our domain would be a gift to phishers.
+  return buildEmail("You're invited to a JobProfitAI account", {
+    preheader: "Your own login to see which jobs make money.",
+    heading: "You're invited to JobProfitAI",
+    body: [
+      `${who} has invited you to their JobProfitAI account, where you can see ${what}: profit by job, estimate against actual, work in progress and the Weekly Profit Brief.`,
+      "You get your own login. Nothing is shared except what's in their account, and they can remove your access at any time.",
+      `This invitation works once and expires in ${input.expiryDays} days.`,
+    ],
+    cta: { label: "Accept the invitation", url: input.acceptUrl },
+    footnote:
+      "If you weren't expecting this, you can ignore it and nothing will happen. If the button doesn't work, copy and paste this address into your browser: " +
+      input.acceptUrl,
+  });
+}
+
 export function passwordResetEmail(resetUrl: string, expiryMinutes: number): RenderedEmail {
   return buildEmail("Reset your JobProfitAI password", {
     preheader: "A link to choose a new password. It expires in an hour.",
@@ -263,6 +312,22 @@ export function verifyEmailEmail(verifyUrl: string, name: string | null, expiryH
  * message that lets a customer notice a reset they did not perform, which is
  * the only way they would ever find out.
  */
+/**
+ * Sent when an Intuit account is linked to a JobProfitAI login, so a link
+ * the owner didn't make is noticed.
+ */
+export function intuitLinkedEmail(): RenderedEmail {
+  return buildEmail("Sign in with Intuit was turned on for your JobProfitAI login", {
+    preheader: "An Intuit account can now sign in to your JobProfitAI login.",
+    heading: "Sign in with Intuit is on",
+    body: [
+      "An Intuit account was just linked to your JobProfitAI login, so it can now sign in without your password. If that was you, there is nothing to do.",
+      "If it wasn't you, reset your password straight away. That signs everyone out and unlinks the Intuit account. You can also unlink it in Settings under Sign-in security.",
+    ],
+    cta: { label: "Open Settings", url: appUrl("/dashboard/settings") },
+  });
+}
+
 export function passwordChangedEmail(): RenderedEmail {
   return buildEmail("Your JobProfitAI password was changed", {
     preheader: "Confirming a password change on your account.",

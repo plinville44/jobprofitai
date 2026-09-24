@@ -63,7 +63,7 @@ export function SupportEmail() {
 }
 
 /** Shown on both legal pages. Change it whenever either document changes. */
-export const LEGAL_LAST_UPDATED = "September 22, 2026";
+export const LEGAL_LAST_UPDATED = "September 24, 2026";
 
 /** The postal address, formatted for the Contact section of each legal page. */
 export function MailingAddress() {

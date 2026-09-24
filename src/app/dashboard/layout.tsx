@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { getSession } from "@/lib/auth";
+import { getAccount, getActiveConnection } from "@/lib/account";
+import CompanySwitcher from "@/components/dashboard/CompanySwitcher";
 import { isAdminUser } from "@/lib/entitlements";
 import { prisma } from "@/lib/prisma";
 import LogoutButton from "@/components/LogoutButton";
@@ -16,19 +17,20 @@ import ResendVerificationButton from "@/components/dashboard/ResendVerificationB
  * message rather than 404ing, per the "not a dead page" requirement.
  */
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const session = await getSession();
-  if (!session) redirect("/login");
+  const account = await getAccount();
+  if (!account) redirect("/login");
 
-  const [isAdmin, partner, user] = await Promise.all([
-    isAdminUser(session.userId),
+  const [isAdmin, partner, user, { connection: activeCompany, companies }] = await Promise.all([
+    isAdminUser(account.userId),
     prisma.partner.findUnique({
-      where: { userId: session.userId },
+      where: { userId: account.userId },
       select: { status: true },
     }),
     prisma.user.findUnique({
-      where: { id: session.userId },
+      where: { id: account.userId },
       select: { email: true, emailVerifiedAt: true },
     }),
+    getActiveConnection(account.ownerId),
   ]);
 
   return (
@@ -42,9 +44,10 @@ export default async function DashboardLayout({ children }: { children: React.Re
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <NavLink href="/dashboard">Dashboard</NavLink>
               <NavLink href="/dashboard/jobs">Jobs</NavLink>
+              <NavLink href="/dashboard/wip">WIP</NavLink>
               <NavLink href="/dashboard/data-health">Data Health</NavLink>
               <NavLink href="/dashboard/intelligence">Intelligence</NavLink>
-              <NavLink href="/dashboard/referrals">Refer</NavLink>
+              {account.role === "owner" ? <NavLink href="/dashboard/referrals">Refer</NavLink> : null}
               {/* Only surfaced once someone is actually in the partner
                   program - it's irrelevant clutter for a contractor. */}
               {partner ? <NavLink href="/dashboard/partner">Partner</NavLink> : null}
@@ -54,6 +57,12 @@ export default async function DashboardLayout({ children }: { children: React.Re
             </div>
           </div>
           <div className="flex items-center gap-4">
+            {companies.length > 1 && activeCompany ? (
+              <CompanySwitcher
+                companies={companies.map((c) => ({ id: c.id, name: c.companyName ?? "Unnamed company" }))}
+                activeId={activeCompany.id}
+              />
+            ) : null}
             <FeedbackModal />
             <LogoutButton />
           </div>
@@ -63,7 +72,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
       {/* Trial countdown / billing status. Rendered server-side from the
           same entitlement source the access checks use, so what the banner
           says and what the app actually allows can't disagree. */}
-      <TrialBanner userId={session.userId} />
+      <TrialBanner userId={account.ownerId} />
 
       {/* Shown on every dashboard page until the address is confirmed, and
           it says the one consequence that matters to the customer. */}

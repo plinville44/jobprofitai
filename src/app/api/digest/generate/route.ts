@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { startOfWeek } from "date-fns";
+import { localWeekStarting, isValidTimeZone } from "@/lib/schedule";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { getAccount } from "@/lib/account";
 import { tryMarkFirstAnalysis } from "@/lib/trial";
 import { tryAnnounceAnalysisReady } from "@/lib/email/lifecycle";
 import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
@@ -16,16 +16,19 @@ import { generateWeeklyDigestForConnection } from "@/lib/digest";
  * exists so a customer can see the current week's brief on demand without
  * waiting for, or triggering, their scheduled send.
  */
+// A sync-free brief: metrics plus one AI call.
+export const maxDuration = 120;
+
 export async function POST(req: NextRequest) {
   try {
-    const session = await getSession();
-    if (!session) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const account = await getAccount();
+    if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
     // Entitlement enforced server-side. Hiding the button in the browser is
     // not a control - this route generates paid value (a QuickBooks sync, an
     // Anthropic call) and must refuse a lapsed account regardless of what
     // the client sends.
-    const entitlements = await getEntitlements(session.userId);
+    const entitlements = await getEntitlements(account.ownerId);
     if (!entitlements.active) {
       return NextResponse.json(
         { error: inactiveMessage(entitlements), code: "entitlement_required" },
@@ -37,17 +40,33 @@ export async function POST(req: NextRequest) {
     const connection = await prisma.quickBooksConnection.findUnique({
       where: { id: connectionId },
     });
-    if (!connection || connection.userId !== session.userId) {
+    if (!connection || connection.userId !== account.ownerId) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
 
-    const weekStarting = startOfWeek(new Date(), { weekStartsOn: 1 }); // Monday
+    // This week in the company's own time zone, the same key the weekly
+    // send uses (see src/lib/schedule.ts).
+    const timeZone = isValidTimeZone(connection.emailTimezone) ? connection.emailTimezone : "America/New_York";
+    const weekStarting = localWeekStarting(new Date(), timeZone);
 
     const { narrative, kind, metrics } = await generateWeeklyDigestForConnection(
       connection.id,
       weekStarting,
       connection.companyName ?? "your company"
     );
+
+    // Once this week's brief has been emailed, a preview is shown but not
+    // saved over it. Next week's "What changed" compares against what was
+    // stored for this week; overwriting it with a Friday preview made that
+    // section skip everything between Monday's email and the preview.
+    const alreadyEmailed = await prisma.weeklyDigest.findUnique({
+      where: { connectionId_weekStarting: { connectionId: connection.id, weekStarting } },
+      select: { id: true, emailedAt: true },
+    });
+    if (alreadyEmailed?.emailedAt) {
+      await tryMarkFirstAnalysis(account.ownerId);
+      return NextResponse.json({ id: alreadyEmailed.id, narrative, kind, preview: true });
+    }
 
     const digest = await prisma.weeklyDigest.upsert({
       where: { connectionId_weekStarting: { connectionId: connection.id, weekStarting } },
@@ -68,10 +87,10 @@ export async function POST(req: NextRequest) {
     // Completes trial activation the first time a customer actually gets
     // an analysis out of the product. Best-effort - a growth metric must
     // never fail the customer's real request.
-    await tryMarkFirstAnalysis(session.userId);
+    await tryMarkFirstAnalysis(account.ownerId);
     // "Your numbers are in, here's where to start." Sends once ever, guarded
     // by the EmailEvent dedupe key rather than by a check here.
-    await tryAnnounceAnalysisReady(session.userId, connection.companyName);
+    await tryAnnounceAnalysisReady(account.ownerId, connection.companyName);
 
     return NextResponse.json({ id: digest.id, narrative, kind, metrics });
   } catch (err) {

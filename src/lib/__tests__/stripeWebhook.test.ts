@@ -436,3 +436,56 @@ describe("refunds", () => {
     expect(calls.disqualified).toEqual([]);
   });
 });
+
+describe("out-of-order delivery", () => {
+  const at = (secondsAgo: number) => Math.floor(Date.now() / 1000) - secondsAgo;
+  const withCreated = (event: any, created: number, id: string, type?: string) => ({ ...event, id, created, ...(type ? { type } : {}) });
+
+  it("ignores an event older than the state already applied", async () => {
+    await seedAccount();
+    await processStripeEvent(withCreated(subscriptionEvent({ status: "active" }), at(10), "evt_new") as never);
+    await processStripeEvent(withCreated(subscriptionEvent({ status: "past_due" }), at(60), "evt_old") as never);
+    const sub = await fake.client.subscription.findUnique({ where: { userId: "u1" } });
+    expect(sub.status).toBe("active");
+  });
+
+  it("never lets a late 'created, incomplete' undo an active subscription", async () => {
+    await seedAccount();
+    const t = at(5);
+    await processStripeEvent(withCreated(subscriptionEvent({ status: "active" }), t, "evt_updated") as never);
+    await processStripeEvent(
+      withCreated(subscriptionEvent({ status: "incomplete" }), t, "evt_created", "customer.subscription.created") as never
+    );
+    const sub = await fake.client.subscription.findUnique({ where: { userId: "u1" } });
+    expect(sub.status).toBe("active");
+  });
+
+  it("never revives a canceled subscription from a late update", async () => {
+    await seedAccount({ status: "active" });
+    await processStripeEvent({
+      id: "evt_del_late",
+      type: "customer.subscription.deleted",
+      created: at(30),
+      data: { object: { id: "sub_abc", customer: "cus_1", status: "canceled", metadata: { jobprofitaiUserId: "u1" } } },
+    } as never);
+    const emailsBefore = calls.emails.filter((e) => e === "subscription_confirmed").length;
+    // A retried update from before the cancel, and one stamped later.
+    await processStripeEvent(withCreated(subscriptionEvent({ status: "active" }), at(60), "evt_retry") as never);
+    await processStripeEvent(withCreated(subscriptionEvent({ status: "active" }), at(1), "evt_late") as never);
+    const sub = await fake.client.subscription.findUnique({ where: { userId: "u1" } });
+    expect(sub.status).toBe("canceled");
+    expect(calls.emails.filter((e) => e === "subscription_confirmed").length).toBe(emailsBefore);
+  });
+
+  it("ignores a deleted event for a subscription that isn't the one on file", async () => {
+    await seedAccount({ status: "active", stripeSubscriptionId: "sub_live" });
+    await processStripeEvent({
+      id: "evt_del_other",
+      type: "customer.subscription.deleted",
+      created: at(1),
+      data: { object: { id: "sub_other", customer: "cus_1", status: "canceled", metadata: { jobprofitaiUserId: "u1" } } },
+    } as never);
+    const sub = await fake.client.subscription.findUnique({ where: { userId: "u1" } });
+    expect(sub.status).toBe("active");
+  });
+});

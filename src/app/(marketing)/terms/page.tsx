@@ -108,8 +108,14 @@ export default function TermsPage() {
             been accessed without your permission.
           </li>
           <li>
-            An account is for the business that holds it. Do not share login credentials with
-            people outside your business, and do not create accounts to get additional free trials.
+            An account is for the business that holds it. Give people their own login with team
+            invitations rather than sharing yours, and do not create accounts to get additional
+            free trials. Each QuickBooks company can have one free trial.
+          </li>
+          <li>
+            If you invite team members, you are responsible for their use of the Service under your
+            account and for making sure they may see the data in it. You can remove anyone at any
+            time. Team members can&rsquo;t manage billing, the team or the account.
           </li>
         </LegalList>
       </LegalSection>

@@ -82,8 +82,12 @@ export default function SecurityPage() {
               <p>
                 Each connection attempt carries a short-lived, cryptographically signed state token
                 tied to your logged-in session and valid for ten minutes. When Intuit redirects back,
-                that signature is verified before anything is stored. A callback with a missing,
-                expired or altered state token is rejected rather than trusted.
+                that signature is verified, and the callback is only accepted in the same signed-in
+                browser that started it, before anything is stored. A callback with a missing,
+                expired or altered state token, or one arriving in someone else&rsquo;s browser, is
+                rejected rather than trusted. A QuickBooks company that is already connected to
+                another JobProfitAI account is never moved: the attempt is refused and that
+                account&rsquo;s owner is told.
               </p>
             </Item>
 
@@ -110,8 +114,9 @@ export default function SecurityPage() {
                 not yield usable credentials.
               </p>
               <p>
-                Because encrypted values can&rsquo;t be searched, we also store a one-way SHA-256
-                hash of the company ID purely as a lookup key. The plain company ID is never stored.
+                Because encrypted values can&rsquo;t be searched, we also store a one-way keyed hash
+                (HMAC-SHA-256, with a key held only in the server environment) of the company ID
+                purely as a lookup key. The plain company ID is never stored.
               </p>
             </Item>
 
@@ -119,9 +124,10 @@ export default function SecurityPage() {
               <p>
                 Disconnecting from Settings calls Intuit&rsquo;s token revocation endpoint to
                 invalidate the connection on Intuit&rsquo;s side, then marks the connection inactive
-                here. You can also revoke access from within QuickBooks itself at any time; if you
-                do, JobProfitAI detects it on the next sync and shows a Reconnect QuickBooks button
-                rather than silently retrying.
+                here. You can also disconnect from within QuickBooks itself at any time. Intuit then
+                sends you to a page here that checks with Intuit and marks the company disconnected
+                straight away; if you don&rsquo;t land there, the next nightly sync notices and
+                shows a Reconnect button rather than silently retrying.
               </p>
             </Item>
           </div>
@@ -136,20 +142,29 @@ export default function SecurityPage() {
             <Item title="What is stored">
               <p>
                 To produce profitability analysis, JobProfitAI stores a copy of the job-related data
-                it reads from QuickBooks: jobs (QuickBooks Projects) and the customer each belongs to,
-                cost line items from bills,
-                expenses, purchases and time activities, invoice totals and status, estimate values,
-                and the profitability figures calculated from them. It also stores each Weekly
-                Profit Brief and the profit insights generated for you, and your own settings such as
-                target margin and email recipients.
+                it reads from QuickBooks: jobs (QuickBooks Projects, or customers if you make one
+                customer per job) and the customer each belongs to; cost line items from bills,
+                checks, expenses, vendor credits and journal entries tagged to a job, with the
+                account or product name; time entries as hours and a labor cost; invoice, sales
+                receipt, credit memo and refund totals and status; estimate values; and the
+                profitability figures calculated from them. It also stores each Weekly Profit Brief,
+                the profit alerts sent, the profit insights generated for you, and your own settings
+                such as target margin and email recipients.
+              </p>
+              <p>
+                About labor: a time entry&rsquo;s labor cost is its hours times the pay rate
+                QuickBooks holds for that person. The pay rate itself isn&rsquo;t stored, but it can
+                be worked out from a single entry, so anyone you give a login to can see what an
+                hour of each person&rsquo;s time costs. If that matters to you, turn off labor from
+                timesheets in Settings.
               </p>
             </Item>
 
             <Item title="What is not stored">
               <p>
                 We do not store your QuickBooks password, your bank account details, your customers&rsquo;
-                payment information, payroll records, or document attachments from your QuickBooks
-                file. We do not store credit card numbers. See the billing section below.
+                payment information, payroll records (paychecks, tax details), or document
+                attachments from your QuickBooks file. We do not store credit card numbers. See the billing section below.
               </p>
             </Item>
 
@@ -159,6 +174,12 @@ export default function SecurityPage() {
                 that touches financial data verifies, on the server, that the signed-in account owns
                 the connection or job being requested, a request for a record belonging to
                 another account returns not-found, regardless of what the browser asks for.
+              </p>
+              <p>
+                If you invite team members, each has their own login and sees your account&rsquo;s
+                companies and reports under your plan, and nothing else. Only you can manage
+                billing, invite or remove people, disconnect a company or delete the account.
+                Removing someone signs them out everywhere at once.
               </p>
               <p>
                 Being an accountant, a referral partner, or a referrer confers no access to any
@@ -180,7 +201,8 @@ export default function SecurityPage() {
                 You can permanently delete your account from Settings. Doing so revokes any live
                 QuickBooks connection with Intuit, cancels any active subscription, and deletes your
                 account together with the jobs, cost data, invoices, weekly briefs and insights
-                derived from it. Deletion is irreversible and requires re-entering your password.
+                derived from it. Any team members lose access at the same moment. Deletion is
+                irreversible and requires re-entering your password.
               </p>
               <p>
                 Two kinds of record outlive a deleted account. If an accounting partner referred you,
@@ -208,6 +230,18 @@ export default function SecurityPage() {
                 form. Sessions use a signed token in an HTTP-only cookie, which browser JavaScript
                 cannot read, marked Secure in production and scoped with SameSite protection against
                 cross-site request forgery.
+              </p>
+              <p>
+                Repeated wrong passwords lock sign-in for that address for 15 minutes (the records
+                behind this hold keyed hashes of the address and network address, never the
+                address itself, and are deleted after a day). &ldquo;Sign out of all devices&rdquo;
+                in Settings ends every session at once, and so does resetting your password.
+              </p>
+              <p>
+                If you use Sign in with Intuit, your account is matched on Intuit&rsquo;s permanent
+                account ID, never on the email address. Intuit must have verified your email, and
+                an Intuit sign-in is only linked to an existing JobProfitAI login after that
+                login&rsquo;s password has been entered.
               </p>
             </Item>
 
@@ -246,8 +280,9 @@ export default function SecurityPage() {
               <p>
                 Transactional email, meaning your Weekly Profit Brief and trial and billing notices,
                 is sent through Resend from a verified JobProfitAI sending domain. Emails go only to
-                the address on your account and the recipients you configure, and the Weekly Profit
-                Brief isn&rsquo;t sent until you&rsquo;ve confirmed your own address.
+                the address on your account and the recipients you configure (up to 10), and the
+                Weekly Profit Brief and profit alerts aren&rsquo;t sent until you&rsquo;ve confirmed
+                your own address. Every recipient can unsubscribe with one click.
               </p>
             </Item>
 

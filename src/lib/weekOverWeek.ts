@@ -290,7 +290,12 @@ function marginPhrase(before: number | null, after: number | null): string | nul
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 function renderJobLine(c: JobChange): string {
-  if (c.removed) return `- ${c.jobName}: no longer in your synced jobs.`;
+  return `- ${c.jobName}: ${jobChangeSentence(c)}`;
+}
+
+/** What happened to one job since the last brief, without the job's name. */
+export function jobChangeSentence(c: JobChange): string {
+  if (c.removed) return "no longer in your synced jobs.";
 
   const parts: string[] = [];
 
@@ -327,7 +332,7 @@ function renderJobLine(c: JobChange): string {
     parts.push(`Finished at ${formatPct(c.marginAfter)} margin.`);
   }
 
-  return `- ${c.jobName}: ${parts.join(" ")}`;
+  return parts.join(" ");
 }
 
 /**

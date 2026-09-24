@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { getAccount } from "@/lib/account";
 import { JOB_TYPE_OPTIONS } from "@/lib/jobTypes";
 
 /**
@@ -22,8 +22,8 @@ const MAX_JOBS_PER_REQUEST = 500;
 
 export async function PATCH(req: NextRequest) {
   try {
-    const session = await getSession();
-    if (!session) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const account = await getAccount();
+    if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
     const body = await req.json().catch(() => ({}));
     const jobIds: unknown = body?.jobIds;
@@ -72,7 +72,7 @@ export async function PATCH(req: NextRequest) {
     const result = await prisma.job.updateMany({
       where: {
         id: { in: jobIds },
-        connection: { userId: session.userId, disconnectedAt: null },
+        connection: { userId: account.ownerId, disconnectedAt: null },
       },
       data,
     });

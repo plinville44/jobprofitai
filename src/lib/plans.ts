@@ -28,6 +28,8 @@ export interface PlanLimits {
   maxConnections: number;
   /** Active (open) jobs covered by the plan. `null` = unlimited. */
   maxActiveJobs: number | null;
+  /** Team logins the owner can invite, not counting the owner. */
+  maxTeamMembers: number;
 }
 
 export interface PlanDefinition {
@@ -62,18 +64,27 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     bestFor:
       "Contractors who want ongoing visibility into where they're making and losing money.",
     mostPopular: true,
-    limits: { maxConnections: 1, maxActiveJobs: 100 },
+    limits: { maxConnections: 1, maxActiveJobs: 100, maxTeamMembers: 3 },
     marketingFeatures: [
       // Connection + scale
       "1 QuickBooks Online company",
       "Up to 100 active jobs",
+      // src/lib/team.ts
+      "3 team logins for your office manager, PMs or bookkeeper",
       // Core profitability - src/lib/profitability.ts computeJobFinancials/computeDashboardTotals
       "Job profitability dashboard",
       "Revenue, cost, gross profit and margin by job",
+      // TimeActivity CostRate - src/lib/qboNormalize.ts timeActivityCost
+      "Labor at each person's pay rate from QuickBooks timesheets",
       "Cost breakdown by category (labor, materials, subs, equipment)",
       "Estimate vs. actual comparison",
-      // Margin leak detection - computeNeedsAttentionForJob + computeProfitLeakage
-      "Margin leak detection and cost-overrun alerts",
+      // src/lib/qboCheck.ts + /api/jobs/[jobId]/quickbooks-check
+      "Check any job against QuickBooks' own numbers in one click",
+      // computeWip + /dashboard/wip + /api/wip/export
+      "WIP report: over and under billing by job, with CSV export",
+      // Margin leak detection - computeNeedsAttentionForJob + computeProfitLeakage;
+      // emails from src/lib/alerts.ts via the nightly sync
+      "Margin leak detection, with email alerts when a job goes over its estimate or gets ahead of its billing",
       "Jobs-below-target-margin tracking",
       "Profit leakage breakdown per job",
       // Trends - getMarginTrend
@@ -98,13 +109,15 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     bestFor:
       "Larger or growing contractors who need more scale and forward-looking analysis.",
     mostPopular: false,
-    limits: { maxConnections: 3, maxActiveJobs: null },
+    limits: { maxConnections: 3, maxActiveJobs: null, maxTeamMembers: 10 },
     marketingFeatures: [
       "Everything in Profit Intelligence",
       "Up to 3 QuickBooks Online companies",
       "Unlimited active jobs",
-      // computeForecastAtCompletion - real, and gated to this tier today
-      "Forecast at completion on in-progress jobs",
+      "10 team logins",
+      // computeForecastAtCompletion - real, and gated to this tier today;
+      // forecast_below_target alerts come with it
+      "Forecast at completion on in-progress jobs, with an alert when one heads below target",
       // computeProfitOpportunities - real cross-job pattern rollups
       "Cross-job benchmarking and pattern analysis",
       "Company-wide profit opportunity findings",
@@ -130,7 +143,7 @@ export function isPlanId(value: unknown): value is PlanId {
  */
 export function limitsForStoredPlan(plan: string): PlanLimits {
   if (isPlanId(plan)) return PLANS[plan].limits;
-  return { maxConnections: 1, maxActiveJobs: 100 };
+  return { maxConnections: 1, maxActiveJobs: 100, maxTeamMembers: 3 };
 }
 
 /**

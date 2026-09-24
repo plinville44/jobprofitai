@@ -1,17 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
-import { prisma } from "@/lib/prisma";
-import {
-  exchangeCodeForTokens,
-  detectCostTrackingMode,
-  qboCompanyInfo,
-} from "@/lib/quickbooks";
-import { encryptToken, hashRealmId } from "@/lib/crypto";
-import { tryMarkQuickBooksConnected } from "@/lib/trial";
+import { getSession } from "@/lib/auth";
+import { accountFor, ACTIVE_COMPANY_COOKIE } from "@/lib/account";
+import { exchangeCodeForTokens } from "@/lib/quickbooks";
+import { attachCompany } from "@/lib/connectCompany";
+import { handleIntuitFlow } from "@/lib/intuitSignIn";
+
+// Token exchange, company lookups and a revoke can all happen here.
+export const maxDuration = 60;
+
+const appUrl = (path: string) => new URL(path, process.env.APP_URL);
 
 /**
  * GET /api/quickbooks/callback?code=...&state=...&realmId=...
  * Intuit redirects here after the contractor approves (or denies) access.
+ *
+ * The state must come back to the same signed-in browser session that
+ * started the connection. Checking only the state's signature (as this
+ * route used to) let a link generated in one account, if someone else
+ * approved it on Intuit's screen within ten minutes, attach THEIR company
+ * to the first account.
  */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
@@ -21,149 +29,76 @@ export async function GET(req: NextRequest) {
   const error = url.searchParams.get("error");
 
   if (error) {
-    // Most commonly "access_denied" - the contractor backed out of the consent screen.
-    return NextResponse.redirect(
-      new URL(`/dashboard?qbo_error=${encodeURIComponent(error)}`, process.env.APP_URL)
-    );
+    // Most commonly "access_denied": the contractor backed out of the consent screen.
+    return NextResponse.redirect(appUrl(`/dashboard?qbo_error=${encodeURIComponent(error)}`));
+  }
+  if (!code || !state) {
+    return NextResponse.redirect(appUrl("/dashboard?qbo_error=missing_params"));
   }
 
-  if (!code || !state || !realmId) {
-    return NextResponse.redirect(
-      new URL("/dashboard?qbo_error=missing_params", process.env.APP_URL)
-    );
-  }
-
-  let userId: string;
-  let reconnectId: string | null = null;
+  let payload: Record<string, unknown>;
   try {
-    const { payload } = await jwtVerify(
-      state,
-      new TextEncoder().encode(process.env.AUTH_SECRET)
-    );
-    if (typeof payload.userId !== "string") throw new Error("bad state payload");
-    userId = payload.userId;
-    reconnectId = typeof payload.reconnect === "string" ? payload.reconnect : null;
+    ({ payload } = await jwtVerify(state, new TextEncoder().encode(process.env.AUTH_SECRET)));
   } catch {
-    // Expired/forged state token - refuse rather than trust the realmId blindly.
-    return NextResponse.redirect(
-      new URL("/dashboard?qbo_error=invalid_state", process.env.APP_URL)
-    );
+    // Expired or forged state: refuse rather than trust the realmId blindly.
+    return NextResponse.redirect(appUrl("/dashboard?qbo_error=invalid_state"));
   }
 
-  const tokens = await exchangeCodeForTokens(code);
-  const now = Date.now();
-  const realmIdHash = hashRealmId(realmId);
-
-  // The weekly digest goes to whoever connected QuickBooks, unless they say
-  // otherwise in Settings.
-  //
-  // emailEnabled defaults to true and emailRecipients defaults to an empty
-  // list, so without this a customer signs up, connects, and never receives
-  // the weekly brief that is most of what they are paying for. The cron
-  // records "skipped: no recipients configured" and nobody ever sees it.
-  // Defaulting to the account owner is both the obvious intent and the only
-  // address we can be sure belongs to them.
-  const owner = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
-  const defaultRecipients = owner?.email ? [owner.email] : [];
-
-  // If this QuickBooks company is already connected to a DIFFERENT
-  // JobProfitAI account, the digest recipients have to move with ownership.
-  //
-  // The update branch below reassigns userId to whoever just connected. It
-  // used to leave emailRecipients alone, so a bookkeeper who connected a
-  // client's company and later handed it over kept receiving that client's
-  // job-level revenue, costs and margins by email indefinitely. One
-  // contractor's financials in another company's inbox, with nothing in the
-  // product showing it was happening. Recipients are only reset when
-  // ownership actually changes hands; a plain reconnect by the same account
-  // keeps whatever they configured in Settings.
-  const priorConnection = await prisma.quickBooksConnection.findUnique({
-    where: { realmIdHash },
-    select: { userId: true },
-  });
-  const ownershipChanged = Boolean(priorConnection && priorConnection.userId !== userId);
-
-  const connection = await prisma.quickBooksConnection.upsert({
-    where: { realmIdHash },
-    create: {
-      userId,
-      realmId: encryptToken(realmId),
-      realmIdHash,
-      environment: process.env.QBO_ENVIRONMENT ?? "sandbox",
-      accessToken: encryptToken(tokens.access_token),
-      refreshToken: encryptToken(tokens.refresh_token),
-      accessTokenExpiresAt: new Date(now + tokens.expires_in * 1000),
-      refreshTokenExpiresAt: new Date(now + tokens.x_refresh_token_expires_in * 1000),
-      emailRecipients: defaultRecipients,
-    },
-    update: {
-      // Reassign ownership on reconnect too - if a different JobProfitAI
-      // account connects the same QuickBooks company, that account should
-      // become the owner rather than silently staying with whoever
-      // connected it first.
-      userId,
-      accessToken: encryptToken(tokens.access_token),
-      refreshToken: encryptToken(tokens.refresh_token),
-      accessTokenExpiresAt: new Date(now + tokens.expires_in * 1000),
-      refreshTokenExpiresAt: new Date(now + tokens.x_refresh_token_expires_in * 1000),
-      disconnectedAt: null,
-      // A fresh grant clears the error that sent them here, so the
-      // Reconnect prompt goes away without waiting for the next sync.
-      lastSyncStatus: null,
-      lastSyncError: null,
-      ...(ownershipChanged ? { emailRecipients: defaultRecipients } : {}),
-    },
-  });
-
-  // A reconnect that ended with a DIFFERENT company chosen on Intuit's
-  // screen replaces the dead connection rather than adding to it. The
-  // connect route skipped the plan's company limit for a reconnect, so this
-  // is what keeps a one-company plan at one company.
-  if (reconnectId && reconnectId !== connection.id) {
-    await prisma.quickBooksConnection.updateMany({
-      where: { id: reconnectId, userId, disconnectedAt: null },
-      data: { disconnectedAt: new Date() },
-    });
-  }
-
-  // Figure out up front whether this contractor tracks job cost via Projects
-  // or Classes - the sync job (see /api/quickbooks/sync) branches on this.
+  const flow = typeof payload.flow === "string" ? payload.flow : "connect";
   try {
-    const mode = await detectCostTrackingMode(realmId, tokens.access_token);
-    await prisma.quickBooksConnection.update({
-      where: { id: connection.id },
-      data: { costTrackingMode: mode },
-    });
-  } catch {
-    // Non-fatal - sync will re-detect on first run if this lookup failed.
-  }
-
-  // Pull the company's real display name. Without this the dashboard falls
-  // back to showing a decrypted realm ID, which is meaningless to a
-  // contractor looking at their own company. Non-fatal: a naming nicety must
-  // never fail an otherwise successful connection.
-  try {
-    const info = await qboCompanyInfo(realmId, tokens.access_token);
-    const companyName: string | undefined =
-      info?.CompanyInfo?.CompanyName ?? info?.CompanyInfo?.LegalName;
-    if (companyName) {
-      await prisma.quickBooksConnection.update({
-        where: { id: connection.id },
-        data: { companyName },
-      });
-    }
+    if (flow === "connect") return await handleConnect(payload, code, realmId);
+    // Sign in with Intuit and the QuickBooks App Store flow live in their
+    // own module; see src/lib/intuitSignIn.ts.
+    return await handleIntuitFlow(flow, payload, code, realmId);
   } catch (err) {
-    console.error(
-      "quickbooks/callback: could not fetch company name:",
-      err instanceof Error ? err.message : "Unknown error"
-    );
+    console.error("quickbooks/callback failed:", err instanceof Error ? err.message : "Unknown error");
+    return NextResponse.redirect(appUrl("/dashboard?qbo_error=connection_failed"));
+  }
+}
+
+async function handleConnect(payload: Record<string, unknown>, code: string, realmId: string | null) {
+  if (!realmId) return NextResponse.redirect(appUrl("/dashboard?qbo_error=missing_params"));
+  const actorId = typeof payload.actorId === "string" ? payload.actorId : null;
+  const ownerId = typeof payload.ownerId === "string" ? payload.ownerId : null;
+  const reconnectId = typeof payload.reconnect === "string" ? payload.reconnect : null;
+
+  const session = await getSession();
+  if (!actorId || !ownerId || !session || session.userId !== actorId) {
+    // Not the browser that started this. Nothing is exchanged or stored.
+    return NextResponse.redirect(appUrl("/login?next=/dashboard&notice=qbo_session"));
+  }
+  // Still a member of that account? (An owner could have removed them in
+  // the ten minutes since.)
+  const account = await accountFor(actorId);
+  if (account.ownerId !== ownerId) {
+    return NextResponse.redirect(appUrl("/dashboard?qbo_error=invalid_state"));
   }
 
-  // Half of trial "activation" (the other half is running a first analysis).
-  // Recorded server-side from the real product event, never from the client.
-  await tryMarkQuickBooksConnected(userId);
+  let tokens;
+  try {
+    tokens = await exchangeCodeForTokens(code);
+  } catch (err) {
+    console.error("quickbooks/callback: token exchange failed:", err instanceof Error ? err.message : "Unknown error");
+    return NextResponse.redirect(appUrl("/dashboard?qbo_error=token_exchange_failed"));
+  }
 
-  return NextResponse.redirect(
-    new URL("/dashboard?qbo_connected=1", process.env.APP_URL)
-  );
+  const result = await attachCompany({ ownerId, realmId, tokens, reconnectId });
+  if (!result.ok) {
+    const target =
+      result.code === "already_connected" || result.code === "verify_failed"
+        ? `/dashboard?qbo_error=${result.code}`
+        : `/dashboard/billing?limit=${result.code}`;
+    return NextResponse.redirect(appUrl(target));
+  }
+
+  const res = NextResponse.redirect(appUrl("/dashboard?qbo_connected=1"));
+  // Show the company just connected, which matters on a multi-company plan.
+  res.cookies.set(ACTIVE_COMPANY_COOKIE, result.connectionId, {
+    path: "/",
+    sameSite: "lax",
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 60 * 60 * 24 * 365,
+  });
+  return res;
 }

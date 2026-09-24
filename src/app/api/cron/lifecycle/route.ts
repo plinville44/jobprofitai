@@ -5,6 +5,7 @@ import { TRIAL_EXTENSION_OFFER_DAY } from "@/lib/plans";
 import { computeTrialState, expireFinishedTrials } from "@/lib/trial";
 import { purgeExpiredPasswordResets } from "@/lib/passwordReset";
 import { purgeExpiredEmailVerifications } from "@/lib/emailVerification";
+import { purgeOldLoginAttempts } from "@/lib/loginThrottle";
 import { qualifyDueReferrals, retryPendingRewards } from "@/lib/referrals";
 import { dueTrialNudges } from "@/lib/trialNudges";
 import {
@@ -61,6 +62,7 @@ interface Counters {
   testimonialRequests: number;
   passwordResetsPurged: number;
   emailVerificationsPurged: number;
+  loginAttemptsPurged: number;
   errors: string[];
 }
 
@@ -84,6 +86,7 @@ export async function GET(req: NextRequest) {
     testimonialRequests: 0,
     passwordResetsPurged: 0,
     emailVerificationsPurged: 0,
+    loginAttemptsPurged: 0,
     errors: [],
   };
 
@@ -102,6 +105,7 @@ export async function GET(req: NextRequest) {
   await runStage(counters, "password-reset-cleanup", async () => {
     counters.passwordResetsPurged = await purgeExpiredPasswordResets(now);
     counters.emailVerificationsPurged = await purgeExpiredEmailVerifications(now);
+    counters.loginAttemptsPurged = await purgeOldLoginAttempts(now);
   });
 
   return NextResponse.json({ ok: true, checkedAt: now.toISOString(), ...counters });
@@ -123,11 +127,31 @@ async function runStage(counters: Counters, name: string, fn: () => Promise<void
  * checks can never disagree about whether someone's trial is live.
  */
 async function processTrialEmails(counters: Counters, now: Date): Promise<void> {
-  const trials = await prisma.subscription.findMany({
-    where: { status: { in: ["trialing", "trial_expired"] } },
-    include: { user: { select: { id: true } } },
-    take: 1000,
-  });
+  // Every live trial, plus trials that expired in the last few days (the
+  // "trial ended" email). It used to load 1,000 rows of trialing OR
+  // trial_expired in no particular order; expired trials never leave that
+  // set, so once there were 1,000 of them new trials stopped getting their
+  // emails. Paged, so no count is too many.
+  const recentlyExpired = new Date(now.getTime() - 3 * 86_400_000);
+  const where = {
+    OR: [
+      { status: "trialing" },
+      { status: "trial_expired", trialEndsAt: { gte: recentlyExpired } },
+    ],
+  };
+  const trials: Awaited<ReturnType<typeof prisma.subscription.findMany>> = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await prisma.subscription.findMany({
+      where,
+      orderBy: { id: "asc" },
+      take: 500,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+    });
+    trials.push(...page);
+    if (page.length < 500) break;
+    cursor = page[page.length - 1].id;
+  }
 
   for (const sub of trials) {
     try {

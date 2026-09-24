@@ -155,9 +155,14 @@ export async function completePasswordReset(
     });
     if (claim.count === 0) return false;
 
+    // A new password ends every existing session: if the reset happened
+    // because someone else knew the old password, their sessions die here.
+    // It also unlinks Sign in with Intuit, which someone who knew the old
+    // password could have linked to their own Intuit account; the owner
+    // links theirs again with the new password.
     await tx.user.update({
       where: { id: check.userId },
-      data: { passwordHash },
+      data: { passwordHash, sessionVersion: { increment: 1 }, intuitSub: null },
     });
 
     // Completing a reset proves exactly what email verification proves:

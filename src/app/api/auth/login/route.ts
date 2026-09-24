@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { refuseCrossSite } from "@/lib/sameOrigin";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { verifyPassword, createSession } from "@/lib/auth";
+import { clientIp, isLockedOut, recordLoginAttempt, WINDOW_MINUTES } from "@/lib/loginThrottle";
 
 export const runtime = "nodejs";
 
@@ -11,6 +13,8 @@ const LoginSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
+  const refused = refuseCrossSite(req);
+  if (refused) return refused;
   const body = await req.json().catch(() => ({}));
   const parsed = LoginSchema.safeParse(body);
   if (!parsed.success) {
@@ -18,6 +22,18 @@ export async function POST(req: NextRequest) {
   }
   const { password } = parsed.data;
   const email = parsed.data.email.trim();
+  const ip = clientIp(req.headers);
+
+  // Checked before the password, and answered the same way whether or not
+  // the address has an account, so the lockout can't be used to find out.
+  if (await isLockedOut(email, ip)) {
+    return NextResponse.json(
+      {
+        error: `Too many sign-in attempts. Wait ${WINDOW_MINUTES} minutes and try again, or reset your password.`,
+      },
+      { status: 429 }
+    );
+  }
 
   // Deliberately identical error for "no such user" and "wrong password" -
   // don't leak which one it was.
@@ -26,10 +42,8 @@ export async function POST(req: NextRequest) {
     { status: 401 }
   );
 
-  // Exact match first (fast, indexed). Falling back to a case-insensitive
-  // lookup lets accounts created before signup started normalizing email
-  // casing still log in with any capitalization - without rewriting anyone's
-  // stored address, which would risk locking out a live customer.
+  // Exact match first (fast, indexed), then case-insensitive for accounts
+  // created before signup started normalizing email casing.
   let user = await prisma.user.findUnique({ where: { email } });
   if (!user) {
     user = await prisma.user.findFirst({
@@ -37,9 +51,13 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  if (!user) return genericError;
+  if (!user) {
+    await recordLoginAttempt(email, ip, false);
+    return genericError;
+  }
 
   const valid = await verifyPassword(password, user.passwordHash);
+  await recordLoginAttempt(email, ip, valid);
   if (!valid) return genericError;
 
   await createSession(user.id);

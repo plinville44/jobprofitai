@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { getSession } from "@/lib/auth";
+import { getAccount, getActiveConnection } from "@/lib/account";
 import { prisma } from "@/lib/prisma";
 import { getEntitlements, requireFeature } from "@/lib/entitlements";
 import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
@@ -70,22 +70,20 @@ function OpportunityEmptyState({ jobs }: { jobs: JobFinancials[] }) {
 }
 
 export default async function IntelligencePage() {
-  const session = await getSession();
-  if (!session) redirect("/login");
+  const account = await getAccount();
+  if (!account) redirect("/login");
 
   // Server-side entitlement gate. An expired trial gets a proper "choose a
   // plan" screen rather than an authorization error - and because the check
   // happens here, before any financial data is loaded, a lapsed account
   // never has its numbers computed and sent to the browser either.
-  const entitlements = await getEntitlements(session.userId);
+  const entitlements = await getEntitlements(account.ownerId);
   if (!entitlements.active) {
     return <UpgradeRequired access={entitlements.access} />;
   }
 
-  const connection = await prisma.quickBooksConnection.findFirst({
-    where: { userId: session.userId, disconnectedAt: null },
-    orderBy: { connectedAt: "desc" },
-  });
+  // The company picked in the company switcher (see src/lib/account.ts).
+  const { connection } = await getActiveConnection(account.ownerId);
 
   if (!connection) {
     return (
@@ -100,8 +98,8 @@ export default async function IntelligencePage() {
   // sections below are meant to be able to move to different tiers later
   // without this page needing a rewrite (see entitlements.ts).
   const [opportunitiesAccess, insightsAccess] = await Promise.all([
-    requireFeature(session.userId, "profit_opportunities"),
-    requireFeature(session.userId, "ai_insights"),
+    requireFeature(account.ownerId, "profit_opportunities"),
+    requireFeature(account.ownerId, "ai_insights"),
   ]);
 
   const profitData = await getConnectionProfitData(connection.id, new Date());

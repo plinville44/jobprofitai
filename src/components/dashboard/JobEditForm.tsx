@@ -11,6 +11,9 @@ export default function JobEditForm({
   initialCategory,
   initialEstimatedCost,
   initialStatusOverride,
+  initialContractValue,
+  syncedContractValue,
+  initialPercentComplete,
   syncedStatus,
 }: {
   jobId: string;
@@ -18,6 +21,11 @@ export default function JobEditForm({
   initialCategory: string | null;
   initialEstimatedCost: number | null;
   initialStatusOverride: string | null;
+  /** Contract value typed here (wins over QuickBooks). */
+  initialContractValue: number | null;
+  /** Contract value from this job's QuickBooks estimates, shown as the default. */
+  syncedContractValue: number | null;
+  initialPercentComplete: number | null;
   /** What QuickBooks itself says, shown so "Follow QuickBooks" is not a guess. */
   syncedStatus: string;
 }) {
@@ -27,6 +35,8 @@ export default function JobEditForm({
     initialEstimatedCost != null ? String(initialEstimatedCost) : ""
   );
   const [statusOverride, setStatusOverride] = useState(initialStatusOverride ?? "");
+  const [contractValue, setContractValue] = useState(initialContractValue != null ? String(initialContractValue) : "");
+  const [percentComplete, setPercentComplete] = useState(initialPercentComplete != null ? String(initialPercentComplete) : "");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
@@ -45,6 +55,8 @@ export default function JobEditForm({
         body: JSON.stringify({
           category: category === "" ? null : category,
           estimatedCost: estimatedCost === "" ? null : Number(estimatedCost),
+          manualContractValue: contractValue === "" ? null : Number(contractValue),
+          percentCompleteOverride: percentComplete === "" ? null : Number(percentComplete),
           statusOverride: statusOverride === "" ? null : statusOverride,
         }),
       });
@@ -70,10 +82,10 @@ export default function JobEditForm({
     <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
       <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Job Details (manual)</p>
       <p className="mt-1 text-xs text-gray-500">
-        QuickBooks doesn&apos;t expose a job type, an internal cost budget, or a project&apos;s status, so these
-        are set here instead of synced. Job type powers cross-job benchmarking; Estimated Cost powers budget
-        variance and Forecast-at-Completion; Job status decides whether a job counts as finished work, which is
-        what Profit Intelligence compares.
+        QuickBooks doesn&apos;t expose a job type, an internal cost budget, a project&apos;s percent complete or
+        its status, so these are set here. Estimated cost powers budget variance and over/under billing; contract
+        value and percent complete power the forecast; job status decides whether a job counts as finished work.
+        Nothing here changes QuickBooks.
       </p>
       <div className="mt-3 flex flex-wrap items-end gap-4">
         <label className="flex flex-col text-sm">
@@ -133,6 +145,39 @@ export default function JobEditForm({
             placeholder="e.g. 12000"
             className="mt-1 w-36 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
           />
+        </label>
+        <label className="flex flex-col text-sm">
+          <span className="text-gray-600">Contract value ($)</span>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={contractValue}
+            onChange={(e) => setContractValue(e.target.value)}
+            placeholder={syncedContractValue != null ? `${Math.round(syncedContractValue)} from QuickBooks` : "e.g. 72600"}
+            className="mt-1 w-44 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+          />
+          <span className="mt-1 max-w-[16rem] text-xs text-gray-500">
+            {syncedContractValue != null
+              ? "Blank uses your QuickBooks estimates (accepted ones added together)."
+              : "No QuickBooks estimate found for this job."}
+          </span>
+        </label>
+        <label className="flex flex-col text-sm">
+          <span className="text-gray-600">Percent complete</span>
+          <input
+            type="number"
+            min="0"
+            max="100"
+            step="1"
+            value={percentComplete}
+            onChange={(e) => setPercentComplete(e.target.value)}
+            placeholder="e.g. 60"
+            className="mt-1 w-24 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+          />
+          <span className="mt-1 max-w-[14rem] text-xs text-gray-500">
+            Optional. Blank works it out from cost or billing.
+          </span>
         </label>
         <button
           onClick={save}

@@ -15,11 +15,13 @@ import { subDays } from "date-fns";
 vi.mock("../prisma", () => ({ prisma: {} }));
 
 import {
+  findDoubleLabor,
   computeJobFinancials,
   computeNeedsAttentionForJob,
   computeForecastAtCompletion,
   computeProfitLeakage,
   computeDataHealth,
+  computeWip,
   computeProfitOpportunities,
   computeDashboardTotals,
   diagnoseOpportunityGap,
@@ -104,6 +106,8 @@ function makeFinancials(overrides: Partial<JobFinancials> = {}): JobFinancials {
     dataConfidence: "medium",
     confidenceReasons: [],
     lastFinancialActivity: subDays(NOW, 5),
+    qboCreatedAt: null,
+    wip: null,
     flags: [],
     ...overrides,
   };
@@ -192,21 +196,32 @@ describe("computeJobFinancials", () => {
 
   it("flags below_target_margin only strictly below the target (boundary is exclusive)", () => {
     const atTarget = computeJobFinancials(
-      makeJob({ costEntries: [cost("materials", 7000)], invoices: [inv(10000)] }), // 30% margin
+      makeJob({ status: "closed", costEntries: [cost("materials", 7000)], invoices: [inv(10000)] }), // 30% margin
       makeCtx({ targetMarginPct: 30 })
     );
     expect(atTarget.flags).not.toContain("below_target_margin");
 
     const belowTarget = computeJobFinancials(
-      makeJob({ costEntries: [cost("materials", 8000)], invoices: [inv(10000)] }), // 20% margin
+      makeJob({ status: "closed", costEntries: [cost("materials", 8000)], invoices: [inv(10000)] }), // 20% margin
       makeCtx({ targetMarginPct: 30 })
     );
     expect(belowTarget.flags).toContain("below_target_margin");
   });
 
+  it("never grades an open job against target on its margin to date (that is billing timing)", () => {
+    // Materials bought before the second draw: -26.7% to date on a job that
+    // may well finish on target.
+    const open = computeJobFinancials(
+      makeJob({ status: "open", costEntries: [cost("materials", 38000)], invoices: [inv(30000)] }),
+      makeCtx({ targetMarginPct: 25 })
+    );
+    expect(open.grossMarginPct).toBeCloseTo(-0.2667, 3);
+    expect(open.flags).not.toContain("below_target_margin");
+  });
+
   it("uses the category-specific target margin override instead of the connection default", () => {
     const f = computeJobFinancials(
-      makeJob({ category: "roofing", costEntries: [cost("materials", 8000)], invoices: [inv(10000)] }), // 20% margin
+      makeJob({ status: "closed", category: "roofing", costEntries: [cost("materials", 8000)], invoices: [inv(10000)] }), // 20% margin
       makeCtx({ targetMarginPct: 10, categoryTargetMarginPct: { roofing: 40 } })
     );
     expect(f.targetMarginPct).toBe(40);
@@ -544,6 +559,7 @@ describe("computeNeedsAttentionForJob", () => {
 
 describe("computeForecastAtCompletion", () => {
   const openJob = (overrides: Partial<JobInput> = {}) => makeJob({ status: "open", ...overrides });
+  const recent = subDays(NOW, 5);
 
   it("is unavailable for a closed job", () => {
     const result = computeForecastAtCompletion(
@@ -552,110 +568,175 @@ describe("computeForecastAtCompletion", () => {
       NOW
     );
     expect(result.available).toBe(false);
-    // The reason now names the specific blocker rather than one generic
-    // sentence for four different causes, so the customer knows whether
-    // there is anything to do about it.
     expect(result.reason).toContain("still in progress");
   });
 
-  it("is unavailable with no cost estimate on file", () => {
-    const result = computeForecastAtCompletion(openJob(), makeFinancials({ estimatedCost: null, costs: 500 }), NOW);
+  it("needs a contract value, and says where to add one", () => {
+    const result = computeForecastAtCompletion(openJob(), makeFinancials({ estimatedRevenue: null, estimatedCost: 1000, costs: 500 }), NOW);
     expect(result.available).toBe(false);
+    expect(result.reason).toContain("contract value");
   });
 
   it("is unavailable with zero actual costs recorded", () => {
-    const result = computeForecastAtCompletion(openJob(), makeFinancials({ estimatedCost: 1000, costs: 0 }), NOW);
+    const result = computeForecastAtCompletion(openJob(), makeFinancials({ estimatedRevenue: 15000, estimatedCost: 1000, costs: 0 }), NOW);
     expect(result.available).toBe(false);
   });
 
-  it("is unavailable with no recent financial activity (including no activity at all)", () => {
-    const stale = computeForecastAtCompletion(
-      openJob(),
-      makeFinancials({ estimatedCost: 1000, costs: 500, lastFinancialActivity: subDays(NOW, 45) }),
-      NOW
-    );
-    expect(stale.available).toBe(false);
+  it("needs a measure of progress: something billed, or a percent complete", () => {
+    const none = computeForecastAtCompletion(openJob(), makeFinancials({ estimatedRevenue: 15000, costs: 500, revenue: 0 }), NOW);
+    expect(none.available).toBe(false);
+    expect(none.reason).toContain("percent complete");
 
-    const never = computeForecastAtCompletion(
-      openJob(),
-      makeFinancials({ estimatedCost: 1000, costs: 500, lastFinancialActivity: null }),
+    const manual = computeForecastAtCompletion(
+      openJob({ percentCompleteOverride: 50 }),
+      makeFinancials({ estimatedRevenue: 15000, costs: 6000, revenue: 0, lastFinancialActivity: recent }),
       NOW
     );
-    expect(never.available).toBe(false); // no activity at all -> infinite days since -> treated the same as stale, never crashes
+    expect(manual.available).toBe(true);
+    expect(manual.progressSource).toBe("manual");
+    expect(manual.forecastCostAtCompletion).toBe(12000);
   });
 
-  it("clamps the forecast to the estimate when running under budget so far (never forecasts below the estimate)", () => {
+  it("sees an overrun coming before the money is spent (the case the old forecast missed)", () => {
+    // 40% billed, 80% of a $70,000 budget already spent. The old forecast
+    // said "on budget, 30% margin, high confidence".
     const result = computeForecastAtCompletion(
       openJob(),
-      makeFinancials({
-        estimatedCost: 10000,
-        costs: 4000, // 40% spent so far, under the run-rate that would imply completion under budget
-        estimatedRevenue: 15000,
-        revenue: 0,
-        lastFinancialActivity: subDays(NOW, 5),
-      }),
+      makeFinancials({ estimatedRevenue: 100000, estimatedCost: 70000, costs: 56000, revenue: 40000, lastFinancialActivity: recent }),
       NOW
     );
     expect(result.available).toBe(true);
-    expect(result.forecastCostAtCompletion).toBe(10000); // clamped, not extrapolated below the estimate
-    expect(result.forecastProfit).toBe(5000); // 15000 estimated revenue - 10000
-    expect(result.forecastMarginPct).toBeCloseTo(5000 / 15000);
-    expect(result.confidence).toBe("medium"); // 40% of estimate spent - >=20%, <50%
+    expect(result.forecastCostAtCompletion).toBe(140000);
+    expect(result.forecastProfit).toBe(-40000);
+    expect(result.forecastMarginPct).toBeCloseTo(-0.4);
+    expect(result.progressSource).toBe("billing");
   });
 
-  it("extrapolates the overrun rate when already running over budget", () => {
+  it("never forecasts a job finishing under its estimate", () => {
+    // Deposit billed, little spent yet: cost/progress would say $20,000.
     const result = computeForecastAtCompletion(
       openJob(),
-      makeFinancials({
-        estimatedCost: 10000,
-        costs: 13000, // 30% over already
-        estimatedRevenue: 15000,
-        revenue: 0,
-        lastFinancialActivity: subDays(NOW, 5),
-      }),
+      makeFinancials({ estimatedRevenue: 100000, estimatedCost: 70000, costs: 10000, revenue: 50000, lastFinancialActivity: recent }),
       NOW
     );
-    expect(result.forecastCostAtCompletion).toBe(13000);
-    expect(result.forecastProfit).toBe(2000); // 15000 - 13000
-    expect(result.confidence).toBe("high"); // 130% of estimate already spent - well past the 50% bar
+    expect(result.forecastCostAtCompletion).toBe(70000);
+    expect(result.forecastProfit).toBe(30000);
   });
 
-  it("falls back to actual revenue when there's no estimated revenue on file", () => {
+  it("does not report a loss on a part-billed job with no estimated cost", () => {
+    // The old forecast divided by billed-to-date revenue here and reported
+    // -75% at high confidence.
     const result = computeForecastAtCompletion(
       openJob(),
-      makeFinancials({
-        estimatedCost: 10000,
-        costs: 5000,
-        estimatedRevenue: null,
-        revenue: 12000,
-        lastFinancialActivity: subDays(NOW, 5),
-      }),
+      makeFinancials({ estimatedRevenue: 100000, estimatedCost: null, costs: 24000, revenue: 40000, lastFinancialActivity: recent }),
       NOW
     );
-    expect(result.forecastProfit).toBe(2000); // 12000 actual revenue - 10000 forecast cost
+    expect(result.forecastCostAtCompletion).toBe(60000);
+    expect(result.forecastProfit).toBe(40000);
   });
 
-  it("confidence tracks how much of the estimate has actually been spent (boundaries are inclusive)", () => {
-    const low = computeForecastAtCompletion(
+  it("refuses billing-based progress on a job with no recent activity, but accepts a percent complete", () => {
+    const stale = computeForecastAtCompletion(
       openJob(),
-      makeFinancials({ estimatedCost: 10000, costs: 1999, lastFinancialActivity: subDays(NOW, 5) }),
+      makeFinancials({ estimatedRevenue: 15000, costs: 500, revenue: 5000, lastFinancialActivity: subDays(NOW, 45) }),
       NOW
     );
-    expect(low.confidence).toBe("low");
+    expect(stale.available).toBe(false);
+    const manual = computeForecastAtCompletion(
+      openJob({ percentCompleteOverride: 40 }),
+      makeFinancials({ estimatedRevenue: 15000, costs: 500, revenue: 5000, lastFinancialActivity: subDays(NOW, 45) }),
+      NOW
+    );
+    expect(manual.available).toBe(true);
+  });
 
-    const medium = computeForecastAtCompletion(
+  it("is too early under 5% progress", () => {
+    const result = computeForecastAtCompletion(
       openJob(),
-      makeFinancials({ estimatedCost: 10000, costs: 2000, lastFinancialActivity: subDays(NOW, 5) }),
+      makeFinancials({ estimatedRevenue: 100000, costs: 3000, revenue: 4000, lastFinancialActivity: recent }),
       NOW
     );
-    expect(medium.confidence).toBe("medium"); // exactly 20%, inclusive
+    expect(result.available).toBe(false);
+  });
 
-    const high = computeForecastAtCompletion(
+  it("rates confidence higher for a contractor's own percent complete than for billing", () => {
+    const billing = computeForecastAtCompletion(
       openJob(),
-      makeFinancials({ estimatedCost: 10000, costs: 5000, lastFinancialActivity: subDays(NOW, 5) }),
+      makeFinancials({ estimatedRevenue: 10000, costs: 2000, revenue: 3000, lastFinancialActivity: recent }),
       NOW
     );
-    expect(high.confidence).toBe("high"); // exactly 50%, inclusive
+    expect(billing.confidence).toBe("low");
+    const billingHalf = computeForecastAtCompletion(
+      openJob(),
+      makeFinancials({ estimatedRevenue: 10000, costs: 4000, revenue: 5000, lastFinancialActivity: recent }),
+      NOW
+    );
+    expect(billingHalf.confidence).toBe("medium");
+    const manual = computeForecastAtCompletion(
+      openJob({ percentCompleteOverride: 30 }),
+      makeFinancials({ estimatedRevenue: 10000, costs: 2000, revenue: 3000, lastFinancialActivity: recent }),
+      NOW
+    );
+    expect(manual.confidence).toBe("high");
+  });
+});
+
+describe("computeWip (over/under billing)", () => {
+  it("uses cost to date against the estimate as percent complete", () => {
+    const w = computeWip({ contractValue: 100000, estimatedCost: 70000, costs: 35000, billed: 40000, percentCompleteOverride: null });
+    expect(w?.percentComplete).toBeCloseTo(0.5);
+    expect(w?.earnedRevenue).toBeCloseTo(50000);
+    expect(w?.overUnderBilling).toBeCloseTo(-10000); // underbilled
+  });
+
+  it("prefers the contractor's own percent complete", () => {
+    const w = computeWip({ contractValue: 100000, estimatedCost: 70000, costs: 35000, billed: 40000, percentCompleteOverride: 30 });
+    expect(w?.percentCompleteSource).toBe("manual");
+    expect(w?.overUnderBilling).toBeCloseTo(10000); // overbilled
+  });
+
+  it("caps at 100% and says so when cost has passed the estimate", () => {
+    const w = computeWip({ contractValue: 100000, estimatedCost: 70000, costs: 84000, billed: 90000, percentCompleteOverride: null });
+    expect(w?.percentComplete).toBe(1);
+    expect(w?.costPastEstimate).toBe(true);
+  });
+
+  it("needs a contract value and a way to measure progress", () => {
+    expect(computeWip({ contractValue: null, estimatedCost: 70000, costs: 1, billed: 1, percentCompleteOverride: null })).toBeNull();
+    expect(computeWip({ contractValue: 100000, estimatedCost: null, costs: 1, billed: 1, percentCompleteOverride: null })).toBeNull();
+  });
+
+  it("appears on open jobs only, and never on a windowed view", () => {
+    const job = makeJob({ status: "open", estimatedRevenue: 100000, estimatedCost: 70000, costEntries: [cost("materials", 35000)], invoices: [inv(40000)] });
+    expect(computeJobFinancials(job, makeCtx()).wip).not.toBeNull();
+    expect(computeJobFinancials(job, makeCtx({ costsAreWindowed: true })).wip).toBeNull();
+    expect(computeJobFinancials({ ...job, status: "closed" }, makeCtx()).wip).toBeNull();
+  });
+});
+
+describe("open-job attention items", () => {
+  it("flags work done but not billed", () => {
+    const f = computeJobFinancials(
+      makeJob({ status: "open", estimatedRevenue: 100000, estimatedCost: 70000, costEntries: [cost("materials", 35000)], invoices: [inv(20000)] }),
+      makeCtx()
+    );
+    const items = computeNeedsAttentionForJob(f);
+    const under = items.find((i) => i.issueCode === "underbilled");
+    expect(under?.financialImpact).toBeCloseTo(30000);
+  });
+
+  it("flags an open job forecast to finish below target, with the shortfall", () => {
+    const f = makeFinancials({ status: "open", estimatedRevenue: 100000, targetMarginPct: 25 });
+    const items = computeNeedsAttentionForJob(f, {
+      forecast: { available: true, forecastMarginPct: 0.1, forecastProfit: 10000, confidence: "medium" },
+    });
+    const item = items.find((i) => i.issueCode === "forecast_below_target");
+    expect(item?.financialImpact).toBeCloseTo(15000);
+  });
+
+  it("asks for an estimate on open jobs only", () => {
+    const closed = computeNeedsAttentionForJob(makeFinancials({ status: "closed", flags: ["no_estimate_on_file"] }));
+    expect(closed.map((i) => i.issueCode)).not.toContain("no_estimate_on_file");
   });
 });
 
@@ -823,9 +904,32 @@ describe("computeDataHealth", () => {
       makeFinancials({ jobId: "e", status: "closed", flags: [] }),
     ];
     const health = computeDataHealth(jobs, NOW, null);
-    expect(health.jobsMissingEstimates.map((j) => j.jobId)).toEqual(["a", "c", "d", "e"]); // all default estimatedCost:null except "b"
+    // Open jobs only ("d" and "e" are finished): an estimate can still help
+    // an open job, and asking for one on finished work is noise.
+    expect(health.jobsMissingEstimates.map((j) => j.jobId)).toEqual(["a", "c"]);
     expect(health.jobsMissingCosts.map((j) => j.jobId)).toEqual(["c"]);
     expect(health.completedJobsWithUnresolvedActivity.map((j) => j.jobId)).toEqual(["d"]);
+  });
+
+  it("leaves out finished jobs with no activity in the last 12 months", () => {
+    const jobs = [
+      makeFinancials({ jobId: "old", status: "closed", revenue: 5000, costs: 0, lastFinancialActivity: subDays(NOW, 800) }),
+      makeFinancials({ jobId: "recent", status: "closed", revenue: 5000, costs: 0, lastFinancialActivity: subDays(NOW, 100) }),
+      makeFinancials({ jobId: "open-old", status: "open", revenue: 5000, costs: 0, lastFinancialActivity: subDays(NOW, 800) }),
+    ];
+    const health = computeDataHealth(jobs, NOW, null);
+    expect(health.jobsMissingCosts.map((j) => j.jobId)).toEqual(["recent", "open-old"]);
+    expect(health.totalJobs).toBe(2);
+  });
+
+  it("offers open jobs idle for 90+ days as probably finished", () => {
+    const jobs = [
+      makeFinancials({ jobId: "idle", status: "open", lastFinancialActivity: subDays(NOW, 120) }),
+      makeFinancials({ jobId: "never", status: "open", lastFinancialActivity: null, qboCreatedAt: subDays(NOW, 400) }),
+      makeFinancials({ jobId: "new", status: "open", lastFinancialActivity: null, qboCreatedAt: subDays(NOW, 10) }),
+      makeFinancials({ jobId: "busy", status: "open", lastFinancialActivity: subDays(NOW, 3) }),
+    ];
+    expect(computeDataHealth(jobs, NOW, null).idleOpenJobs.map((j) => j.jobId)).toEqual(["idle", "never"]);
   });
 
   it("computes days-since-activity for stale jobs, treating no activity at all as infinite", () => {
@@ -844,30 +948,30 @@ describe("computeDataHealth", () => {
     const jobs = [makeFinancials()];
 
     const noSyncYet = computeDataHealth(jobs, NOW, null);
-    expect(noSyncYet.unassignedExpenseCount).toBeNull();
+    expect(noSyncYet.untaggedJobCostCount).toBeNull();
     expect(noSyncYet.unresolvedExpenseCount).toBeNull();
     expect(noSyncYet.costsMatchedViaParentCount).toBeNull();
-    expect(noSyncYet.timeEntriesWithoutRate).toBeNull();
+    expect(noSyncYet.timeEntriesWithoutPayRate).toBeNull();
 
-    const measuredZero = computeDataHealth(jobs, NOW, { unassignedExpenseCount: 0, unassignedExpenseAmount: 0 });
-    expect(measuredZero.unassignedExpenseCount).toBe(0); // a real, counted zero - not "not yet measured"
+    const measuredZero = computeDataHealth(jobs, NOW, { untaggedJobCostCount: 0, untaggedJobCostAmount: 0 });
+    expect(measuredZero.untaggedJobCostCount).toBe(0); // a real, counted zero - not "not yet measured"
     expect(measuredZero.unresolvedExpenseCount).toBeNull(); // this key wasn't in the sync record at all - still unmeasured
 
     const measuredNonZero = computeDataHealth(jobs, NOW, {
-      unassignedExpenseCount: 5,
-      unassignedExpenseAmount: 750,
+      untaggedJobCostCount: 5,
+      untaggedJobCostAmount: 750,
       unresolvedExpenseCount: 2,
       unresolvedExpenseAmount: 300,
       costsMatchedViaParentCount: 1,
       costsMatchedViaParentAmount: 400,
-      timeActivitiesSkippedNoRate: 3,
+      timeEntriesWithoutPayRate: 3,
     });
-    expect(measuredNonZero.unassignedExpenseCount).toBe(5);
-    expect(measuredNonZero.unassignedExpenseAmount).toBe(750);
+    expect(measuredNonZero.untaggedJobCostCount).toBe(5);
+    expect(measuredNonZero.untaggedJobCostAmount).toBe(750);
     expect(measuredNonZero.unresolvedExpenseCount).toBe(2);
     expect(measuredNonZero.costsMatchedViaParentCount).toBe(1);
     // Read from the sync's own key name, which differs from the report's.
-    expect(measuredNonZero.timeEntriesWithoutRate).toBe(3);
+    expect(measuredNonZero.timeEntriesWithoutPayRate).toBe(3);
   });
 
   /**
@@ -1072,15 +1176,19 @@ describe("computeDashboardTotals", () => {
     staleJobs: [],
     completedJobsWithUnresolvedActivity: [{ jobId: "c", jobName: "C" }],
     jobsWithoutEnoughData: [],
-    unassignedExpenseCount: 4,
-    unassignedExpenseAmount: 400,
+    idleOpenJobs: [],
+    untaggedJobCostCount: 4,
+    untaggedJobCostAmount: 400,
+    untaggedOverheadCount: 50, // information only: never counted as an issue
+    untaggedOverheadAmount: 90000,
     unresolvedExpenseCount: null, // unmeasured - must contribute 0, not throw or NaN
     unresolvedExpenseAmount: null,
     costsMatchedViaParentCount: 999, // deliberately large, to prove it's excluded from dataIssues
     costsMatchedViaParentAmount: 999,
-    timeEntriesWithoutRate: null, // unmeasured - must contribute 0, same as the nulls above
+    timeEntriesWithoutPayRate: null, // unmeasured - must contribute 0, same as the nulls above
     countsAsOf: null,
     possibleDuplicates: [{ jobId: "d", jobName: "D", amount: 100, date: "2026-06-01" }],
+    jobsWithDoubleLabor: [],
     overallConfidence: "medium",
     // The plain counts the Data Health page states in words. Kept consistent
     // with the fixture above (4 jobs, of which a, b and c each have a gap)
@@ -1164,10 +1272,12 @@ describe("computeDashboardTotals", () => {
 
   it("sums dataIssues from real counted gaps, treats unmeasured counts as 0, and excludes the parent-match count", () => {
     const totals = computeDashboardTotals([], [], dataHealth, null);
-    // 1 (missing estimates) + 1 (missing costs) + 0 (stale) + 1 (unresolved activity)
-    // + 4 (unassigned, measured) + 0 (unresolved, unmeasured -> treated as 0) + 1 (possible duplicate)
-    // costsMatchedViaParentCount (999) is deliberately NOT part of this sum.
-    expect(totals.dataIssues).toBe(8);
+    // 1 (missing costs) + 0 (stale) + 1 (unresolved activity) + 4 (untagged
+    // job costs, measured) + 0 (unresolved, unmeasured -> treated as 0) + 1
+    // (possible duplicate). Missing estimates are setup rather than a data
+    // problem, and costsMatchedViaParentCount (999) is a successful match:
+    // neither is part of this sum.
+    expect(totals.dataIssues).toBe(7);
   });
 });
 
@@ -1339,5 +1449,23 @@ describe("diagnoseOpportunityGap", () => {
     // is the same as having no completed jobs at all.
     expect(gap.code).toBe("no_completed_jobs");
     expect(gap.completedJobs).toBe(0);
+  });
+});
+
+describe("findDoubleLabor", () => {
+  const now = new Date("2026-09-01T00:00:00Z");
+  const row = (qboSourceType: string, category: string, date = "2026-08-01") => ({
+    qboSourceType,
+    category,
+    txnDate: new Date(`${date}T00:00:00Z`),
+  });
+  it("lists jobs with labor from both timesheets and journal entries", () => {
+    const jobs = [
+      { id: "a", name: "A", costEntries: [row("TimeActivity", "labor"), row("JournalEntry", "labor")] },
+      { id: "b", name: "B", costEntries: [row("TimeActivity", "labor"), row("Bill", "labor")] },
+      { id: "c", name: "C", costEntries: [row("TimeActivity", "labor"), row("JournalEntry", "materials")] },
+      { id: "d", name: "D", costEntries: [row("TimeActivity", "labor", "2024-01-01"), row("JournalEntry", "labor")] },
+    ];
+    expect(findDoubleLabor(jobs, now)).toEqual([{ jobId: "a", jobName: "A" }]);
   });
 });

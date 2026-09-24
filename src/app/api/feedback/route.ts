@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { accountFor } from "@/lib/account";
 import { getSession } from "@/lib/auth";
 import { getEntitlements } from "@/lib/entitlements";
 import { sendEmail, SUPPORT_EMAIL } from "@/lib/email/client";
@@ -36,13 +37,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Feedback message is too long (5000 characters max)." }, { status: 400 });
     }
 
+    // A team member's feedback is about the owner's account and plan.
+    const account = await accountFor(session.userId);
     const [user, connection, entitlements] = await Promise.all([
       prisma.user.findUnique({ where: { id: session.userId } }),
       prisma.quickBooksConnection.findFirst({
-        where: { userId: session.userId, disconnectedAt: null },
+        where: { userId: account.ownerId, disconnectedAt: null },
         orderBy: { connectedAt: "desc" },
       }),
-      getEntitlements(session.userId),
+      getEntitlements(account.ownerId),
     ]);
     if (!user) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 

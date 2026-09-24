@@ -127,11 +127,14 @@ export default function HowItWorksPage() {
             title="JobProfitAI organizes the financial information"
           >
             <p>
-              JobProfitAI reads QuickBooks <strong>Projects</strong> (sub-customers) and pulls
-              together everything attached to each one. Invoices, bills, expenses, purchases, time
-              activities and estimates. Contractors who track job cost by Class instead are not
-              supported yet; that is on the roadmap rather than in the product, and it is worth
-              checking before you sign up.
+              JobProfitAI reads QuickBooks <strong>Projects</strong> (sub-customers), or, if you
+              make one customer per job, your customers, and pulls together everything attached to
+              each one: invoices, sales receipts, credit memos, bills, expenses, vendor credits,
+              time entries and estimates. Sales tax is taken out of revenue, refunds and credits
+              come off, and labor from timesheets is costed at each person&rsquo;s pay rate, not
+              the rate you bill. Contractors who track job cost by Class instead are not supported
+              yet; that is on the roadmap rather than in the product, and it is worth checking
+              before you sign up.
             </p>
             <p>
               Costs are grouped into categories you&rsquo;d actually recognize: labor, materials,
@@ -140,8 +143,9 @@ export default function HowItWorksPage() {
               defensibly, and flags that it made that judgment rather than hiding it.
             </p>
             <p>
-              Optionally, you set a company-wide target margin and an overhead allocation method.
-              Both are yours to configure; neither is guessed at.
+              Optionally, you set a company-wide target margin (or one per type of work) and an
+              overhead allocation method. Both are yours to configure; neither is guessed at. If a
+              QuickBooks account lands in the wrong cost category, you can move it in Settings.
             </p>
           </Step>
 
@@ -158,16 +162,27 @@ export default function HowItWorksPage() {
             <p>
               Open any job to see the full cost breakdown by category, the estimate-versus-actual
               comparison, and a profit leakage view showing where expected profit turned into actual
-              profit.
+              profit. One click puts the job&rsquo;s revenue and costs beside QuickBooks&rsquo; own
+              Profit and Loss for the same project, and explains any difference.
+            </p>
+            <p>
+              The WIP report shows every open job&rsquo;s contract, cost to date, percent complete
+              and whether you&rsquo;re over or under billed, the report banks and bonding companies
+              ask for. It exports to a spreadsheet for your accountant.
             </p>
           </Step>
 
           <Step number={4} title="Find issues before they become bigger">
             <p>
               &ldquo;Needs Your Attention&rdquo; is a deterministic rule set that runs across every
-              job: costs running over estimate, margins below target, margin declining across
-              recent weekly snapshots, and cost categories that look like outliers compared to
-              similar completed jobs.
+              job: costs running over estimate, finished jobs below your target margin, work done
+              but not yet billed, margin declining across recent weekly snapshots, and cost
+              categories that look like outliers compared to similar completed jobs. On Pro,
+              in-progress jobs are also judged on where they&rsquo;re forecast to finish.
+            </p>
+            <p>
+              JobProfitAI syncs every night, and emails you as soon as an open job goes over its
+              estimate or gets well ahead of its billing, instead of waiting for the weekly brief.
             </p>
             <p>
               Each finding carries a dollar impact, a severity, and a confidence level. Confidence
@@ -177,9 +192,9 @@ export default function HowItWorksPage() {
             </p>
             <p>
               There&rsquo;s also a Data Health page that tells you exactly what is missing before
-              you trust a number: expenses not tagged to any job, jobs with revenue but no costs
-              recorded, time entries QuickBooks gave us with no hourly rate, and jobs with no cost
-              estimate entered here. Those gaps change what the numbers can tell you, so
+              you trust a number: job costs (materials, subcontractors, cost of goods) from the
+              last year not tagged to any job, jobs with revenue but no costs recorded, time entries
+              with no pay rate in QuickBooks, and open jobs with no cost estimate. Those gaps change what the numbers can tell you, so
               they&rsquo;re shown rather than papered over.
             </p>
           </Step>
@@ -215,8 +230,8 @@ export default function HowItWorksPage() {
               attention.
             </p>
             <p>
-              It goes to as many recipients as you like. You, your project manager, your
-              bookkeeper. And if your data is too incomplete that week to say anything reliable
+              It goes to up to 10 people: you, your project manager, your bookkeeper. Each can
+              unsubscribe with one click. And if your data is too incomplete that week to say anything reliable
               about profitability, the email says exactly that and lists what&rsquo;s missing,
               instead of writing a confident-sounding summary around gaps.
             </p>

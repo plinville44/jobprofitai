@@ -1,3 +1,5 @@
+import { notFound } from "next/navigation";
+import { getAdminSession } from "@/lib/adminAuth";
 import { formatCents } from "@/lib/format";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
@@ -13,6 +15,11 @@ const money = formatCents;
  * behind each link are where individual records live.
  */
 export default async function AdminOverviewPage() {
+  // Checked here as well as in the admin layout. Next.js does not re-run a
+  // layout on client-side navigation, so a layout-only check can be skipped
+  // by requesting this page's data directly.
+  if (!(await getAdminSession())) notFound();
+
   const now = new Date();
 
   const [

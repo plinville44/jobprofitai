@@ -37,6 +37,8 @@ export interface SendEmailInput {
   /** Defaults to the support address so replies always reach a human. */
   replyTo?: string;
   tags?: { name: string; value: string }[];
+  /** Extra headers, e.g. List-Unsubscribe on the weekly brief. */
+  headers?: Record<string, string>;
 }
 
 export interface SendEmailResult {
@@ -83,6 +85,7 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
       // this is the single line that has to change on a Resend upgrade.
       reply_to: input.replyTo ?? SUPPORT_EMAIL,
       tags: input.tags,
+      ...(input.headers ? { headers: input.headers } : {}),
     });
 
     if (error) {

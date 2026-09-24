@@ -1,7 +1,5 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { AI_MODEL, anthropic } from "./ai";
 import type { ProfitOpportunity } from "./profitability";
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // Same grounding discipline as digest.ts: Claude only ever writes prose
 // around numbers app code already computed. It never invents, rounds
@@ -57,8 +55,9 @@ export async function generateProfitInsights(
   }));
 
   const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-5",
-    max_tokens: 1500,
+    model: AI_MODEL,
+    // Roughly 150 tokens per card; the caller sends at most eight.
+    max_tokens: 3000,
     system: SYSTEM_PROMPT,
     messages: [
       {
@@ -71,6 +70,11 @@ export async function generateProfitInsights(
   const textBlock = message.content.find((b) => b.type === "text");
   if (!textBlock || textBlock.type !== "text") {
     throw new Error("Claude did not return a text response for profit insights.");
+  }
+  if (message.stop_reason === "max_tokens") {
+    // A cut-off reply is never valid JSON. Say what happened instead of
+    // reporting a parse error.
+    throw new Error("The insight write-up ran long and was cut off. Please try Refresh again.");
   }
 
   let drafts: { evidence: string; recommendedAction: string }[];

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { getAccount } from "@/lib/account";
 import { revokeToken } from "@/lib/quickbooks";
 import { decryptToken } from "@/lib/crypto";
 
@@ -15,14 +15,17 @@ import { decryptToken } from "@/lib/crypto";
  */
 export async function POST(req: NextRequest) {
   try {
-    const session = await getSession();
-    if (!session) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const account = await getAccount();
+    if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    if (account.role !== "owner") {
+      return NextResponse.json({ error: "Only the account owner can disconnect a QuickBooks company." }, { status: 403 });
+    }
 
     const { connectionId } = await req.json();
     const connection = await prisma.quickBooksConnection.findUnique({
       where: { id: connectionId },
     });
-    if (!connection || connection.userId !== session.userId) {
+    if (!connection || connection.userId !== account.ownerId) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
 

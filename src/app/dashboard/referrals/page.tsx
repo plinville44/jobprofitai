@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
+import { accountFor } from "@/lib/account";
 import { getEntitlements } from "@/lib/entitlements";
 import { getReferralHistory, getReferralSummary } from "@/lib/referrals";
 import {
@@ -67,6 +68,20 @@ function rewardHelp(rewardStatus: string | null): string {
 export default async function ReferralsPage() {
   const session = await getSession();
   if (!session) redirect("/login");
+
+  // Referral credit comes off the bill, and a team member doesn't have one.
+  const account = await accountFor(session.userId);
+  if (account.role !== "owner") {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-bold text-navy">Refer a contractor</h1>
+        <p className="text-sm text-gray-600">
+          Referral credit comes off the account owner&apos;s bill, so referrals are made from the owner&apos;s login.
+          Ask them for their referral link.
+        </p>
+      </div>
+    );
+  }
 
   const [summary, history, entitlements] = await Promise.all([
     getReferralSummary(session.userId),

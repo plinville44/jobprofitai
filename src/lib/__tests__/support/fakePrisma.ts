@@ -46,6 +46,7 @@ function matchValue(rowValue: any, condition: any): boolean {
       }
     }
     if ("in" in condition && !condition.in.some((v: any) => valuesEqual(rowValue, v))) return false;
+    if ("startsWith" in condition && !(typeof rowValue === "string" && rowValue.startsWith(condition.startsWith))) return false;
     if ("notIn" in condition && condition.notIn.some((v: any) => valuesEqual(rowValue, v))) return false;
     if ("not" in condition) {
       // `{ not: null }` means "is set"; `{ not: X }` means "differs from X".
@@ -208,15 +209,15 @@ export class FakeModel {
   async update({ where, data }: { where: Row; data: Row }): Promise<Row> {
     const row = this.rows.find((r) => matches(r, where));
     if (!row) throw new PrismaError("P2025", "Record to update not found.");
-    const candidate = { ...row, ...unwrap(data) };
+    const candidate = { ...row, ...unwrap(data, row) };
     this.assertUnique(candidate, row);
-    Object.assign(row, unwrap(data));
+    Object.assign(row, unwrap(data, row));
     return { ...row };
   }
 
   async updateMany({ where, data }: { where?: Row; data: Row }): Promise<{ count: number }> {
     const targets = this.rows.filter((row) => matches(row, where));
-    for (const row of targets) Object.assign(row, unwrap(data));
+    for (const row of targets) Object.assign(row, unwrap(data, row));
     return { count: targets.length };
   }
 
@@ -240,12 +241,17 @@ export class FakeModel {
   }
 }
 
-/** Prisma's `{ increment: n }` style update helpers aren't used here; this
- *  just strips undefined so a patch doesn't blank a field unintentionally. */
-function unwrap(data: Row): Row {
+/** Strips undefined so a patch doesn't blank a field unintentionally, and
+ *  applies Prisma's `{ increment: n }` against the row being updated. */
+function unwrap(data: Row, row?: Row): Row {
   const out: Row = {};
   for (const [key, value] of Object.entries(data)) {
-    if (value !== undefined) out[key] = value;
+    if (value === undefined) continue;
+    if (value !== null && typeof value === "object" && !(value instanceof Date) && "increment" in value) {
+      out[key] = (Number(row?.[key]) || 0) + Number((value as any).increment);
+      continue;
+    }
+    out[key] = value;
   }
   return out;
 }
@@ -352,8 +358,15 @@ export function createFakePrisma(): FakePrisma {
     contactSubmission: new FakeModel("contactSubmission", [], () => ({ createdAt: new Date() })),
     quickBooksConnection: new FakeModel("quickBooksConnection", [{ fields: ["realmIdHash"] }], () => ({
       disconnectedAt: null,
+      connectedAt: new Date(),
     })),
+    realmTrial: new FakeModel("realmTrial", [{ fields: ["realmIdHash"] }], () => ({ firstConnectedAt: new Date() })),
     job: new FakeModel("job", [], () => ({})),
+    teamMember: new FakeModel(
+      "teamMember",
+      [{ fields: ["memberUserId"] }, { fields: ["tokenHash"] }, { fields: ["ownerUserId", "email"] }],
+      () => ({ invitedAt: new Date(), acceptedAt: null, memberUserId: null })
+    ),
     feedback: new FakeModel("feedback", [], () => ({ createdAt: new Date() })),
   };
 

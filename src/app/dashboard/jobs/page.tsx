@@ -1,13 +1,14 @@
 import { redirect } from "next/navigation";
+import { prisma } from "@/lib/prisma";
 import Link from "next/link";
-import { getSession } from "@/lib/auth";
+import { getAccount, getActiveConnection } from "@/lib/account";
 import { getEntitlements } from "@/lib/entitlements";
 import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
-import { prisma } from "@/lib/prisma";
 import { getConnectionProfitData, type JobFinancials } from "@/lib/profitability";
 import { resolveStatusFilter, STATUS_OPTIONS } from "@/lib/dateRange";
 import SortSelect from "@/components/dashboard/SortSelect";
 import JobsTable, { type JobRow } from "@/components/dashboard/JobsTable";
+import JobBudgetTools from "@/components/dashboard/JobBudgetTools";
 
 type SortKey =
   | "lowest_margin"
@@ -87,22 +88,20 @@ export default async function JobsPage(props: {
   searchParams: Promise<{ sort?: string; status?: string }>;
 }) {
   const searchParams = await props.searchParams;
-  const session = await getSession();
-  if (!session) redirect("/login");
+  const account = await getAccount();
+  if (!account) redirect("/login");
 
   // Server-side entitlement gate. An expired trial gets a proper "choose a
   // plan" screen rather than an authorization error - and because the check
   // happens here, before any financial data is loaded, a lapsed account
   // never has its numbers computed and sent to the browser either.
-  const entitlements = await getEntitlements(session.userId);
+  const entitlements = await getEntitlements(account.ownerId);
   if (!entitlements.active) {
     return <UpgradeRequired access={entitlements.access} />;
   }
 
-  const connection = await prisma.quickBooksConnection.findFirst({
-    where: { userId: session.userId, disconnectedAt: null },
-    orderBy: { connectedAt: "desc" },
-  });
+  // The company picked in the company switcher (see src/lib/account.ts).
+  const { connection } = await getActiveConnection(account.ownerId);
 
   if (!connection) {
     return (
@@ -153,6 +152,11 @@ export default async function JobsPage(props: {
         </div>
       </div>
 
+      <JobBudgetTools
+        connectionId={connection.id}
+        hasTarget={connection.targetMarginPct != null || (await hasJobTypeTargets(connection.id))}
+      />
+
       {jobs.length === 0 ? (
         /* "No jobs match this filter" was the same sentence whether nothing
            had ever synced or the customer was simply on the Completed tab
@@ -178,9 +182,9 @@ export default async function JobsPage(props: {
             </p>
           ) : (
             <p>
-              No jobs have synced from QuickBooks yet. JobProfitAI reads QuickBooks Projects, so a
-              company with no Projects set up has nothing to show here. Run Sync now from the
-              Dashboard once you have one.
+              No jobs have synced from QuickBooks yet. JobProfitAI reads your QuickBooks Projects or
+              sub-customers, or, if you make one customer per job, your customers (choose which in
+              Settings). Run Sync now from the Dashboard once they&apos;re set up.
             </p>
           )}
         </div>
@@ -189,4 +193,8 @@ export default async function JobsPage(props: {
       )}
     </main>
   );
+}
+
+async function hasJobTypeTargets(connectionId: string): Promise<boolean> {
+  return (await prisma.marginTarget.count({ where: { connectionId } })) > 0;
 }

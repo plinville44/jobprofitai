@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { clearSession, getSession, verifyPassword } from "@/lib/auth";
+import { clearSession, getSession, revokeAllSessions, verifyPassword } from "@/lib/auth";
 import { decryptToken } from "@/lib/crypto";
 import { revokeToken } from "@/lib/quickbooks";
 import { getStripe } from "@/lib/stripe/client";
@@ -94,10 +94,21 @@ export async function POST(req: NextRequest) {
     //    In-app feedback rows carry the user's id and email but have no
     //    foreign key to User (so they are not cascaded), which is why they
     //    are removed explicitly here. Both deletes run in one transaction.
+    // Team members lose access with the account. Their own logins are left
+    // in place (they belong to them), but every session is ended now.
+    const members = await prisma.teamMember.findMany({
+      where: { ownerUserId: user.id, memberUserId: { not: null } },
+      select: { memberUserId: true },
+    });
+
     await prisma.$transaction([
       prisma.feedback.deleteMany({ where: { userId: user.id } }),
       prisma.user.delete({ where: { id: user.id } }),
     ]);
+
+    for (const m of members) {
+      if (m.memberUserId) await revokeAllSessions(m.memberUserId).catch(() => {});
+    }
 
     await clearSession();
 

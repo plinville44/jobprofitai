@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { getSession } from "@/lib/auth";
+import { getAccount } from "@/lib/account";
 import { prisma } from "@/lib/prisma";
-import { getEntitlements, getUsageAgainstLimits } from "@/lib/entitlements";
+import { canConnectAnotherCompany, getEntitlements, getUsageAgainstLimits } from "@/lib/entitlements";
 import { getTrialState } from "@/lib/trial";
 import { getReferralSummary } from "@/lib/referrals";
 import {
@@ -61,15 +61,27 @@ export default async function BillingPage(props: {
   searchParams: Promise<{ checkout?: string; limit?: string }>;
 }) {
   const searchParams = await props.searchParams;
-  const session = await getSession();
-  if (!session) redirect("/login");
+  const account = await getAccount();
+  if (!account) redirect("/login");
+  if (account.role !== "owner") {
+    const owner = await prisma.user.findUnique({ where: { id: account.ownerId }, select: { email: true } });
+    return (
+      <main>
+        <h1 className="text-2xl font-bold text-navy">Billing</h1>
+        <p className="mt-4 text-gray-600">
+          Billing for this account is managed by its owner{owner?.email ? ` (${owner.email})` : ""}. Your access comes
+          with their plan.
+        </p>
+      </main>
+    );
+  }
 
   const [entitlements, trial, subscription, connection] = await Promise.all([
-    getEntitlements(session.userId),
-    getTrialState(session.userId),
-    prisma.subscription.findUnique({ where: { userId: session.userId } }),
+    getEntitlements(account.ownerId),
+    getTrialState(account.ownerId),
+    prisma.subscription.findUnique({ where: { userId: account.ownerId } }),
     prisma.quickBooksConnection.findFirst({
-      where: { userId: session.userId, disconnectedAt: null },
+      where: { userId: account.ownerId, disconnectedAt: null },
       select: { emailTimezone: true },
     }),
   ]);
@@ -79,9 +91,21 @@ export default async function BillingPage(props: {
   const timeZone = connection?.emailTimezone ?? DEFAULT_TIME_ZONE;
 
   const [usage, referrals] = await Promise.all([
-    getUsageAgainstLimits(session.userId, entitlements),
-    getReferralSummary(session.userId),
+    getUsageAgainstLimits(account.ownerId, entitlements),
+    getReferralSummary(account.ownerId),
   ]);
+
+  // ?limit= is a code, never text to print: the message is worked out here,
+  // so a link can't put words of its choosing on this page.
+  let limitNotice: string | null = null;
+  if (searchParams?.limit === "trial_used") {
+    limitNotice = "That QuickBooks company has already had a free trial of JobProfitAI. Choose a plan to connect it.";
+  } else if (searchParams?.limit) {
+    const permission = await canConnectAnotherCompany(account.ownerId);
+    limitNotice = permission.allowed
+      ? null
+      : permission.reason ?? "Your plan has no room for another QuickBooks company.";
+  }
 
   const stripeReady = isStripeConfigured();
   const currentPlan: PlanId | null =
@@ -116,9 +140,9 @@ export default async function BillingPage(props: {
           </p>
         </Panel>
       ) : null}
-      {searchParams?.limit ? (
-        <Panel tone="warning" title="Plan limit reached">
-          <p className="text-sm text-amber-900">{searchParams.limit}</p>
+      {limitNotice ? (
+        <Panel tone="warning" title={searchParams?.limit === "trial_used" ? "Free trial already used" : "Plan limit reached"}>
+          <p className="text-sm text-amber-900">{limitNotice}</p>
         </Panel>
       ) : null}
 

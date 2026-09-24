@@ -1,9 +1,51 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { LogoLink } from "@/components/marketing/Logo";
+import { SignInWithIntuitButton } from "@/components/IntuitButtons";
+
+const INTUIT_VERIFY_EMAIL_URL = "https://accounts.intuit.com/app/account-manager/security";
+
+/**
+ * Messages for ?notice= on the way back from Intuit or an expired link.
+ * `link` is shown after the text.
+ */
+const NOTICES: Record<string, { text: string; link?: { href: string; label: string } }> = {
+  intuit_unverified: {
+    text: "Your Intuit account's email address isn't verified yet, so we can't sign you in with it. Verify it with Intuit, then try again.",
+    link: { href: INTUIT_VERIFY_EMAIL_URL, label: "Verify your email with Intuit" },
+  },
+  intuit_failed: { text: "Signing in with Intuit didn't work that time. Please try again, or log in with your password." },
+  intuit_session: { text: "That sign-in took too long or started in another browser. Please try again." },
+  invalid_state: { text: "That link has expired. Please try again." },
+  qbo_session: { text: "Log in again to finish connecting QuickBooks, then choose Connect to QuickBooks." },
+};
+
+/**
+ * Where to go after logging in: a same-site path from ?next= (an
+ * invitation link, say), or the dashboard. Anything that isn't a plain
+ * path on this site is ignored, so the parameter can't be used to bounce
+ * someone to another website after they sign in.
+ */
+function safeNext(): string {
+  if (typeof window === "undefined") return "/dashboard";
+  const next = new URLSearchParams(window.location.search).get("next");
+  if (!next || !next.startsWith("/")) return "/dashboard";
+  // Resolved the way the browser will resolve it (which drops tabs and
+  // newlines, so "/\t/evil.com" becomes "//evil.com"), then kept only if
+  // it is still on this site.
+  try {
+    const url = new URL(next, window.location.origin);
+    const path = url.pathname + url.search + url.hash;
+    // A path that still starts with "//" (from "/.//evil.com", say) would be
+    // read as another site by the router.
+    return url.origin === window.location.origin && !path.startsWith("//") ? path : "/dashboard";
+  } catch {
+    return "/dashboard";
+  }
+}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -11,6 +53,12 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [notice, setNotice] = useState<(typeof NOTICES)[string] | null>(null);
+
+  useEffect(() => {
+    const key = new URLSearchParams(window.location.search).get("notice");
+    if (key && NOTICES[key]) setNotice(NOTICES[key]);
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -26,7 +74,7 @@ export default function LoginPage() {
         const data = await res.json();
         throw new Error(data.error ?? "Login failed");
       }
-      router.push("/dashboard");
+      router.push(safeNext());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -46,7 +94,30 @@ export default function LoginPage() {
 
       <h1 className="text-2xl font-bold text-navy">Log in</h1>
 
-      <form onSubmit={handleSubmit} className="mt-8 space-y-4">
+      {notice && (
+        <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {notice.text}
+          {notice.link && (
+            <>
+              {" "}
+              <a href={notice.link.href} target="_blank" rel="noopener noreferrer" className="font-medium underline">
+                {notice.link.label}
+              </a>
+            </>
+          )}
+        </div>
+      )}
+
+      <div className="mt-8 flex justify-center">
+        <SignInWithIntuitButton />
+      </div>
+      <div className="mt-6 flex items-center gap-3 text-xs uppercase tracking-wide text-gray-400">
+        <span className="h-px flex-1 bg-gray-200" />
+        or with your password
+        <span className="h-px flex-1 bg-gray-200" />
+      </div>
+
+      <form onSubmit={handleSubmit} className="mt-6 space-y-4">
         <div>
           <label className="block text-sm font-medium text-navy">Email</label>
           <input

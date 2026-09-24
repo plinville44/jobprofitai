@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
+import { getAccount } from "@/lib/account";
 import { tryMarkFirstAnalysis } from "@/lib/trial";
 import { tryAnnounceAnalysisReady } from "@/lib/email/lifecycle";
 import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
@@ -24,16 +24,44 @@ import { generateProfitInsights } from "@/lib/intelligence";
  * otherwise it's a no-op that reports the existing insights are current.
  * This is the "don't unnecessarily call AI" requirement from the plan.
  */
+// Metrics plus one AI call.
+export const maxDuration = 120;
+
+/** At most this many insight cards per refresh: the ones with the most money on them. */
+const MAX_INSIGHTS = 8;
+/** Data-gap items. Real, and listed on the dashboard, but not worth an AI card each. */
+const SETUP_ISSUES = new Set(["no_estimate_on_file", "stale_job", "revenue_no_costs"]);
+
+/**
+ * What the AI writes about. On the $149 plan this is the account's own
+ * Needs Attention items, and it used to be all of them: one "no cost
+ * estimate" per job, across every job ever. The model had to return one
+ * card per item within a fixed length, so any real account ran past it,
+ * the reply was cut off mid-JSON and the refresh failed. Trials use the Pro
+ * path, so this only ever broke after someone paid.
+ *
+ * Now: setup gaps are left to the dashboard, the rest are ranked by dollar
+ * impact then severity, and the top MAX_INSIGHTS are written up.
+ */
+function selectInsightSource(items: (ProfitOpportunity & { severity?: string })[]): ProfitOpportunity[] {
+  const rank = (s?: string) => (s === "high" ? 3 : s === "medium" ? 2 : s === "low" ? 1 : 0);
+  return items
+    .filter((i) => !SETUP_ISSUES.has(i.type))
+    .sort((a, b) => (b.financialImpact ?? 0) - (a.financialImpact ?? 0) || rank(b.severity) - rank(a.severity))
+    .slice(0, MAX_INSIGHTS)
+    .map(({ severity: _severity, ...rest }) => rest);
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const session = await getSession();
-    if (!session) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const account = await getAccount();
+    if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
     // Entitlement enforced server-side. Hiding the button in the browser is
     // not a control - this route generates paid value (a QuickBooks sync, an
     // Anthropic call) and must refuse a lapsed account regardless of what
     // the client sends.
-    const entitlements = await getEntitlements(session.userId);
+    const entitlements = await getEntitlements(account.ownerId);
     if (!entitlements.active) {
       return NextResponse.json(
         { error: inactiveMessage(entitlements), code: "entitlement_required" },
@@ -47,7 +75,7 @@ export async function POST(req: NextRequest) {
     }
 
     const connection = await prisma.quickBooksConnection.findUnique({ where: { id: connectionId } });
-    if (!connection || connection.userId !== session.userId) {
+    if (!connection || connection.userId !== account.ownerId) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
 
@@ -68,16 +96,19 @@ export async function POST(req: NextRequest) {
     // Attention list), which the $149 plan does include.
     const profitData = await getConnectionProfitData(connectionId, new Date());
     const canSeePatterns = entitlements.has("profit_opportunities");
-    const source: ProfitOpportunity[] = canSeePatterns
-      ? profitData.opportunities
-      : profitData.needsAttention.map((item) => ({
-          type: item.issueCode,
-          title: `${item.jobName}: ${item.issue}`,
-          description: item.issue,
-          financialImpact: item.financialImpact,
-          confidence: item.confidence,
-          supportingJobIds: [item.jobId],
-        }));
+    const source: ProfitOpportunity[] = selectInsightSource(
+      canSeePatterns
+        ? profitData.opportunities
+        : profitData.needsAttention.map((item) => ({
+            type: item.issueCode,
+            title: `${item.jobName}: ${item.issue}`,
+            description: item.issue,
+            financialImpact: item.financialImpact,
+            confidence: item.confidence,
+            supportingJobIds: [item.jobId],
+            severity: item.severity,
+          }))
+    );
 
     // Refresh when the findings themselves have changed, not only when
     // QuickBooks has synced. Marking jobs completed or setting job types
@@ -148,10 +179,10 @@ export async function POST(req: NextRequest) {
       }),
     ]);
 
-    await tryMarkFirstAnalysis(session.userId);
+    await tryMarkFirstAnalysis(account.ownerId);
     // "Your numbers are in, here's where to start." Sends once ever, guarded
     // by the EmailEvent dedupe key rather than by a check here.
-    await tryAnnounceAnalysisReady(session.userId, connection.companyName);
+    await tryAnnounceAnalysisReady(account.ownerId, connection.companyName);
 
     return NextResponse.json({ ok: true, refreshed: true, count: drafts.length });
   } catch (err) {

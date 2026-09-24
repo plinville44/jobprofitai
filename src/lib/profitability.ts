@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import { requireFeature } from "./entitlements";
-import { effectiveJobStatus, CLOSED_JOB_WHERE, OPEN_JOB_WHERE } from "./jobStatus";
+import { effectiveJobStatus, CLOSED_JOB_WHERE, OPEN_JOB_WHERE, VISIBLE_JOB_WHERE } from "./jobStatus";
 
 // ============================================================================
 // PURE CALCULATION LAYER
@@ -41,8 +41,16 @@ export interface JobInput {
   customerName: string | null;
   status: string; // "open" | "closed"
   category: string | null;
+  /**
+   * The job's contract value: typed in JobProfitAI if the contractor did,
+   * otherwise from QuickBooks estimates. Named estimatedRevenue for history.
+   */
   estimatedRevenue: number | null;
   estimatedCost: number | null;
+  /** The contractor's own percent complete for an open job, 0-100. */
+  percentCompleteOverride?: number | null;
+  /** When the QuickBooks customer record was created. */
+  qboCreatedAt?: Date | null;
   startDate: Date | null;
   endDate: Date | null;
   updatedAt: Date;
@@ -108,8 +116,75 @@ export interface JobFinancials {
   confidenceReasons: string[]; // human-readable "why" for the confidence level, per the no-false-precision requirement
 
   lastFinancialActivity: Date | null;
+  /** When the QuickBooks customer record was created (idle-job detection). */
+  qboCreatedAt: Date | null;
+
+  /**
+   * Work in progress, open jobs only, whole job only (null on a windowed
+   * view and on completed jobs). See computeWip.
+   */
+  wip: WipFigures | null;
 
   flags: string[]; // machine-readable flags, consumed by computeNeedsAttentionForJob and legacy digest code
+}
+
+export interface WipFigures {
+  /** 0-1. How far along the job is. */
+  percentComplete: number;
+  /** "manual" = the contractor's own figure; "cost" = cost to date / estimated cost. */
+  percentCompleteSource: "manual" | "cost";
+  /** Contract value x percent complete. */
+  earnedRevenue: number;
+  /** Billed minus earned. Positive = billed ahead of the work; negative = work done but not billed yet. */
+  overUnderBilling: number;
+  /** True when cost to date is already past the estimate, so cost can no longer measure progress. */
+  costPastEstimate: boolean;
+}
+
+/**
+ * Over/under billing for an open job, by the standard percent-complete
+ * method contractors, their bookkeepers and their bonding companies use:
+ *
+ *   percent complete = the contractor's own figure, or cost to date / estimated cost
+ *   earned revenue   = contract value x percent complete
+ *   over/(under)     = billed to date - earned revenue
+ *
+ * Needs a contract value, and either a percent complete or an estimated
+ * cost. When cost to date has passed the estimate, cost can no longer say
+ * how far along the job is; percent complete is capped at 100% and the
+ * figure is marked (costPastEstimate) so nobody reads it as "finished".
+ */
+export function computeWip(input: {
+  contractValue: number | null;
+  estimatedCost: number | null;
+  costs: number;
+  billed: number;
+  percentCompleteOverride: number | null | undefined;
+}): WipFigures | null {
+  const { contractValue, estimatedCost, costs, billed } = input;
+  if (contractValue == null || contractValue <= 0) return null;
+  let percentComplete: number;
+  let source: "manual" | "cost";
+  let costPastEstimate = false;
+  if (input.percentCompleteOverride != null && input.percentCompleteOverride >= 0) {
+    percentComplete = Math.min(1, input.percentCompleteOverride / 100);
+    source = "manual";
+  } else if (estimatedCost != null && estimatedCost > 0) {
+    const raw = costs / estimatedCost;
+    costPastEstimate = raw > 1;
+    percentComplete = Math.max(0, Math.min(1, raw));
+    source = "cost";
+  } else {
+    return null;
+  }
+  const earnedRevenue = contractValue * percentComplete;
+  return {
+    percentComplete,
+    percentCompleteSource: source,
+    earnedRevenue,
+    overUnderBilling: billed - earnedRevenue,
+    costPastEstimate,
+  };
 }
 
 /**
@@ -182,7 +257,11 @@ export function computeJobFinancials(job: JobInput, ctx: FinancialContext): JobF
       fullyLoadedMarginPct = revenue > 0 ? fullyLoadedProfit / revenue : null;
     }
 
-    if (targetMarginPct != null && grossMarginPct != null && grossMarginPct * 100 < targetMarginPct) {
+    // Completed jobs only. An open job's margin to date is mostly billing
+    // timing: buy the materials before the next draw and it reads -30%,
+    // bill a deposit first and it reads 90%. Open jobs are judged by their
+    // forecast instead (see forecast_below_target in getConnectionProfitData).
+    if (job.status !== "open" && targetMarginPct != null && grossMarginPct != null && grossMarginPct * 100 < targetMarginPct) {
       flags.push("below_target_margin");
     }
   }
@@ -270,6 +349,17 @@ export function computeJobFinancials(job: JobInput, ctx: FinancialContext): JobF
     dataConfidence,
     confidenceReasons,
     lastFinancialActivity,
+    qboCreatedAt: job.qboCreatedAt ?? null,
+    wip:
+      job.status === "open" && !ctx.costsAreWindowed
+        ? computeWip({
+            contractValue: job.estimatedRevenue,
+            estimatedCost,
+            costs,
+            billed: revenue,
+            percentCompleteOverride: job.percentCompleteOverride,
+          })
+        : null,
     flags,
   };
 }
@@ -299,6 +389,8 @@ export function computeNeedsAttentionForJob(
   opts: {
     priorMarginPcts?: number[];
     peerCompletedCostByCategory?: Record<string, number[]>; // category -> list of totals from peer completed jobs
+    /** The job's forecast, when the plan includes forecasting and one is available. */
+    forecast?: ForecastResult | null;
   } = {}
 ): NeedsAttentionItem[] {
   const items: NeedsAttentionItem[] = [];
@@ -327,7 +419,9 @@ export function computeNeedsAttentionForJob(
     });
   }
 
-  if (f.flags.includes("no_estimate_on_file")) {
+  // Open jobs only. An estimate still matters on a job in progress; asking
+  // for one on every job finished years ago is noise nobody will act on.
+  if (f.flags.includes("no_estimate_on_file") && f.status === "open") {
     items.push({
       jobId: f.jobId,
       jobName: f.jobName,
@@ -362,6 +456,48 @@ export function computeNeedsAttentionForJob(
       severity: f.varianceVsEstimatePct > 0.25 ? "high" : "medium",
       confidence: "high",
     });
+  }
+
+  // An open job heading below its target, judged on the forecast (Pro),
+  // never on margin to date.
+  const fc = opts.forecast;
+  if (
+    f.status === "open" &&
+    f.targetMarginPct != null &&
+    fc?.available &&
+    fc.forecastMarginPct != null &&
+    fc.forecastProfit != null &&
+    f.estimatedRevenue != null &&
+    fc.forecastMarginPct * 100 < f.targetMarginPct
+  ) {
+    const gapPct = f.targetMarginPct - fc.forecastMarginPct * 100;
+    items.push({
+      jobId: f.jobId,
+      jobName: f.jobName,
+      issueCode: "forecast_below_target",
+      issue: `Forecast to finish at ${(fc.forecastMarginPct * 100).toFixed(1)}% margin, ${gapPct.toFixed(1)} points below your ${f.targetMarginPct}% target`,
+      financialImpact: f.estimatedRevenue * (gapPct / 100),
+      severity: fc.forecastMarginPct < 0 || gapPct > 10 ? "high" : gapPct > 5 ? "medium" : "low",
+      confidence: fc.confidence ?? "low",
+    });
+  }
+
+  // Work done but not billed yet. Cash the contractor has already spent and
+  // hasn't asked for. Flagged past $1,000 and 5% of the contract, so
+  // ordinary timing between draws doesn't raise it.
+  if (f.status === "open" && f.wip && f.estimatedRevenue != null && !f.wip.costPastEstimate) {
+    const under = -f.wip.overUnderBilling;
+    if (under > 1000 && under > f.estimatedRevenue * 0.05) {
+      items.push({
+        jobId: f.jobId,
+        jobName: f.jobName,
+        issueCode: "underbilled",
+        issue: `About ${Math.round(f.wip.percentComplete * 100)}% complete but billed ${Math.round((f.revenue / f.estimatedRevenue) * 100)}% of the contract`,
+        financialImpact: under,
+        severity: under > f.estimatedRevenue * 0.2 ? "high" : "medium",
+        confidence: f.wip.percentCompleteSource === "manual" ? "high" : "medium",
+      });
+    }
   }
 
   if (f.flags.includes("stale_job")) {
@@ -429,76 +565,116 @@ export interface ForecastResult {
   forecastProfit?: number;
   forecastMarginPct?: number;
   confidence?: "high" | "medium" | "low";
+  /** 0-1. The progress figure the forecast divided by. */
+  progress?: number;
+  progressSource?: "manual" | "billing";
+  /** One plain sentence saying exactly how this forecast was worked out. */
+  method?: string;
 }
 
 /**
- * Forecast-at-completion for an in-progress job. Requires an estimate/budget,
- * actual costs, AND a defensible progress signal (recent cost activity) -
- * never built from revenue and current costs alone per spec.
+ * Forecast at completion for an open job.
+ *
+ * Cost to date divided by how far along the job is gives the cost the job
+ * is on track to finish at. "How far along" is the contractor's own percent
+ * complete when they have entered one, otherwise the share of the contract
+ * billed so far (progress billing tracks the work on most jobs).
+ *
+ *   projected cost = cost to date / progress
+ *   forecast cost  = the larger of projected cost, the estimated cost and
+ *                    cost to date
+ *   forecast profit = contract value - forecast cost
+ *
+ * The forecast never finishes a job under its estimate. Early costs are
+ * lumpy (materials go on the card in week one, labor comes later), and a
+ * forecast that promised an under-run on a job a third done would be the
+ * most expensive kind of wrong. It only ever warns.
+ *
+ * The version this replaces was max(actual, estimate): it could not see an
+ * overrun until the money had already been spent, and without an estimate
+ * it divided by billed-to-date revenue and reported big losses on jobs that
+ * were simply part-billed.
  */
 export function computeForecastAtCompletion(job: JobInput, f: JobFinancials, now: Date): ForecastResult {
-  // Each branch says which ingredient is missing, and where it comes from.
-  // These four conditions used to share one message: "Not enough data to
-  // create a reliable forecast." True, and useless - a contractor reading it
-  // can't tell whether to add an estimate, sync QuickBooks, or nothing at
-  // all, so the sensible reaction is to assume the feature is broken.
   if (job.status !== "open") {
     return {
       available: false,
       reason: "Forecast at completion only applies to jobs still in progress. This one is marked completed.",
     };
   }
-  if (f.estimatedCost == null || f.estimatedCost <= 0) {
+  const contract = f.estimatedRevenue;
+  if (contract == null || contract <= 0) {
     return {
       available: false,
       reason:
-        "No estimated cost on file for this job. Add one in Job Details on this page and the forecast appears straight away.",
+        "No contract value for this job. Add a QuickBooks estimate for it, or type the contract value in Job Details on this page.",
     };
   }
   if (f.costs <= 0) {
     return {
       available: false,
-      reason:
-        "No costs have been assigned to this job in QuickBooks yet. The forecast projects the overrun seen so far, so it needs at least some actual spend to work from.",
+      reason: "No costs have been assigned to this job in QuickBooks yet, so there is nothing to project from.",
     };
   }
-  const daysSinceActivity = f.lastFinancialActivity
-    ? (now.getTime() - f.lastFinancialActivity.getTime()) / (1000 * 60 * 60 * 24)
-    : Infinity;
-  if (daysSinceActivity > 30) {
-    const days = Number.isFinite(daysSinceActivity) ? Math.floor(daysSinceActivity) : null;
+
+  let progress: number | null = null;
+  let progressSource: "manual" | "billing" | null = null;
+  if (job.percentCompleteOverride != null && job.percentCompleteOverride > 0) {
+    progress = Math.min(1, job.percentCompleteOverride / 100);
+    progressSource = "manual";
+  } else if (f.revenue > 0) {
+    progress = Math.min(1, f.revenue / contract);
+    progressSource = "billing";
+  }
+  if (progress == null || progressSource == null) {
     return {
       available: false,
-      reason: days
-        ? `The last cost or invoice on this job was ${days} days ago. Forecasting from activity that stale would be guesswork, so we don't. Sync QuickBooks, or close the job if it's finished.`
-        : "No dated financial activity on this job yet, so there's nothing to project a run rate from.",
+      reason:
+        "Nothing has been billed on this job yet, so there is no measure of how far along it is. Enter a percent complete in Job Details and the forecast appears straight away.",
     };
   }
+  if (progress < 0.05) {
+    return {
+      available: false,
+      reason: `This job is only ${Math.round(progress * 100)}% along, too early for a forecast worth trusting.`,
+    };
+  }
+  if (progressSource === "billing") {
+    const daysSinceActivity = f.lastFinancialActivity
+      ? (now.getTime() - f.lastFinancialActivity.getTime()) / 86_400_000
+      : Infinity;
+    if (daysSinceActivity > 30) {
+      return {
+        available: false,
+        reason: `The last cost or invoice on this job was ${Number.isFinite(daysSinceActivity) ? Math.floor(daysSinceActivity) + " days ago" : "never recorded"}, so billing no longer says how far along it is. Enter a percent complete, or mark the job completed if it's finished.`,
+      };
+    }
+  }
 
-  // Simple, transparent run-rate model: cost overrun rate observed so far
-  // (actual / estimate) projected onto the full estimate. Deliberately not a
-  // time-based projection (spec explicitly forbids revenue+current-cost-only
-  // forecasts) - this uses the estimate as the completion baseline and scales
-  // it by the variance already observed, which is defensible with an
-  // estimate + real cost data in hand.
-  const overrunRate = f.costs / f.estimatedCost;
-  const forecastCostAtCompletion = f.estimatedCost * Math.max(overrunRate, 1);
-  const forecastProfit = (f.estimatedRevenue ?? f.revenue) - forecastCostAtCompletion;
-  const forecastMarginPct =
-    (f.estimatedRevenue ?? f.revenue) > 0 ? forecastProfit / (f.estimatedRevenue ?? f.revenue) : null;
-
-  const costCoveragePct = f.costs / f.estimatedCost;
+  const projected = f.costs / progress;
+  const forecastCostAtCompletion = Math.max(projected, f.estimatedCost ?? 0, f.costs);
+  const forecastProfit = contract - forecastCostAtCompletion;
+  const forecastMarginPct = forecastProfit / contract;
   const confidence: "high" | "medium" | "low" =
-    costCoveragePct >= 0.5 ? "high" : costCoveragePct >= 0.2 ? "medium" : "low";
+    progressSource === "manual" ? (progress >= 0.25 ? "high" : "medium") : progress >= 0.5 ? "medium" : "low";
+
+  const pct = Math.round(progress * 100);
+  const method =
+    progressSource === "manual"
+      ? `Cost to date divided by your ${pct}% complete${f.estimatedCost != null ? ", and never less than the estimated cost" : ""}.`
+      : `Cost to date divided by the ${pct}% of the contract billed so far${f.estimatedCost != null ? ", and never less than the estimated cost" : ""}. Entering a percent complete makes this more exact.`;
 
   return {
     available: true,
     actualCostToDate: f.costs,
-    estimatedCost: f.estimatedCost,
+    estimatedCost: f.estimatedCost ?? undefined,
     forecastCostAtCompletion,
     forecastProfit,
-    forecastMarginPct: forecastMarginPct ?? undefined,
+    forecastMarginPct,
     confidence,
+    progress,
+    progressSource,
+    method,
   };
 }
 
@@ -565,68 +741,98 @@ export function computeProfitLeakage(f: JobFinancials, forecast: ForecastResult)
   return steps;
 }
 
+/** Data Health looks at open jobs and jobs with any activity in this window. */
+export const DATA_HEALTH_WINDOW_DAYS = 365;
+/** An open job this quiet is almost certainly finished and just not marked so. */
+export const IDLE_JOB_DAYS = 90;
+
 export interface DataHealthReport {
+  /** Open jobs with no estimated cost. Finished jobs are not nagged about. */
   jobsMissingEstimates: { jobId: string; jobName: string }[];
   jobsMissingCosts: { jobId: string; jobName: string }[];
   staleJobs: { jobId: string; jobName: string; daysSinceActivity: number }[];
   completedJobsWithUnresolvedActivity: { jobId: string; jobName: string }[];
   /**
-   * Every job whose profit can't be calculated yet, with the reason. This is
-   * the list behind the Data Health headline count. Not added to the Data
-   * Issues tile: an open job with costs and no invoice yet is ordinary work
-   * in progress, not a problem with anyone's books.
+   * Every in-scope job whose profit can't be calculated yet, with the
+   * reason. The list behind the Data Health headline count.
    */
   jobsWithoutEnoughData: { jobId: string; jobName: string; reason: string }[];
-  unassignedExpenseCount: number | null; // null = not yet measured (needs a sync with unassigned-expense tracking, see sync route Phase 2)
-  unassignedExpenseAmount: number | null;
-  // Tagged to a real QuickBooks customer, but one that doesn't match any of
-  // your synced jobs (directly or via an unambiguous parent-customer match) -
-  // see resolveJobForCustomerRef in the sync route. null = not yet measured.
+  /**
+   * Open jobs with no financial activity for IDLE_JOB_DAYS or more (or none
+   * ever, on a QuickBooks record at least that old). Almost always finished
+   * work that was never marked complete; offered as a one-click fix.
+   */
+  idleOpenJobs: { jobId: string; jobName: string; daysSinceActivity: number | null }[];
+  /**
+   * Job-cost lines (Cost of Goods Sold accounts, or items bought) in the last
+   * 12 months that aren't tagged to any customer. These are real gaps: a
+   * cost that belongs to some job and isn't on one. null = not measured yet.
+   */
+  untaggedJobCostCount: number | null;
+  untaggedJobCostAmount: number | null;
+  /**
+   * Overhead (rent, fuel, insurance, software...) not tagged to a customer,
+   * last 12 months. Information only: overhead is supposed to be untagged,
+   * so this is never counted as a problem.
+   */
+  untaggedOverheadCount: number | null;
+  untaggedOverheadAmount: number | null;
+  // Tagged to a real QuickBooks customer that doesn't match any synced job
+  // (directly or via an unambiguous parent-customer match). Last 12 months.
   unresolvedExpenseCount: number | null;
   unresolvedExpenseAmount: number | null;
-  // Informational, not a problem: matched successfully, but only by falling
-  // back to the job's parent customer rather than the job itself - worth a
-  // quick glance for accuracy, not something to fix. null = not yet measured.
+  // Informational: matched, but through the job's parent customer.
   costsMatchedViaParentCount: number | null;
   costsMatchedViaParentAmount: number | null;
-  // Time entries QuickBooks returned with no hourly rate, which the sync has
-  // to skip because an hour with no rate has no cost. This is NOT a rare
-  // edge case: QuickBooks only stores an hourly rate on time it considers
-  // billable, so a contractor who logs crew hours as non-billable has every
-  // one of those hours silently worth nothing here. Surfaced so the labor
-  // total being low is explained rather than just wrong-looking.
-  // null = not yet measured.
-  timeEntriesWithoutRate: number | null;
-  // When the sync-derived counters above were measured. Null until a full
-  // sync has ever run. Shown in the UI so a number that is a few days old is
-  // read as a few days old.
+  /**
+   * Employee time entries in the last 12 months with no pay rate on the
+   * employee, so their hours have no cost. Fixed in QuickBooks by setting
+   * the employee's pay rate (cost rate).
+   */
+  timeEntriesWithoutPayRate: number | null;
+  // When the sync-derived counters above were measured (the last full sync).
   countsAsOf: Date | null;
   possibleDuplicates: { jobName: string; amount: number; date: string; jobId: string }[];
+  /**
+   * Jobs with labor from timesheets AND labor from journal entries (a
+   * payroll that posts to jobs). Usually the same wages counted twice.
+   */
+  jobsWithDoubleLabor: { jobId: string; jobName: string }[];
   overallConfidence: DataConfidence;
-  // The raw counts behind overallConfidence. Exposed so the UI can state the
-  // plain fact ("6 of your 24 jobs are missing data we need") rather than
-  // showing a grade like "Medium confidence", which tells a contractor
-  // nothing actionable and invites them to distrust the whole page.
+  // The raw counts behind overallConfidence, over in-scope jobs.
   totalJobs: number;
   jobsWithEnoughData: number;
   jobsMissingData: number;
 }
 
 /**
- * Company-level rollup of data-quality issues. Pure aggregation over already-
- * computed JobFinancials plus whatever the latest SyncRun recorded about
- * unassigned expenses (see plan §3 - that tracking lands in the sync-route
- * Phase 2 work; until then this just reports "not yet measured" rather than 0,
- * which would misleadingly imply there are none).
+ * Whether a job belongs in company-level health checks and the weekly
+ * brief: open, or with any financial activity in the window. A contractor's
+ * QuickBooks can hold ten years of finished projects; grading the business
+ * on them buried this year's real gaps under history nobody will fix.
+ */
+export function isInScope(j: Pick<JobFinancials, "status" | "lastFinancialActivity">, now: Date, days = DATA_HEALTH_WINDOW_DAYS): boolean {
+  if (j.status === "open") return true;
+  return j.lastFinancialActivity != null && now.getTime() - j.lastFinancialActivity.getTime() <= days * 86_400_000;
+}
+
+/**
+ * Company-level rollup of data-quality issues, over in-scope jobs (see
+ * isInScope). Sync-derived counts come from the last full sync and are null
+ * ("not measured yet") rather than 0 until one has run.
  */
 export function computeDataHealth(
-  jobs: JobFinancials[],
+  allJobs: JobFinancials[],
   now: Date,
   latestSyncEntitiesUpdated: Record<string, unknown> | null,
-  countsAsOf: Date | null = null
+  countsAsOf: Date | null = null,
+  scopeDays: number = DATA_HEALTH_WINDOW_DAYS
 ): DataHealthReport {
+  const jobs = allJobs.filter((j) => isInScope(j, now, scopeDays));
+  const daysSince = (d: Date | null) => (d ? Math.floor((now.getTime() - d.getTime()) / 86_400_000) : null);
+
   const jobsMissingEstimates = jobs
-    .filter((j) => j.estimatedCost == null)
+    .filter((j) => j.status === "open" && j.estimatedCost == null)
     .map((j) => ({ jobId: j.jobId, jobName: j.jobName }));
 
   const jobsMissingCosts = jobs
@@ -635,63 +841,35 @@ export function computeDataHealth(
 
   const staleJobs = jobs
     .filter((j) => j.status === "open" && j.flags.includes("stale_job"))
-    .map((j) => ({
-      jobId: j.jobId,
-      jobName: j.jobName,
-      daysSinceActivity: j.lastFinancialActivity
-        ? Math.floor((now.getTime() - j.lastFinancialActivity.getTime()) / (1000 * 60 * 60 * 24))
-        : Infinity,
-    }));
+    .map((j) => ({ jobId: j.jobId, jobName: j.jobName, daysSinceActivity: daysSince(j.lastFinancialActivity) ?? Infinity }));
 
   const completedJobsWithUnresolvedActivity = jobs
     .filter((j) => j.status === "closed" && (j.flags.includes("revenue_no_costs") || j.flags.includes("costs_no_revenue")))
     .map((j) => ({ jobId: j.jobId, jobName: j.jobName }));
 
+  const idleOpenJobs = allJobs
+    .filter((j) => {
+      if (j.status !== "open") return false;
+      const last = j.lastFinancialActivity ?? j.qboCreatedAt;
+      return last != null && now.getTime() - last.getTime() >= IDLE_JOB_DAYS * 86_400_000;
+    })
+    .map((j) => ({ jobId: j.jobId, jobName: j.jobName, daysSinceActivity: daysSince(j.lastFinancialActivity) }));
+
   const readCount = (key: string): number | null =>
     typeof latestSyncEntitiesUpdated?.[key] === "number" ? (latestSyncEntitiesUpdated[key] as number) : null;
 
-  const unassignedExpenseCount = readCount("unassignedExpenseCount");
-  const unassignedExpenseAmount = readCount("unassignedExpenseAmount");
-  const unresolvedExpenseCount = readCount("unresolvedExpenseCount");
-  const unresolvedExpenseAmount = readCount("unresolvedExpenseAmount");
-  const costsMatchedViaParentCount = readCount("costsMatchedViaParentCount");
-  const costsMatchedViaParentAmount = readCount("costsMatchedViaParentAmount");
-  const timeEntriesWithoutRate = readCount("timeActivitiesSkippedNoRate");
-
-  // Possible duplicate: same job, same amount, same date, but we only ever
-  // store one CostEntry per (source type, source id) via upsert - so a true
-  // duplicate here means two *different* QBO transactions landed with
-  // identical job/amount/date, which is worth a human glance, not an
-  // auto-merge.
-  // Possible-duplicate detection needs raw CostEntry rows (source ids, exact
-  // dates) that aren't part of JobFinancials - the async wrapper below
-  // computes this separately and merges it in, since this function only
-  // receives already-aggregated per-job financials.
-  const possibleDuplicates: DataHealthReport["possibleDuplicates"] = [];
-
-  // Every job the headline counts as missing data, by name, with the reason.
-  // The headline used to count all of these while the lists below it only
-  // named revenue-with-no-costs, so three open jobs with costs and no invoice
-  // yet read "3 jobs are missing revenue or cost data" above lists that all
-  // said "None right now".
   const jobsWithoutEnoughData = jobs
     .filter((j) => j.dataConfidence === "insufficient_data")
-    .map((j) => ({
-      jobId: j.jobId,
-      jobName: j.jobName,
-      reason: j.unavailableReason ?? "Not enough revenue and cost data yet.",
-    }));
+    .map((j) => ({ jobId: j.jobId, jobName: j.jobName, reason: j.unavailableReason ?? "Not enough revenue and cost data yet." }));
 
   const insufficientCount = jobsWithoutEnoughData.length;
   const totalJobs = jobs.length;
-  const jobsMissingData = insufficientCount;
-  const jobsWithEnoughData = totalJobs - insufficientCount;
   const overallConfidence: DataConfidence =
-    jobs.length === 0
+    totalJobs === 0
       ? "insufficient_data"
-      : insufficientCount / jobs.length > 0.5
+      : insufficientCount / totalJobs > 0.5
       ? "low"
-      : insufficientCount / jobs.length > 0.2
+      : insufficientCount / totalJobs > 0.2
       ? "medium"
       : "high";
 
@@ -701,19 +879,24 @@ export function computeDataHealth(
     staleJobs,
     completedJobsWithUnresolvedActivity,
     jobsWithoutEnoughData,
-    unassignedExpenseCount,
-    unassignedExpenseAmount,
-    unresolvedExpenseCount,
-    unresolvedExpenseAmount,
-    costsMatchedViaParentCount,
-    costsMatchedViaParentAmount,
-    timeEntriesWithoutRate,
+    idleOpenJobs,
+    untaggedJobCostCount: readCount("untaggedJobCostCount"),
+    untaggedJobCostAmount: readCount("untaggedJobCostAmount"),
+    untaggedOverheadCount: readCount("untaggedOverheadCount"),
+    untaggedOverheadAmount: readCount("untaggedOverheadAmount"),
+    unresolvedExpenseCount: readCount("unresolvedExpenseCount"),
+    unresolvedExpenseAmount: readCount("unresolvedExpenseAmount"),
+    costsMatchedViaParentCount: readCount("costsMatchedViaParentCount"),
+    costsMatchedViaParentAmount: readCount("costsMatchedViaParentAmount"),
+    timeEntriesWithoutPayRate: readCount("timeEntriesWithoutPayRate"),
     countsAsOf,
-    possibleDuplicates,
+    // Filled in by the async wrapper, which has the raw cost rows.
+    possibleDuplicates: [],
+    jobsWithDoubleLabor: [],
     overallConfidence,
     totalJobs,
-    jobsWithEnoughData,
-    jobsMissingData,
+    jobsWithEnoughData: totalJobs - insufficientCount,
+    jobsMissingData: insufficientCount,
   };
 }
 
@@ -1010,37 +1193,28 @@ export function computeDashboardTotals(
   const avgJobMarginPct =
     withMargin.length > 0 ? withMargin.reduce((s, j) => s + j.grossMarginPct!, 0) / withMargin.length : null;
 
-  // Both from the same Needs Attention items, which are computed on each
-  // job's whole life (see getConnectionProfitData).
-  //
-  // The count used to come from `jobs`, the period-windowed list, while
-  // Profit At Risk came from these lifetime items. Pick "This month" and the
-  // dashboard read "Jobs Below Target: 0" directly beside "Profit At Risk:
-  // $800", where Profit At Risk is DEFINED as the shortfall on jobs below
-  // target. Whether a job is below its target margin is a question about the
-  // whole job, same as whether it is over its estimate: a month in which a
-  // job billed and spent nothing has no margin to compare. So both tiles are
-  // lifetime, and both are named as such under the period picker.
-  const belowTargetItems = needsAttention.filter((i) => i.issueCode === "below_target_margin");
+  // Both from the same Needs Attention items: completed jobs that finished
+  // below target, and open jobs forecast to (Pro). Never an open job's margin
+  // to date, which is billing timing rather than profit.
+  const belowTargetItems = needsAttention.filter(
+    (i) => i.issueCode === "below_target_margin" || i.issueCode === "forecast_below_target"
+  );
   const jobsBelowTarget = new Set(belowTargetItems.map((i) => i.jobId)).size;
   const profitAtRisk = belowTargetItems.reduce((s, i) => s + (i.financialImpact ?? 0), 0);
 
-  // "costsMatchedViaParentCount" is deliberately excluded here - it's a
-  // successful (if judgment-call) match, not a problem, so it doesn't count
-  // as a data issue. It's still shown on the Data Health page for transparency.
+  // Things that need fixing in the books. Missing estimates are setup, not
+  // data problems, so they are listed on Data Health but not counted here;
+  // untagged overhead is not a problem at all; parent-customer matches
+  // succeeded.
   const dataIssues =
-    dataHealth.jobsMissingEstimates.length +
     dataHealth.jobsMissingCosts.length +
     dataHealth.staleJobs.length +
     dataHealth.completedJobsWithUnresolvedActivity.length +
-    (dataHealth.unassignedExpenseCount ?? 0) +
+    (dataHealth.untaggedJobCostCount ?? 0) +
     (dataHealth.unresolvedExpenseCount ?? 0) +
-    // Counted, unlike costsMatchedViaParentCount above, because these hours
-    // are genuinely missing from the labor total rather than matched by a
-    // judgment call. A job whose crew time is all non-billable reads as
-    // having no labor cost at all, which is a wrong number, not a footnote.
-    (dataHealth.timeEntriesWithoutRate ?? 0) +
-    dataHealth.possibleDuplicates.length;
+    (dataHealth.timeEntriesWithoutPayRate ?? 0) +
+    dataHealth.possibleDuplicates.length +
+    dataHealth.jobsWithDoubleLabor.length;
 
   return {
     activeJobs,
@@ -1061,6 +1235,15 @@ export function computeDashboardTotals(
 // ============================================================================
 
 const toNum = (d: Prisma.Decimal | null | undefined): number => (d == null ? 0 : Number(d));
+
+/** The contract value the engine uses: typed in JobProfitAI, else from QuickBooks estimates. */
+const contractValueOf = (j: { manualContractValue?: Prisma.Decimal | null; estimatedRevenue: Prisma.Decimal | null }): number | null => {
+  if (j.manualContractValue != null && Number(j.manualContractValue) > 0) return Number(j.manualContractValue);
+  return j.estimatedRevenue == null ? null : Number(j.estimatedRevenue);
+};
+
+const percentOverrideOf = (j: { percentCompleteOverride?: Prisma.Decimal | null }): number | null =>
+  j.percentCompleteOverride == null ? null : Number(j.percentCompleteOverride);
 
 /**
  * An estimated cost of zero is no estimate. Data Health used to count it as
@@ -1086,6 +1269,35 @@ const estimateOrNull = (d: Prisma.Decimal | null | undefined): number | null => 
 // duplicate-detection logic directly - it's already a pure function (no
 // Prisma calls of its own, just operates on already-fetched rows), it just
 // hadn't needed an export yet since only getConnectionProfitData called it.
+/**
+ * Jobs carrying labor from both timesheets and journal entries. A payroll
+ * service that posts wages to jobs by journal entry, plus timesheets costed
+ * at pay rates, counts the same hours twice. Only open jobs and jobs with
+ * activity in the last year are listed.
+ */
+export function findDoubleLabor(
+  jobs: {
+    id: string;
+    name: string;
+    costEntries: { qboSourceType: string; category: string; txnDate: Date }[];
+  }[],
+  now: Date = new Date()
+): DataHealthReport["jobsWithDoubleLabor"] {
+  const since = now.getTime() - DATA_HEALTH_WINDOW_DAYS * 86_400_000;
+  const out: DataHealthReport["jobsWithDoubleLabor"] = [];
+  for (const job of jobs) {
+    let timesheet = false;
+    let journal = false;
+    for (const c of job.costEntries) {
+      if (c.txnDate.getTime() < since || c.category !== "labor") continue;
+      if (c.qboSourceType === "TimeActivity") timesheet = true;
+      else if (c.qboSourceType === "JournalEntry") journal = true;
+    }
+    if (timesheet && journal) out.push({ jobId: job.id, jobName: job.name });
+  }
+  return out;
+}
+
 export function findPossibleDuplicateCostEntries(
   jobs: {
     id: string;
@@ -1122,6 +1334,10 @@ export type JobStatusFilter = "open" | "closed" | "all";
 export interface ConnectionProfitData {
   connectionId: string;
   jobs: JobFinancials[];
+  /** Same jobs as `jobs`, over their whole life (differs only when a period is selected). */
+  lifetimeJobs: JobFinancials[];
+  /** Forecasts for open jobs, when the plan includes forecasting. */
+  forecasts: Map<string, ForecastResult>;
   /** Jobs on the selected Active/Completed/All tab, activity or not. */
   jobsInTab: number;
   needsAttention: NeedsAttentionItem[];
@@ -1207,7 +1423,7 @@ export async function getConnectionProfitData(
   // The tab uses effectiveJobStatus, never the raw `status` column, which
   // mirrors QuickBooks and ignores a job the contractor marked complete here.
   const allJobs = await prisma.job.findMany({
-    where: { connectionId },
+    where: { connectionId, ...VISIBLE_JOB_WHERE },
     include: { costEntries: true, invoices: true },
   });
   const jobs =
@@ -1236,8 +1452,10 @@ export async function getConnectionProfitData(
     customerName: j.customerName,
     status: effectiveJobStatus(j),
     category: j.category,
-    estimatedRevenue: j.estimatedRevenue == null ? null : toNum(j.estimatedRevenue),
+    estimatedRevenue: contractValueOf(j),
     estimatedCost: estimateOrNull(j.estimatedCost),
+    percentCompleteOverride: percentOverrideOf(j),
+    qboCreatedAt: j.qboCreatedAt,
     startDate: j.startDate,
     endDate: j.endDate,
     updatedAt: j.updatedAt,
@@ -1299,6 +1517,7 @@ export async function getConnectionProfitData(
     latestFullSync?.finishedAt ?? latestFullSync?.startedAt ?? null
   );
   dataHealth.possibleDuplicates = findPossibleDuplicateCostEntries(allJobs);
+  dataHealth.jobsWithDoubleLabor = findDoubleLabor(allJobs);
 
   // Company-wide, like Data Health: patterns across completed jobs don't
   // stop existing because the Active tab is selected.
@@ -1317,6 +1536,17 @@ export async function getConnectionProfitData(
   const canBenchmark = Boolean(
     await requireFeature(connection.userId, "cross_job_benchmarking")
   );
+  // Open jobs are judged on their forecast, which is a Pro feature. On the
+  // $149 plan open jobs simply aren't graded against target until they finish.
+  const canForecast = Boolean(await requireFeature(connection.userId, "forecast_at_completion"));
+  const forecastByJob = new Map<string, ForecastResult>();
+  if (canForecast) {
+    for (const [i, j] of jobs.entries()) {
+      const f = lifetimeFinancials[i];
+      if (f.status !== "open") continue;
+      forecastByJob.set(f.jobId, computeForecastAtCompletion(toJobInput(j, false), f, now));
+    }
+  }
 
   const priorMarginsByJob = await getPriorMarginsByJob(connectionId);
   const completedByCategory: Record<string, JobFinancials[]> = {};
@@ -1339,6 +1569,7 @@ export async function getConnectionProfitData(
     return computeNeedsAttentionForJob(f, {
       priorMarginPcts: marginPctsOnly(priorMarginsByJob[f.jobId]),
       peerCompletedCostByCategory,
+      forecast: forecastByJob.get(f.jobId) ?? null,
     });
   });
 
@@ -1353,6 +1584,8 @@ export async function getConnectionProfitData(
     opportunities,
     totals,
     targetMarginPct: ctx.targetMarginPct,
+    forecasts: forecastByJob,
+    lifetimeJobs: lifetimeFinancials,
   };
 }
 
@@ -1428,10 +1661,14 @@ export interface JobProfitData {
    * two months and a gap of one week as the same distance.
    */
   priorMarginPoints: PriorMarginPoint[];
-  rawCostEntries: { id: string; category: string; description: string | null; amount: number; txnDate: Date; qboSourceType: string }[];
-  rawInvoices: { id: string; amount: number; status: string; txnDate: Date }[];
+  rawCostEntries: { id: string; category: string; description: string | null; amount: number; txnDate: Date; qboSourceType: string; accountName: string | null }[];
+  rawInvoices: { id: string; amount: number; status: string; txnDate: Date; qboSourceType: string; taxAmount: number | null }[];
   /** The contractor's own status choice, or null when following QuickBooks. */
   statusOverride: string | null;
+  /** Contract value typed in JobProfitAI (wins), and the one from QuickBooks estimates. */
+  manualContractValue: number | null;
+  syncedContractValue: number | null;
+  percentCompleteOverride: number | null;
   /** What the sync read from the QuickBooks customer's Active flag. */
   syncedStatus: string;
   /** Same check as Data Health, for this job only. */
@@ -1477,8 +1714,10 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
     customerName: job.customerName,
     status: effectiveJobStatus(job),
     category: job.category,
-    estimatedRevenue: job.estimatedRevenue == null ? null : toNum(job.estimatedRevenue),
+    estimatedRevenue: contractValueOf(job),
     estimatedCost: estimateOrNull(job.estimatedCost),
+    percentCompleteOverride: percentOverrideOf(job),
+    qboCreatedAt: job.qboCreatedAt,
     startDate: job.startDate,
     endDate: job.endDate,
     updatedAt: job.updatedAt,
@@ -1519,7 +1758,7 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
         customerName: peer.customerName,
         status: effectiveJobStatus(peer),
         category: peer.category,
-        estimatedRevenue: peer.estimatedRevenue == null ? null : toNum(peer.estimatedRevenue),
+        estimatedRevenue: contractValueOf(peer),
         estimatedCost: estimateOrNull(peer.estimatedCost),
         startDate: peer.startDate,
         endDate: peer.endDate,
@@ -1537,6 +1776,7 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
   const needsAttention = computeNeedsAttentionForJob(financials, {
     priorMarginPcts: marginPctsOnly(priorMarginsByJob[job.id]),
     peerCompletedCostByCategory,
+    forecast: canForecast ? forecast : null,
   });
 
   return {
@@ -1555,9 +1795,20 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
       amount: toNum(c.amount),
       txnDate: c.txnDate,
       qboSourceType: c.qboSourceType,
+      accountName: c.accountName,
     })),
-    rawInvoices: job.invoices.map((i) => ({ id: i.id, amount: toNum(i.amount), status: i.status, txnDate: i.txnDate })),
+    rawInvoices: job.invoices.map((i) => ({
+      id: i.id,
+      amount: toNum(i.amount),
+      status: i.status,
+      txnDate: i.txnDate,
+      qboSourceType: i.qboSourceType,
+      taxAmount: i.taxAmount == null ? null : toNum(i.taxAmount),
+    })),
     statusOverride: job.statusOverride,
+    manualContractValue: job.manualContractValue == null ? null : Number(job.manualContractValue),
+    syncedContractValue: job.estimatedRevenue == null ? null : Number(job.estimatedRevenue),
+    percentCompleteOverride: percentOverrideOf(job),
     syncedStatus: job.status,
     possibleDuplicates: findPossibleDuplicateCostEntries([job]),
   };
@@ -1583,13 +1834,26 @@ export interface JobMetrics {
   marginPct: number | null;
   varianceVsEstimate: number | null;
   varianceVsEstimatePct: number | null;
+  /** Open jobs with a contract value: billed minus earned (see computeWip). */
+  overUnderBilling?: number | null;
+  percentComplete?: number | null;
+  /** Pro only: forecast margin at completion for an open job. */
+  forecastMarginPct?: number | null;
   flags: string[];
 }
 
 export interface ConnectionMetrics {
   connectionId: string;
   weekStarting: Date;
+  /** Every job, so next week's comparison sees exactly what this week stored. */
   jobs: JobMetrics[];
+  /**
+   * The jobs the brief is about: open jobs, plus jobs with any activity in
+   * the last BRIEF_RECENT_DAYS. A company's QuickBooks can hold years of
+   * finished projects, and a brief that led with a 2021 job every Monday
+   * was a brief nobody would read.
+   */
+  briefJobIds: string[];
   topConcerns: JobMetrics[];
   totals: {
     activeJobs: number;
@@ -1597,62 +1861,98 @@ export interface ConnectionMetrics {
     totalActualRevenue: number;
     blendedMarginPct: number | null;
   };
-  // Added so the digest generator (src/lib/digest.ts) can decide whether the
-  // synced data is complete enough to trust an AI-written narrative about it,
-  // and so the AI narrative itself (when it does run) has the same Data
-  // Health context already shown on the dashboard.
+  // Data Health over in-scope jobs (see isInScope), as the Data Health page shows it.
   dataHealth: DataHealthReport;
+  /**
+   * The same checks over just the brief's jobs. Its overallConfidence
+   * decides whether the brief gets an AI narrative, and the notice sent
+   * instead lists its jobs, so the reason given matches the reason used.
+   */
+  briefDataHealth: DataHealthReport;
 }
+
+export const BRIEF_RECENT_DAYS = 90;
 
 export async function computeConnectionMetrics(connectionId: string, weekStarting: Date): Promise<ConnectionMetrics> {
   // `weekStarting` is a label (the Monday this digest is "for"), not "now" -
   // pass the real current time to the engine so staleness/date-based flags
   // are computed correctly regardless of which day of the week this runs on.
-  const data = await getConnectionProfitData(connectionId, new Date());
+  const now = new Date();
+  const data = await getConnectionProfitData(connectionId, now);
 
-  const jobMetrics: JobMetrics[] = data.jobs.map((f) => ({
-    jobId: f.jobId,
-    jobName: f.jobName,
-    customerName: f.customerName,
-    status: f.status,
-    estimatedCost: f.estimatedCost,
-    actualCost: f.costs,
-    estimatedRevenue: f.estimatedRevenue,
-    actualRevenue: f.revenue,
-    costByCategory: f.costByCategory,
-    marginPct: f.grossMarginPct,
-    varianceVsEstimate: f.varianceVsEstimate,
-    varianceVsEstimatePct: f.varianceVsEstimatePct,
-    flags: f.flags,
-  }));
+  const jobMetrics: JobMetrics[] = data.jobs.map((f) => {
+    const forecast = data.forecasts.get(f.jobId);
+    return {
+      jobId: f.jobId,
+      jobName: f.jobName,
+      customerName: f.customerName,
+      status: f.status,
+      estimatedCost: f.estimatedCost,
+      actualCost: f.costs,
+      estimatedRevenue: f.estimatedRevenue,
+      actualRevenue: f.revenue,
+      costByCategory: f.costByCategory,
+      marginPct: f.grossMarginPct,
+      varianceVsEstimate: f.varianceVsEstimate,
+      varianceVsEstimatePct: f.varianceVsEstimatePct,
+      overUnderBilling: f.wip ? Math.round(f.wip.overUnderBilling) : null,
+      percentComplete: f.wip ? f.wip.percentComplete : null,
+      forecastMarginPct: forecast?.available ? forecast.forecastMarginPct ?? null : null,
+      flags: f.flags,
+    };
+  });
 
-  const topConcerns = [...jobMetrics]
-    .filter((j) => j.flags.length > 0)
-    .sort((a, b) => {
-      if (b.flags.length !== a.flags.length) return b.flags.length - a.flags.length;
-      return (b.varianceVsEstimate ?? 0) - (a.varianceVsEstimate ?? 0);
-    })
+  const inBrief = new Set(data.jobs.filter((f) => isInScope(f, now, BRIEF_RECENT_DAYS)).map((f) => f.jobId));
+  const briefJobs = jobMetrics.filter((j) => inBrief.has(j.jobId));
+
+  // Ranked by money, not by how many flags a job has. Every job without an
+  // estimate carries a flag, so ranking by flag count put data gaps on old
+  // jobs ahead of a live job running $10,000 over.
+  const impact = (j: JobMetrics) =>
+    Math.max(
+      j.varianceVsEstimate != null && j.varianceVsEstimate > 0 ? j.varianceVsEstimate : 0,
+      j.marginPct != null && j.marginPct < 0 ? j.actualCost - j.actualRevenue : 0,
+      j.overUnderBilling != null && j.overUnderBilling < 0 ? -j.overUnderBilling : 0
+    );
+  const topConcerns = briefJobs
+    .filter((j) => impact(j) > 0 || j.flags.some((f) => f !== "no_estimate_on_file"))
+    .sort((a, b) => impact(b) - impact(a))
     .slice(0, 5);
 
   const activeJobs = jobMetrics.filter((j) => j.status === "open").length;
-  const totalActualCost = jobMetrics.reduce((s, j) => s + j.actualCost, 0);
-  const totalActualRevenue = jobMetrics.reduce((s, j) => s + j.actualRevenue, 0);
+  const totalActualCost = briefJobs.reduce((s, j) => s + j.actualCost, 0);
+  const totalActualRevenue = briefJobs.reduce((s, j) => s + j.actualRevenue, 0);
   // Margin only over jobs that have both revenue and costs, the same basis
-  // as the dashboard's Job Gross Profit. Revenue with nothing spent against
-  // it is not margin, and counting it told the brief's reader 57.9% while
-  // the dashboard, correctly, said 20.0%. Total revenue and cost stay plain
-  // sums: they are facts, the margin is a judgment.
-  const marginBasis = jobMetrics.filter((j) => j.actualRevenue > 0 && j.actualCost > 0);
+  // as the dashboard's Job Gross Profit.
+  const marginBasis = briefJobs.filter((j) => j.actualRevenue > 0 && j.actualCost > 0);
   const basisRevenue = marginBasis.reduce((s, j) => s + j.actualRevenue, 0);
   const basisCost = marginBasis.reduce((s, j) => s + j.actualCost, 0);
   const blendedMarginPct = basisRevenue > 0 ? (basisRevenue - basisCost) / basisRevenue : null;
+
+  const briefDataHealth: DataHealthReport = {
+    ...computeDataHealth(data.jobs, now, null, null, BRIEF_RECENT_DAYS),
+    // Sync-level tallies are company-wide; carry them over unchanged.
+    untaggedJobCostCount: data.dataHealth.untaggedJobCostCount,
+    untaggedJobCostAmount: data.dataHealth.untaggedJobCostAmount,
+    untaggedOverheadCount: data.dataHealth.untaggedOverheadCount,
+    untaggedOverheadAmount: data.dataHealth.untaggedOverheadAmount,
+    unresolvedExpenseCount: data.dataHealth.unresolvedExpenseCount,
+    unresolvedExpenseAmount: data.dataHealth.unresolvedExpenseAmount,
+    costsMatchedViaParentCount: data.dataHealth.costsMatchedViaParentCount,
+    costsMatchedViaParentAmount: data.dataHealth.costsMatchedViaParentAmount,
+    timeEntriesWithoutPayRate: data.dataHealth.timeEntriesWithoutPayRate,
+    countsAsOf: data.dataHealth.countsAsOf,
+    possibleDuplicates: data.dataHealth.possibleDuplicates.filter((d) => inBrief.has(d.jobId)),
+  };
 
   return {
     connectionId,
     weekStarting,
     jobs: jobMetrics,
+    briefJobIds: [...inBrief],
     topConcerns,
     totals: { activeJobs, totalActualCost, totalActualRevenue, blendedMarginPct },
     dataHealth: data.dataHealth,
+    briefDataHealth,
   };
 }
