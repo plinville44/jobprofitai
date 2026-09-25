@@ -2,17 +2,27 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { JOB_TYPE_OPTIONS } from "@/lib/jobTypes";
 
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const HOURS = Array.from({ length: 24 }, (_, h) => h);
 const TIMEZONES = [
   "America/New_York",
+  "America/Detroit",
+  "America/Indiana/Indianapolis",
+  "America/Kentucky/Louisville",
   "America/Chicago",
   "America/Denver",
+  "America/Boise",
   "America/Phoenix",
   "America/Los_Angeles",
   "America/Anchorage",
   "Pacific/Honolulu",
+  "America/Puerto_Rico",
+  "America/Toronto",
+  "America/Winnipeg",
+  "America/Edmonton",
+  "America/Vancouver",
 ];
 
 function hourLabel(h: number) {
@@ -33,6 +43,10 @@ type Props = {
     emailDay: number;
     emailHour: number;
     emailTimezone: string;
+    jobSource: "projects" | "customers";
+    laborFromTimeEntries: boolean;
+    alertsEnabled: boolean;
+    marginTargets: Record<string, number>;
   };
 };
 
@@ -47,6 +61,15 @@ export default function SettingsForm({ connectionId, initial }: Props) {
   const [emailDay, setEmailDay] = useState(initial.emailDay);
   const [emailHour, setEmailHour] = useState(initial.emailHour);
   const [emailTimezone, setEmailTimezone] = useState(initial.emailTimezone);
+  const [jobSource, setJobSource] = useState(initial.jobSource);
+  const [laborFromTimeEntries, setLaborFromTimeEntries] = useState(initial.laborFromTimeEntries);
+  const [alertsEnabled, setAlertsEnabled] = useState(initial.alertsEnabled);
+  const [marginTargets, setMarginTargets] = useState<Record<string, string>>(
+    Object.fromEntries(JOB_TYPE_OPTIONS.filter((o) => o.value).map((o) => [o.value, initial.marginTargets[o.value]?.toString() ?? ""]))
+  );
+  const [showTypeTargets, setShowTypeTargets] = useState(Object.keys(initial.marginTargets).length > 0);
+  // A zone captured from the browser at signup may not be in the short list.
+  const zones = TIMEZONES.includes(initial.emailTimezone) ? TIMEZONES : [initial.emailTimezone, ...TIMEZONES];
   const [status, setStatus] = useState<{ ok: boolean; message: string } | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -69,6 +92,10 @@ export default function SettingsForm({ connectionId, initial }: Props) {
           emailDay,
           emailHour,
           emailTimezone,
+          jobSource,
+          laborFromTimeEntries,
+          alertsEnabled,
+          marginTargets,
         }),
       });
       let data: any = null;
@@ -78,7 +105,12 @@ export default function SettingsForm({ connectionId, initial }: Props) {
         data = null;
       }
       if (res.ok) {
-        setStatus({ ok: true, message: "Settings saved." });
+        setStatus({
+          ok: true,
+          message: data?.rebuild
+            ? "Settings saved. Your jobs and costs are re-read the next time QuickBooks syncs; click Sync now on the Dashboard to do it now."
+            : "Settings saved.",
+        });
         router.refresh();
       } else {
         setStatus({ ok: false, message: data?.error ?? `Server returned status ${res.status}.` });
@@ -109,6 +141,32 @@ export default function SettingsForm({ connectionId, initial }: Props) {
             placeholder="e.g. 20"
             className="mt-2 w-40 rounded-lg border border-gray-300 px-3 py-2 text-sm"
           />
+          <button
+            type="button"
+            onClick={() => setShowTypeTargets((v) => !v)}
+            className="mt-2 block text-xs font-medium text-brand hover:underline"
+          >
+            {showTypeTargets ? "Hide" : "Set"} a different target for some job types
+          </button>
+          {showTypeTargets && (
+            <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+              {JOB_TYPE_OPTIONS.filter((o) => o.value).map((o) => (
+                <label key={o.value} className="flex flex-col text-xs text-gray-600">
+                  {o.label} (%)
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step="0.1"
+                    value={marginTargets[o.value] ?? ""}
+                    onChange={(e) => setMarginTargets((m) => ({ ...m, [o.value]: e.target.value }))}
+                    placeholder={targetMarginPct || "company target"}
+                    className="mt-1 rounded-lg border border-gray-300 px-2 py-1.5 text-sm"
+                  />
+                </label>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="mt-6 border-t border-gray-100 pt-6">
@@ -156,6 +214,58 @@ export default function SettingsForm({ connectionId, initial }: Props) {
       </section>
 
       <section className="rounded-xl border border-gray-200 p-6">
+        <h2 className="text-sm font-semibold text-navy">How your jobs are set up in QuickBooks</h2>
+        <div className="mt-3 space-y-2">
+          <label className="flex items-start gap-2 text-sm text-gray-700">
+            <input
+              type="radio"
+              name="jobSource"
+              checked={jobSource === "projects"}
+              onChange={() => setJobSource("projects")}
+              className="mt-1"
+            />
+            <span>
+              <strong>Projects or sub-customers.</strong> Each job is a Project (QuickBooks Online Plus or Advanced) or a
+              sub-customer under the client.
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm text-gray-700">
+            <input
+              type="radio"
+              name="jobSource"
+              checked={jobSource === "customers"}
+              onChange={() => setJobSource("customers")}
+              className="mt-1"
+            />
+            <span>
+              <strong>One customer per job.</strong> Every customer without sub-customers is a job; where a customer does
+              have sub-customers, those are the jobs. Works on every QuickBooks Online plan.
+            </span>
+          </label>
+          {jobSource !== initial.jobSource ? (
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              Switching re-reads your jobs at the next sync. Jobs that aren&apos;t jobs under the new setting are removed,
+              along with the job type, estimate and contract value typed in for them.
+            </p>
+          ) : null}
+        </div>
+
+        <label className="mt-5 flex items-start gap-2 border-t border-gray-100 pt-5 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={laborFromTimeEntries}
+            onChange={(e) => setLaborFromTimeEntries(e.target.checked)}
+            className="mt-1 h-4 w-4 rounded border-gray-300"
+          />
+          <span>
+            <strong>Count labor from time entries.</strong> Employee hours tagged to a job, at each employee&apos;s pay
+            rate in QuickBooks. Turn off if you already put payroll on jobs another way (checks or journal entries tagged
+            to the job), so labor isn&apos;t counted twice.
+          </span>
+        </label>
+      </section>
+
+      <section className="rounded-xl border border-gray-200 p-6">
         <h2 className="text-sm font-semibold text-navy">Email Preferences</h2>
 
         <label className="mt-4 flex items-center gap-2 text-sm font-medium text-gray-700">
@@ -166,6 +276,15 @@ export default function SettingsForm({ connectionId, initial }: Props) {
             className="h-4 w-4 rounded border-gray-300"
           />
           Send the Weekly Profit Brief
+        </label>
+        <label className="mt-2 flex items-center gap-2 text-sm font-medium text-gray-700">
+          <input
+            type="checkbox"
+            checked={alertsEnabled}
+            onChange={(e) => setAlertsEnabled(e.target.checked)}
+            className="h-4 w-4 rounded border-gray-300"
+          />
+          Send profit alerts between briefs (a job goes 10% over its estimate, or work gets well ahead of billing)
         </label>
 
         <div className="mt-4">
@@ -216,9 +335,9 @@ export default function SettingsForm({ connectionId, initial }: Props) {
               onChange={(e) => setEmailTimezone(e.target.value)}
               className="mt-1 rounded-lg border border-gray-300 px-3 py-2 text-sm"
             >
-              {TIMEZONES.map((tz) => (
+              {zones.map((tz) => (
                 <option key={tz} value={tz}>
-                  {tz.replace("_", " ")}
+                  {tz.replace(/_/g, " ")}
                 </option>
               ))}
             </select>

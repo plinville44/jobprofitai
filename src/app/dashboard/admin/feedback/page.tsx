@@ -1,3 +1,5 @@
+import { notFound } from "next/navigation";
+import { getAdminSession } from "@/lib/adminAuth";
 import { prisma } from "@/lib/prisma";
 import { formatDate } from "@/lib/format";
 import { AdminSection } from "@/components/dashboard/AdminTable";
@@ -12,6 +14,11 @@ export const dynamic = "force-dynamic";
  * hadn't yet decided to pay. Worth reading in full rather than counting.
  */
 export default async function AdminFeedbackPage() {
+  // Checked here as well as in the admin layout. Next.js does not re-run a
+  // layout on client-side navigation, so a layout-only check can be skipped
+  // by requesting this page's data directly.
+  if (!(await getAdminSession())) notFound();
+
   const [responses, productFeedback] = await Promise.all([
     prisma.trialFeedback.findMany({
       orderBy: { createdAt: "desc" },

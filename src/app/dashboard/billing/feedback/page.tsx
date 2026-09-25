@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { getSession } from "@/lib/auth";
+import { getAccount } from "@/lib/account";
 import { getTrialState } from "@/lib/trial";
 import { TRIAL_EXTENSION_DAYS } from "@/lib/plans";
 import TrialFeedbackForm from "./TrialFeedbackForm";
@@ -16,10 +16,11 @@ export const dynamic = "force-dynamic";
  * whether an extension is granted.
  */
 export default async function TrialFeedbackPage() {
-  const session = await getSession();
-  if (!session) redirect("/login");
+  const account = await getAccount();
+  if (!account) redirect("/login");
+  if (account.role !== "owner") redirect("/dashboard/billing");
 
-  const trial = await getTrialState(session.userId);
+  const trial = await getTrialState(account.ownerId);
 
   if (!trial.extensionOffered) {
     return (

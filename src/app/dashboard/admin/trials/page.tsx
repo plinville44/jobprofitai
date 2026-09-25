@@ -1,3 +1,5 @@
+import { notFound } from "next/navigation";
+import { getAdminSession } from "@/lib/adminAuth";
 import { prisma } from "@/lib/prisma";
 import { computeTrialState } from "@/lib/trial";
 import { NO_VALUE, formatDate } from "@/lib/format";
@@ -7,6 +9,11 @@ import { AdminSection, AdminTable, Pill, Td } from "@/components/dashboard/Admin
 export const dynamic = "force-dynamic";
 
 export default async function AdminTrialsPage() {
+  // Checked here as well as in the admin layout. Next.js does not re-run a
+  // layout on client-side navigation, so a layout-only check can be skipped
+  // by requesting this page's data directly.
+  if (!(await getAdminSession())) notFound();
+
   const now = new Date();
 
   const subscriptions = await prisma.subscription.findMany({

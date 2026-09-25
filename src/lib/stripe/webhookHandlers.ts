@@ -105,9 +105,9 @@ async function dispatch(event: Stripe.Event): Promise<string> {
       return handleCheckoutCompleted(event.data.object as Stripe.Checkout.Session);
     case "customer.subscription.created":
     case "customer.subscription.updated":
-      return handleSubscriptionUpsert(event.data.object as Stripe.Subscription);
+      return handleSubscriptionUpsert(event.data.object as Stripe.Subscription, event.created);
     case "customer.subscription.deleted":
-      return handleSubscriptionDeleted(event.data.object as Stripe.Subscription);
+      return handleSubscriptionDeleted(event.data.object as Stripe.Subscription, event.created);
     case "invoice.paid":
       return handleInvoicePaid(event.data.object as Stripe.Invoice);
     case "invoice.payment_failed":
@@ -260,7 +260,8 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session): Promis
     // then run it through the same upsert path every subscription event uses,
     // so there is exactly one place that maps Stripe state to our columns.
     const subscription = await getStripe().subscriptions.retrieve(subscriptionId);
-    await handleSubscriptionUpsert(subscription);
+    // Just retrieved, so it is newer than any event still in flight.
+    await handleSubscriptionUpsert(subscription, Math.floor(Date.now() / 1000));
   }
 
   // Referral credits earned while this person was still on a free trial had
@@ -270,7 +271,17 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session): Promis
   return `Checkout completed for user ${userId}${applied ? `, applied ${applied} pending credit(s)` : ""}`;
 }
 
-async function handleSubscriptionUpsert(subscription: Stripe.Subscription): Promise<string> {
+/**
+ * Stripe does not deliver events in order. Two guards keep a late event from
+ * undoing a newer state:
+ *   - an event created before the newest one already applied is ignored;
+ *   - a subscription never goes from active back to incomplete, so an
+ *     "incomplete" for the subscription already active on file (the
+ *     created event, arriving after the updated one in the same second) is
+ *     ignored.
+ * `eventCreated` is Stripe's event.created (seconds).
+ */
+async function handleSubscriptionUpsert(subscription: Stripe.Subscription, eventCreated?: number): Promise<string> {
   const customerId = idOf(subscription.customer);
   const userId = await resolveUserId({
     customerId,
@@ -283,6 +294,40 @@ async function handleSubscriptionUpsert(subscription: Stripe.Subscription): Prom
 
   const existing = await prisma.subscription.findUnique({ where: { userId } });
 
+  const eventAt = typeof eventCreated === "number" ? new Date(eventCreated * 1000) : null;
+  if (eventAt && existing?.stripeEventAt && existing.stripeEventAt.getTime() > eventAt.getTime()) {
+    return `Stale event for ${subscription.id} ignored (older than the state on file)`;
+  }
+  if (
+    existing != null &&
+    existing.stripeSubscriptionId === subscription.id &&
+    existing.status === "active" &&
+    (subscription.status === "incomplete" || subscription.status === "incomplete_expired")
+  ) {
+    return `Out-of-order ${subscription.status} for active ${subscription.id} ignored`;
+  }
+  // A canceled Stripe subscription never comes back: Stripe starts a new
+  // one instead. A late or retried update for the same id must not revive
+  // it (and send "subscription confirmed" again).
+  if (
+    existing != null &&
+    existing.stripeSubscriptionId === subscription.id &&
+    existing.status === "canceled" &&
+    subscription.status !== "canceled"
+  ) {
+    return `Late ${subscription.status} for canceled ${subscription.id} ignored`;
+  }
+  // An event about some other subscription (an abandoned second checkout,
+  // say) must not overwrite a live one.
+  if (
+    existing?.stripeSubscriptionId &&
+    existing.stripeSubscriptionId !== subscription.id &&
+    (existing.status === "active" || existing.status === "past_due") &&
+    subscription.status !== "active"
+  ) {
+    return `Event for ${subscription.id} ignored: ${existing.stripeSubscriptionId} is the live subscription`;
+  }
+
   const data: Record<string, unknown> = {
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscription.id,
@@ -291,6 +336,7 @@ async function handleSubscriptionUpsert(subscription: Stripe.Subscription): Prom
     currentPeriodEnd: subscriptionPeriodEnd(subscription),
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
     canceledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : null,
+    ...(eventAt ? { stripeEventAt: eventAt } : {}),
   };
 
   // An unrecognized price leaves `plan` untouched rather than guessing.
@@ -309,12 +355,23 @@ async function handleSubscriptionUpsert(subscription: Stripe.Subscription): Prom
   return `Subscription ${subscription.id} -> ${subscription.status} for user ${userId}`;
 }
 
-async function handleSubscriptionDeleted(subscription: Stripe.Subscription): Promise<string> {
+// The event time isn't recorded here: "canceled is final" (see
+// handleSubscriptionUpsert) already stops a late update reviving this
+// subscription, and recording it would make a genuinely newer
+// subscription's slightly older events look stale.
+async function handleSubscriptionDeleted(subscription: Stripe.Subscription, _eventCreated?: number): Promise<string> {
   const userId = await resolveUserId({
     customerId: idOf(subscription.customer),
     metadataUserId: subscription.metadata?.jobprofitaiUserId ?? null,
   });
   if (!userId) return "No matching account for deleted subscription";
+
+  // Only the subscription on file ends access. A deleted event for another
+  // one (an old subscription, a duplicate checkout) changes nothing.
+  const current = await prisma.subscription.findUnique({ where: { userId }, select: { stripeSubscriptionId: true } });
+  if (current?.stripeSubscriptionId && current.stripeSubscriptionId !== subscription.id) {
+    return `Deleted event for ${subscription.id} ignored: ${current.stripeSubscriptionId} is the subscription on file`;
+  }
 
   const endedAt = subscription.ended_at ? new Date(subscription.ended_at * 1000) : new Date();
 
@@ -324,6 +381,9 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription): Pro
       status: "canceled",
       canceledAt: endedAt,
       cancelAtPeriodEnd: false,
+      // Recorded if missing, so a late update for this same subscription is
+      // recognised as one for a canceled subscription.
+      ...(current?.stripeSubscriptionId ? {} : { stripeSubscriptionId: subscription.id }),
       // The subscription id is deliberately retained for reconciliation and
       // history; entitlement is decided by `status`, not by its presence.
     },

@@ -24,6 +24,17 @@ model User {
   // starts unverified and is asked to verify. See src/lib/emailVerification.ts
   // for what is withheld until it is set.
   emailVerifiedAt DateTime?
+  // Bumped to sign the account out everywhere: every session cookie carries
+  // the version it was issued under and stops working once this moves on.
+  // Bumped by a password reset and by "Sign out of all devices".
+  sessionVersion  Int       @default(0)
+  // The browser's IANA time zone at signup, used as the default for new
+  // QuickBooks connections so the weekly brief arrives at 8am their time.
+  timeZone        String?
+  // Intuit's OpenID "sub" for Sign in with Intuit. Matched on this, never on
+  // the email address, per Intuit's requirements. Linked only after the
+  // person has proven they own the JobProfitAI account.
+  intuitSub       String?   @unique
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -42,6 +53,10 @@ model User {
   referralRewards   ReferralReward[]
   partner           Partner?
   emailEvents       EmailEvent[]
+  // Team access: people this account owner has invited, and (for a member)
+  // the one account they belong to. See src/lib/account.ts.
+  teamInvitesSent   TeamMember[]     @relation("TeamOwner")
+  teamMembership    TeamMember?      @relation("TeamMemberUser")
   passwordResets    PasswordResetToken[]
   emailVerifications EmailVerificationToken[]
 }
@@ -120,6 +135,44 @@ model QuickBooksConnection {
   environment       String    @default("sandbox") // "sandbox" | "production"
   costTrackingMode  String    @default("unknown")  // "projects" | "classes" | "unknown" - discovered on first sync
 
+  // Which QuickBooks customers count as jobs.
+  //   "projects"  = Projects and sub-customers (Customer.Job = true). The
+  //                 original behaviour, and the default for existing rows.
+  //   "customers" = every customer with no sub-customers of its own, for
+  //                 contractors who create one customer per job. Chosen
+  //                 automatically on a first sync that finds no projects.
+  jobSource         String    @default("projects")
+
+  // Labor is costed from time entries (hours x the employee's pay rate).
+  // A contractor who already tags payroll to jobs another way (checks or
+  // journal entries against the job) turns this off so labor isn't counted
+  // twice.
+  laborFromTimeEntries Boolean @default(true)
+
+  // Bumped in code whenever the way synced rows are stored changes. A
+  // connection below the current version gets a full sync next time,
+  // because an incremental sync cannot rewrite rows QuickBooks considers
+  // unchanged. See SYNC_VERSION in src/lib/quickbooksSync.ts.
+  syncVersion       Int       @default(1)
+
+  // Mid-week profit alerts (a job going over its estimate, or finishing
+  // below its target). On by default; one switch in Settings.
+  alertsEnabled     Boolean   @default(true)
+  // Set the first time alerts are evaluated for this company. That first
+  // pass records what is already true without emailing it, so connecting a
+  // company doesn't produce a flood of "alerts" about old news.
+  alertsBaselinedAt DateTime?
+
+  // Weekly brief retry bookkeeping: which week the attempts count belongs
+  // to, and how many failed attempts there have been that week. Lets the
+  // cron retry a failed brief a few times without retrying forever.
+  briefAttemptWeek  DateTime?
+  briefAttempts     Int       @default(0)
+  // Set while a cron run is building and sending this company's brief, so
+  // two overlapping runs can't both send it. A claim older than 10 minutes
+  // is treated as a run that died.
+  briefClaimedAt    DateTime?
+
   // Company-wide default target job margin (%). Per-category overrides live in
   // MarginTarget below; this is the fallback when no category-specific target
   // exists. Nullable until the user sets one in Settings - no target means
@@ -156,6 +209,8 @@ model QuickBooksConnection {
   jobs              Job[]
   digests           WeeklyDigest[]
   marginTargets     MarginTarget[]
+  estimates         JobEstimate[]
+  categoryMappings  CategoryMapping[]
   syncRuns          SyncRun[]
   analysisRuns      AnalysisRun[]
   profitInsights    ProfitInsight[]
@@ -297,7 +352,18 @@ model Job {
   // null = follow QuickBooks. "open" | "closed" = the contractor's own call.
   statusOverride    String?
 
-  estimatedRevenue  Decimal?  @db.Decimal(12, 2) // synced from QBO Estimate entity when available
+  estimatedRevenue  Decimal?  @db.Decimal(12, 2) // synced from QBO Estimates (accepted ones summed, else the latest pending one)
+  // Contract value typed in JobProfitAI. Wins over estimatedRevenue, for
+  // contractors who quote outside QuickBooks or whose estimates don't match
+  // the signed contract.
+  manualContractValue Decimal? @db.Decimal(12, 2)
+  // The contractor's own percent complete for an open job (0-100). When set
+  // it drives the forecast and the over/under billing figure instead of the
+  // cost-based estimate of progress.
+  percentCompleteOverride Decimal? @db.Decimal(5, 2)
+  // When the QuickBooks customer record was created. Lets "no activity in
+  // 90 days" recognise an old job that never had any transactions at all.
+  qboCreatedAt      DateTime?
   estimatedCost     Decimal?  @db.Decimal(12, 2) // manual only - QBO's public API doesn't expose internal cost budgets, see plan §6
   estimatedCostSource String  @default("manual")  // always "manual" today; field exists so the UI/tooltips are honest about provenance rather than implying it came from QuickBooks
 
@@ -309,11 +375,19 @@ model Job {
   startDate         DateTime?
   endDate           DateTime?
 
+  // Set when a full sync no longer finds this job in QuickBooks but the job
+  // holds something typed here (estimate, contract value, job type...).
+  // Such a job is hidden and kept for a few days instead of being deleted
+  // at once, so one short or glitchy customer list can't wipe the
+  // contractor's own entries. Cleared if the job comes back.
+  missingSince      DateTime?
+
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
   costEntries       CostEntry[]
   invoices          InvoiceSummary[]
+  alerts            JobAlert[]
 
   @@unique([connectionId, qboId])
   @@index([connectionId])
@@ -330,6 +404,10 @@ model CostEntry {
   qboSourceId   String
 
   category      String    // "labor" | "materials" | "subcontractor" | "equipment" | "overhead" | "other"
+  // The QuickBooks account (or item) the line was posted to. Shown on the
+  // job page and used by Settings to let the contractor re-map an account
+  // to a different cost category.
+  accountName   String?
   description   String?
   amount        Decimal   @db.Decimal(12, 2)
   txnDate       DateTime
@@ -346,6 +424,7 @@ model CostEntry {
 
   @@index([jobId])
   @@index([jobId, category])
+  @@index([qboSourceType, qboSourceId])
 }
 
 // Actual revenue recognized against a job, from QBO invoices.
@@ -355,11 +434,49 @@ model InvoiceSummary {
   job         Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
 
   qboInvoiceId String
+  // "Invoice" | "SalesReceipt" | "CreditMemo" | "RefundReceipt". Credit
+  // memos and refunds are stored as negative amounts.
+  qboSourceType String  @default("Invoice")
+  // Revenue excludes sales tax: `amount` is the transaction total minus
+  // taxAmount. Kept so the tax removed is visible on the job page.
   amount       Decimal  @db.Decimal(12, 2)
-  status       String   // "paid" | "open" | "overdue"
+  taxAmount    Decimal? @db.Decimal(12, 2)
+  status       String   // "paid" | "open" | "credit"
   txnDate      DateTime
 
   @@index([jobId])
+}
+
+// Every QuickBooks estimate tagged to a job, so the job's estimated revenue
+// (contract value) can be recomputed from all of them. Accepted estimates
+// are summed (an original quote plus change orders); with none accepted,
+// the most recent pending one is used; rejected ones never count.
+model JobEstimate {
+  id             String   @id // "<connectionId>:<estimate Id>"
+  connectionId   String
+  connection     QuickBooksConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  qboEstimateId  String
+  customerQboId  String   // the QuickBooks customer/project the estimate names
+  amount         Decimal  @db.Decimal(12, 2) // excludes sales tax
+  status         String   // QuickBooks TxnStatus: "Accepted" | "Closed" | "Pending" | "Rejected" | ...
+  txnDate        DateTime
+
+  @@index([connectionId])
+  @@index([connectionId, customerQboId])
+}
+
+// The contractor's own mapping of a QuickBooks account or item to a cost
+// category, set in Settings. Wins over the automatic mapping.
+model CategoryMapping {
+  id            String   @id @default(cuid())
+  connectionId  String
+  connection    QuickBooksConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  sourceName    String   // CostEntry.accountName, exactly as stored
+  category      String   // "labor" | "materials" | "subcontractor" | "equipment" | "overhead" | "other"
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([connectionId, sourceName])
 }
 
 // One generated digest per connection per week. `metrics` holds the computed
@@ -440,6 +557,11 @@ model Subscription {
   // First time this account ever had a subscription invoice paid. Drives the
   // referral program's "paid for 30 days" qualification clock.
   firstPaidAt           DateTime?
+  // `created` time of the newest Stripe subscription event applied. Stripe
+  // does not deliver events in order; an older event arriving late (a
+  // "created, incomplete" after "updated, active") is ignored rather than
+  // allowed to undo a newer state.
+  stripeEventAt         DateTime?
 
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
@@ -735,4 +857,71 @@ model ContactSubmission {
 
   @@index([createdAt])
   @@index([reason])
+}
+
+// Someone the account owner has given access to their account: an office
+// manager, project manager or bookkeeper with their own login.
+//
+// A member sees and works on the owner's QuickBooks companies under the
+// owner's plan. Billing, team management and deleting the account stay
+// with the owner. A person can belong to one account at a time
+// (memberUserId is unique).
+model TeamMember {
+  id              String    @id @default(cuid())
+  ownerUserId     String
+  owner           User      @relation("TeamOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  email           String    // the address invited, lowercased
+  // Set when the invitation is accepted by a signed-in user with that address.
+  memberUserId    String?   @unique
+  member          User?     @relation("TeamMemberUser", fields: [memberUserId], references: [id], onDelete: Cascade)
+
+  // SHA-256 of the invitation token; the raw token only exists in the email.
+  tokenHash       String    @unique
+  invitedAt       DateTime  @default(now())
+  expiresAt       DateTime
+  acceptedAt      DateTime?
+
+  @@unique([ownerUserId, email])
+  @@index([ownerUserId])
+}
+
+// Login attempts, for rate limiting. Neither the email address nor the IP
+// is stored: both are HMACs keyed with AUTH_SECRET. Rows older than a day
+// are purged by the lifecycle cron.
+model LoginAttempt {
+  id         String   @id @default(cuid())
+  emailHash  String
+  ipHash     String?
+  success    Boolean
+  createdAt  DateTime @default(now())
+
+  @@index([emailHash, createdAt])
+  @@index([ipHash, createdAt])
+  @@index([createdAt])
+}
+
+// One free trial per QuickBooks company. The first account to connect a
+// company while on a free trial is recorded here; a different account on a
+// trial cannot connect the same company again (it has to choose a plan).
+// Keyed on the realm id hash, so it survives accounts being deleted.
+model RealmTrial {
+  realmIdHash      String   @id
+  firstUserId      String
+  firstConnectedAt DateTime @default(now())
+}
+
+// A profit alert that has been sent for a job: it went 10%+ over its
+// estimate, its forecast fell below target, or work got well ahead of
+// billing. One row per job per kind, so each alert is sent once; the row is
+// removed when the condition clears, so it can fire again if it comes back.
+model JobAlert {
+  id       String   @id @default(cuid())
+  jobId    String
+  job      Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  kind     String   // "over_budget" | "forecast_below_target" | "underbilled"
+  firedAt  DateTime @default(now())
+  emailed  Boolean  @default(false)
+
+  @@unique([jobId, kind])
 }

@@ -1,10 +1,10 @@
 import { redirect } from "next/navigation";
+import { ConnectToQuickBooksButton } from "@/components/IntuitButtons";
 import Link from "next/link";
-import { getSession } from "@/lib/auth";
+import { getAccount, getActiveConnection } from "@/lib/account";
 import { getEntitlements } from "@/lib/entitlements";
 import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
 import { prisma } from "@/lib/prisma";
-import { decryptToken } from "@/lib/crypto";
 import { getConnectionProfitData, getMarginTrend } from "@/lib/profitability";
 import { CLOSED_JOB_WHERE } from "@/lib/jobStatus";
 import { needsReconnect } from "@/lib/quickbooks";
@@ -32,31 +32,29 @@ export default async function DashboardPage(props: {
   }>;
 }) {
   const searchParams = await props.searchParams;
-  const session = await getSession();
-  if (!session) redirect("/login");
+  const account = await getAccount();
+  if (!account) redirect("/login");
 
   // Server-side entitlement gate. An expired trial gets a proper "choose a
   // plan" screen rather than an authorization error - and because the check
   // happens here, before any financial data is loaded, a lapsed account
   // never has its numbers computed and sent to the browser either.
-  const entitlements = await getEntitlements(session.userId);
+  const entitlements = await getEntitlements(account.ownerId);
   if (!entitlements.active) {
     return <UpgradeRequired access={entitlements.access} />;
   }
 
-  const connections = await prisma.quickBooksConnection.findMany({
-    where: { userId: session.userId, disconnectedAt: null },
-    orderBy: { connectedAt: "desc" },
-  });
+  // The company chosen in the header's company switcher; the most recently
+  // connected one by default.
+  const { connection, companies: connections } = await getActiveConnection(account.ownerId);
 
-  const latestDigest = connections[0]
+  const latestDigest = connection
     ? await prisma.weeklyDigest.findFirst({
-        where: { connectionId: connections[0].id },
+        where: { connectionId: connection.id },
         orderBy: { weekStarting: "desc" },
       })
     : null;
 
-  const connection = connections[0];
   const now = new Date();
   // Periods follow the customer's own calendar (the connection's timezone,
   // the same one the Weekly Profit Brief is scheduled in), not the server's.
@@ -65,7 +63,7 @@ export default async function DashboardPage(props: {
     searchParams.from,
     searchParams.to,
     now,
-    connections[0]?.emailTimezone ?? "UTC"
+    connection?.emailTimezone ?? "UTC"
   );
   const statusFilter = resolveStatusFilter(searchParams.status);
   const trendGranularity = searchParams.trend === "quarterly" ? "quarterly" : "monthly";
@@ -81,7 +79,7 @@ export default async function DashboardPage(props: {
   // history" told a contractor with forty finished jobs to sit and wait.
   const trendDiagnosis = connection && marginTrend.length === 0
     ? {
-        totalJobs: await prisma.job.count({ where: { connectionId: connection.id } }),
+        totalJobs: await prisma.job.count({ where: { connectionId: connection.id, missingSince: null } }),
         completedJobs: await prisma.job.count({
           where: { connectionId: connection.id, ...CLOSED_JOB_WHERE },
         }),
@@ -110,19 +108,16 @@ export default async function DashboardPage(props: {
       )}
       {searchParams.qbo_error && (
         <p className="mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800">
-          QuickBooks connection failed ({searchParams.qbo_error}). Try again below.
+          {QBO_ERROR_MESSAGES[searchParams.qbo_error] ?? QBO_ERROR_MESSAGES.connection_failed}
         </p>
       )}
 
       {connections.length === 0 || !connection || !profitData ? (
         <div className="mt-8 rounded-xl border border-gray-200 p-8 text-center">
           <p className="text-gray-600">Connect your QuickBooks Online company to see your job profitability.</p>
-          <a
-            href="/api/quickbooks/connect"
-            className="mt-4 inline-block rounded-lg bg-brand px-5 py-2.5 font-semibold text-white hover:bg-blue-700"
-          >
-            Connect to QuickBooks
-          </a>
+          <div className="mt-4 flex justify-center">
+            <ConnectToQuickBooksButton />
+          </div>
         </div>
       ) : (
         <>
@@ -133,7 +128,7 @@ export default async function DashboardPage(props: {
           <div className="mt-6 rounded-xl border border-gray-200 p-6">
             <p className="text-sm text-gray-500">Connected company</p>
             <p className="text-lg font-semibold text-navy">
-              {connection.companyName ?? decryptToken(connection.realmId)}
+              {connection.companyName ?? "Your QuickBooks company"}
             </p>
             <p className="mt-1 text-xs text-gray-400">
               Last synced:{" "}
@@ -143,13 +138,10 @@ export default async function DashboardPage(props: {
                 Connect button is hidden. This is the way back. */}
             {needsReconnect(connection.lastSyncError) ? (
               <div className="mt-3 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800">
-                {connection.lastSyncError}{" "}
-                <a
-                  href={`/api/quickbooks/connect?reconnect=${connection.id}`}
-                  className="font-semibold underline"
-                >
-                  Reconnect QuickBooks
-                </a>
+                <p>{connection.lastSyncError}</p>
+                <div className="mt-3">
+                  <ConnectToQuickBooksButton href={`/api/quickbooks/connect?reconnect=${connection.id}`} />
+                </div>
               </div>
             ) : null}
             <DashboardActions connectionId={connection.id} />
@@ -160,6 +152,22 @@ export default async function DashboardPage(props: {
               <FirstRunSetup connectionId={connection.id} neverSynced={!connection.lastSyncedAt} />
             ) : null}
           </div>
+
+          {profitData.dataHealth.idleOpenJobs.length > 0 ? (
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4">
+              <p className="text-sm text-amber-900">
+                <strong>
+                  {profitData.dataHealth.idleOpenJobs.length} open{" "}
+                  {profitData.dataHealth.idleOpenJobs.length === 1 ? "job has" : "jobs have"} had no activity in 90+ days.
+                </strong>{" "}
+                They&apos;re probably finished. QuickBooks doesn&apos;t tell us when a project wraps up, so until they&apos;re
+                marked complete they count as active.
+              </p>
+              <Link href="/dashboard/data-health" className="text-sm font-semibold text-brand hover:underline">
+                Review and mark them completed
+              </Link>
+            </div>
+          ) : null}
 
           {/* Filters */}
           <div className="mt-8 flex flex-wrap items-center justify-between gap-4">
@@ -246,7 +254,7 @@ export default async function DashboardPage(props: {
               <p className="mt-2 text-sm text-gray-500">
                 {profitData.jobsInTab === 0
                   ? statusFilter === "all"
-                    ? "No jobs have synced from QuickBooks yet, so there is nothing to check. JobProfitAI reads jobs from QuickBooks Projects: turn on Projects in QuickBooks (Settings, Account and settings, Advanced), tag invoices and costs to each project, then click Sync now."
+                    ? "No jobs have synced from QuickBooks yet, so there is nothing to check. JobProfitAI reads your QuickBooks Projects or sub-customers, or, if you make one customer per job, your customers. Choose which in Settings, then click Sync now."
                     : `No ${statusFilter === "open" ? "active" : "completed"} jobs to check. Try the All jobs tab.`
                   : `Nothing needs attention on any of your ${profitData.jobsInTab} ${
                       statusFilter === "open" ? "active " : statusFilter === "closed" ? "completed " : ""
@@ -486,3 +494,15 @@ function MarginTrendEmptyState({
     </p>
   );
 }
+
+/** What each ?qbo_error= code from the QuickBooks callback means, in plain words. */
+const QBO_ERROR_MESSAGES: Record<string, string> = {
+  access_denied: "QuickBooks wasn't connected because the Intuit screen was cancelled. Try again whenever you're ready.",
+  already_connected:
+    "That QuickBooks company is already connected to another JobProfitAI account, so it wasn't connected here. Its owner has been told. To move it, disconnect it in that account first.",
+  invalid_state: "That connection link had expired. Please click Connect to QuickBooks again.",
+  missing_params: "QuickBooks didn't send everything back. Please try connecting again.",
+  token_exchange_failed: "Intuit didn't complete the connection. Please try again in a minute.",
+  connection_failed: "Something went wrong connecting QuickBooks. Please try again, or email support@jobprofitai.com.",
+  verify_failed: "We couldn't confirm that QuickBooks company with Intuit, so it wasn't connected. Please try again.",
+};

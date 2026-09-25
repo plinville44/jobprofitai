@@ -56,10 +56,11 @@ describe("plan catalog", () => {
   });
 
   it("applies the advertised plan limits", () => {
-    expect(PLANS.profit_intelligence.limits).toEqual({ maxConnections: 1, maxActiveJobs: 100 });
+    expect(PLANS.profit_intelligence.limits).toEqual({ maxConnections: 1, maxActiveJobs: 100, maxTeamMembers: 3 });
     expect(PLANS.profit_intelligence_pro.limits).toEqual({
       maxConnections: 3,
       maxActiveJobs: null,
+      maxTeamMembers: 10,
     });
   });
 
@@ -68,10 +69,12 @@ describe("plan catalog", () => {
     expect(limitsForStoredPlan("profit_monitor")).toEqual({
       maxConnections: 1,
       maxActiveJobs: 100,
+      maxTeamMembers: 3,
     });
     expect(limitsForStoredPlan("something_invented")).toEqual({
       maxConnections: 1,
       maxActiveJobs: 100,
+      maxTeamMembers: 3,
     });
   });
 

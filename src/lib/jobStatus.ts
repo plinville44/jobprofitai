@@ -52,9 +52,18 @@ export function effectiveJobStatus(job: { status: string; statusOverride?: strin
  * not exist" a hundred lines away.
  */
 export const CLOSED_JOB_WHERE: Prisma.JobWhereInput = {
+  missingSince: null,
   OR: [{ statusOverride: "closed" }, { statusOverride: null, status: "closed" }],
 };
 
 export const OPEN_JOB_WHERE: Prisma.JobWhereInput = {
+  missingSince: null,
   OR: [{ statusOverride: "open" }, { statusOverride: null, status: "open" }],
 };
+
+/**
+ * Jobs to show at all. A job QuickBooks no longer has but that holds the
+ * contractor's own entries is kept for a few days, hidden (see
+ * Job.missingSince); the status fragments above already exclude it.
+ */
+export const VISIBLE_JOB_WHERE: Prisma.JobWhereInput = { missingSince: null };

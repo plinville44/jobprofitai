@@ -38,6 +38,8 @@ function metrics(jobs: JobMetrics[]): ConnectionMetrics {
     topConcerns: [],
     totals: { activeJobs: 0, totalActualCost: 0, totalActualRevenue: 0, blendedMarginPct: null },
     dataHealth: {} as ConnectionMetrics["dataHealth"],
+    briefJobIds: jobs.map((j) => j.jobId),
+    briefDataHealth: {} as ConnectionMetrics["dataHealth"],
   };
 }
 

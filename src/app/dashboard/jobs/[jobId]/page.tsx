@@ -1,6 +1,6 @@
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
-import { getSession } from "@/lib/auth";
+import { getAccount } from "@/lib/account";
 import { getJobProfitData } from "@/lib/profitability";
 import { getEntitlements, requireFeature } from "@/lib/entitlements";
 import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
@@ -10,6 +10,7 @@ import EstimateVsActualChart from "@/components/charts/EstimateVsActualChart";
 import ProfitLeakageChart from "@/components/charts/ProfitLeakageChart";
 import MarginTrendChart from "@/components/charts/MarginTrendChart";
 import JobEditForm from "@/components/dashboard/JobEditForm";
+import QuickBooksCheck from "@/components/dashboard/QuickBooksCheck";
 
 export default async function JobDetailPage({
   params,
@@ -18,26 +19,26 @@ export default async function JobDetailPage({
   params: Promise<{ jobId: string }>;
 }) {
   const { jobId } = await params;
-  const session = await getSession();
-  if (!session) redirect("/login");
+  const account = await getAccount();
+  if (!account) redirect("/login");
 
   // Server-side entitlement gate. An expired trial gets a proper "choose a
   // plan" screen rather than an authorization error - and because the check
   // happens here, before any financial data is loaded, a lapsed account
   // never has its numbers computed and sent to the browser either.
-  const entitlements = await getEntitlements(session.userId);
+  const entitlements = await getEntitlements(account.ownerId);
   if (!entitlements.active) {
     return <UpgradeRequired access={entitlements.access} />;
   }
 
   const data = await getJobProfitData(jobId);
-  if (!data || data.connectionUserId !== session.userId) notFound();
+  if (!data || data.connectionUserId !== account.ownerId) notFound();
 
   // Forecast-at-Completion is a Profit Intelligence feature (see
   // src/lib/entitlements.ts) - gated here, not by hiding the underlying
   // (deterministic, zero-AI) calculation, just its display for accounts
   // without the entitlement.
-  const canForecast = Boolean(await requireFeature(session.userId, "forecast_at_completion"));
+  const canForecast = Boolean(await requireFeature(account.ownerId, "forecast_at_completion"));
 
   const f = data.financials;
 
@@ -65,12 +66,17 @@ export default async function JobDetailPage({
         <p className="mt-2 text-xs text-gray-400">Target margin: {f.targetMarginPct}%</p>
       )}
 
+      <QuickBooksCheck jobId={f.jobId} />
+
       <JobEditForm
         jobId={f.jobId}
         jobName={f.jobName}
         initialCategory={f.category}
         initialEstimatedCost={f.estimatedCost}
         initialStatusOverride={data.statusOverride}
+        initialContractValue={data.manualContractValue}
+        syncedContractValue={data.syncedContractValue}
+        initialPercentComplete={data.percentCompleteOverride}
         syncedStatus={data.syncedStatus}
       />
 
@@ -100,8 +106,15 @@ export default async function JobDetailPage({
       {/* 1. Financial Summary */}
       <Section title="Financial Summary">
         <dl className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-          <Stat label="Revenue" value={formatCurrency(f.revenue)} help="Sum of paid and open invoices synced from QuickBooks for this job." />
-          <Stat label="Actual Cost" value={formatCurrency(f.costs)} help="Sum of all categorized cost entries (Purchases, Bills, time activities) tagged to this job." />
+          <Stat label="Revenue" value={formatCurrency(f.revenue)} help="Invoices and sales receipts for this job, less credit memos and refunds, excluding sales tax." />
+          <Stat label="Actual Cost" value={formatCurrency(f.costs)} help="Bills, expenses, checks and journal entries tagged to this job, less refunds and vendor credits, plus employee time at each employee's pay rate." />
+          {f.estimatedRevenue != null && (
+            <Stat
+              label="Contract Value"
+              value={formatCurrency(f.estimatedRevenue)}
+              help={data.manualContractValue != null ? "Typed in Job Details." : "From this job's QuickBooks estimates: accepted ones added together, otherwise the latest pending one."}
+            />
+          )}
           <Stat
             label="Gross Profit"
             value={f.profitabilityAvailable ? formatCurrency(f.grossProfit) : "Unavailable"}
@@ -162,6 +175,45 @@ export default async function JobDetailPage({
         {f.estimatedCost == null && <p className="mt-3 text-sm text-gray-500">No cost estimate on file for this job.</p>}
       </Section>
 
+      {/* Work in progress: over/under billing for an open job. */}
+      {f.status === "open" && (
+        <Section title="Work in Progress">
+          {f.wip ? (
+            <>
+              <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                <Stat
+                  label="Percent Complete"
+                  value={`${Math.round(f.wip.percentComplete * 100)}%`}
+                  help={f.wip.percentCompleteSource === "manual" ? "Entered in Job Details." : "Cost to date divided by the estimated cost."}
+                />
+                <Stat label="Earned Revenue" value={formatCurrency(f.wip.earnedRevenue)} help="Contract value times percent complete." />
+                <Stat label="Billed to Date" value={formatCurrency(f.revenue)} help="Invoices and sales receipts so far, excluding tax." />
+                <Stat
+                  label={f.wip.overUnderBilling >= 0 ? "Over Billed" : "Under Billed"}
+                  value={formatCurrency(Math.abs(f.wip.overUnderBilling))}
+                  help="Billed to date minus earned revenue."
+                />
+              </dl>
+              <p className="mt-3 text-sm text-gray-600">
+                {f.wip.overUnderBilling >= 0
+                  ? `Billed ${formatCurrency(f.wip.overUnderBilling)} ahead of the work done. Good for cash, and a reminder that the remaining work is partly paid for already.`
+                  : `About ${formatCurrency(-f.wip.overUnderBilling)} of work is done but not billed yet.`}
+                {f.wip.costPastEstimate
+                  ? " Cost to date is already past the estimate, so cost can no longer measure progress: enter a percent complete in Job Details for an accurate figure."
+                  : f.wip.percentCompleteSource === "cost"
+                    ? " Progress is measured by cost against the estimate; enter a percent complete if the work is further along or behind than spending suggests."
+                    : ""}
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-gray-500">
+              Over/under billing needs a contract value (a QuickBooks estimate, or typed in Job Details) and either an
+              estimated cost or a percent complete.
+            </p>
+          )}
+        </Section>
+      )}
+
       {/* 3. Cost Breakdown */}
       <Section title="Cost Breakdown">
         {Object.keys(f.costByCategory).length === 0 ? (
@@ -211,15 +263,15 @@ export default async function JobDetailPage({
             <p className="text-sm font-semibold text-navy">Forecast at Completion</p>
             {!canForecast ? (
               <p className="mt-2 text-sm text-gray-500">
-                Forecast at Completion is part of Profit Intelligence.{" "}
-                <Link href="/dashboard/settings" className="text-brand hover:underline">
-                  See your plan in Settings.
+                Forecast at Completion is part of Profit Intelligence Pro.{" "}
+                <Link href="/dashboard/billing" className="text-brand hover:underline">
+                  See plans on the Billing page.
                 </Link>
               </p>
             ) : data.forecast.available ? (
               <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <MiniStat label="Actual cost to date" value={formatCurrency(data.forecast.actualCostToDate)} />
-                <MiniStat label="Estimated cost" value={formatCurrency(data.forecast.estimatedCost)} />
+                <MiniStat label="Estimated cost" value={data.forecast.estimatedCost != null ? formatCurrency(data.forecast.estimatedCost) : "Not set"} />
                 <MiniStat label="Forecast cost at completion" value={formatCurrency(data.forecast.forecastCostAtCompletion)} />
                 <MiniStat
                   label="Forecast profit"
@@ -233,9 +285,7 @@ export default async function JobDetailPage({
                   <ConfidenceBadge confidence={data.forecast.confidence ?? "low"} />
                 </div>
                 <p className="col-span-2 text-xs text-gray-400 sm:col-span-4">
-                  Forecast assumes the cost overrun observed so far (actual cost ÷ estimated cost) continues at the
-                  same rate through the rest of the job. Confidence rises as more of the estimated cost has actually
-                  been spent.
+                  {data.forecast.method} The forecast never finishes a job under its estimate; it only warns.
                 </p>
               </div>
             ) : (
@@ -272,7 +322,10 @@ export default async function JobDetailPage({
                 <tr key={c.id}>
                   <td className="px-3 py-2 text-gray-500">{formatDate(c.txnDate)}</td>
                   <td className="px-3 py-2 text-gray-500">{c.qboSourceType}</td>
-                  <td className="px-3 py-2 text-gray-600">{categoryLabel(c.category)}</td>
+                  <td className="px-3 py-2 text-gray-600">
+                    {categoryLabel(c.category)}
+                    {c.accountName ? <span className="block text-xs text-gray-400">{c.accountName}</span> : null}
+                  </td>
                   <td className="px-3 py-2 text-gray-600">{c.description ?? NO_VALUE}</td>
                   <td className="px-3 py-2 text-right text-navy">{formatCurrency(c.amount)}</td>
                 </tr>
@@ -280,10 +333,12 @@ export default async function JobDetailPage({
               {data.rawInvoices.slice(0, 50).map((i) => (
                 <tr key={i.id}>
                   <td className="px-3 py-2 text-gray-500">{formatDate(i.txnDate)}</td>
-                  <td className="px-3 py-2 text-gray-500">Invoice ({i.status})</td>
+                  <td className="px-3 py-2 text-gray-500">{revenueLabel(i.qboSourceType, i.status)}</td>
                   <td className="px-3 py-2 text-gray-600">Revenue</td>
-                  <td className="px-3 py-2 text-gray-600">{NO_VALUE}</td>
-                  <td className="px-3 py-2 text-right text-green-700">{formatCurrency(i.amount)}</td>
+                  <td className="px-3 py-2 text-gray-600">
+                    {i.taxAmount ? `Excludes ${formatCurrency(Math.abs(i.taxAmount))} sales tax` : NO_VALUE}
+                  </td>
+                  <td className={`px-3 py-2 text-right ${i.amount < 0 ? "text-red-700" : "text-green-700"}`}>{formatCurrency(i.amount)}</td>
                 </tr>
               ))}
             </tbody>
@@ -334,6 +389,13 @@ export default async function JobDetailPage({
       </Section>
     </main>
   );
+}
+
+function revenueLabel(type: string, status: string): string {
+  if (type === "SalesReceipt") return "Sales receipt";
+  if (type === "CreditMemo") return "Credit memo";
+  if (type === "RefundReceipt") return "Refund";
+  return `Invoice (${status})`;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

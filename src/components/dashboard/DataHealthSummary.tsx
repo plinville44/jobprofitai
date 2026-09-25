@@ -11,26 +11,24 @@ import { DataQualityBadge, StatusDot } from "@/components/dashboard/Badges";
  * for the structured info, and never as the only explanation on its own.
  */
 export default function DataHealthSummary({ dataHealth }: { dataHealth: DataHealthReport }) {
-  // These eight are exactly the eight things computeDashboardTotals adds up
-  // into the "Data Issues" tile, in the same order.
-  //
-  // The card used to list five of them. When the only non-zero counts were
-  // among the missing three, this card said "No data quality issues found"
-  // directly below a tile reading "Data Issues: 9" - on the one page whose
-  // whole job is telling a contractor which of their numbers to trust. If a
-  // check is ever added to that tile, it belongs here too.
+  // Every check in the "Data Issues" tile is listed here too. When the card
+  // listed fewer, it could say "No data quality issues found" under a tile
+  // reading "Data Issues: 9". If a check is added to the tile, add it here.
+  // The first seven are exactly what computeDashboardTotals adds into the
+  // "Data Issues" tile. Missing estimates are listed after them as setup
+  // rather than a data problem, which is why the tile doesn't count them.
   const rows: { label: string; count: number | null }[] = [
-    { label: "jobs missing a cost estimate", count: dataHealth.jobsMissingEstimates.length },
     { label: "jobs with revenue but no costs", count: dataHealth.jobsMissingCosts.length },
     { label: "stale jobs (no activity in 30+ days)", count: dataHealth.staleJobs.length },
     {
       label: "completed jobs with unresolved activity",
       count: dataHealth.completedJobsWithUnresolvedActivity.length,
     },
-    { label: "unassigned expenses", count: dataHealth.unassignedExpenseCount },
+    { label: "job costs not tagged to a job (last 12 months)", count: dataHealth.untaggedJobCostCount },
     { label: "expenses tagged to an unrecognized customer", count: dataHealth.unresolvedExpenseCount },
-    { label: "time entries with no hourly rate", count: dataHealth.timeEntriesWithoutRate },
+    { label: "employee time entries with no pay rate", count: dataHealth.timeEntriesWithoutPayRate },
     { label: "possible duplicate cost entries", count: dataHealth.possibleDuplicates.length },
+    { label: "open jobs missing a cost estimate (setup)", count: dataHealth.jobsMissingEstimates.length },
   ];
   const flagged = rows.filter((r) => (r.count ?? 0) > 0);
   const unmeasured = rows.filter((r) => r.count == null);
@@ -41,7 +39,7 @@ export default function DataHealthSummary({ dataHealth }: { dataHealth: DataHeal
         <div className="flex items-center gap-2">
           <StatusDot status={flagged.length === 0 ? "good" : "warning"} />
           {/* Every job, whatever tab is selected, like the page it links to. */}
-          <h3 className="text-sm font-semibold text-navy">Data Health, all jobs</h3>
+          <h3 className="text-sm font-semibold text-navy">Data Health, open and recent jobs</h3>
           <DataQualityBadge confidence={dataHealth.overallConfidence} />
         </div>
         <Link href="/dashboard/data-health" className="text-sm text-brand hover:underline">
@@ -56,8 +54,8 @@ export default function DataHealthSummary({ dataHealth }: { dataHealth: DataHeal
           {flagged.map((r) => (
             <li key={r.label}>
               <span className="font-medium text-navy">{r.count}</span> {r.label}
-              {r.label === "unassigned expenses" && dataHealth.unassignedExpenseAmount ? (
-                <span className="text-gray-400"> ({formatCurrency(dataHealth.unassignedExpenseAmount)})</span>
+              {r.label.startsWith("job costs not tagged") && dataHealth.untaggedJobCostAmount ? (
+                <span className="text-gray-400"> ({formatCurrency(dataHealth.untaggedJobCostAmount)})</span>
               ) : null}
               {r.label === "expenses tagged to an unrecognized customer" && dataHealth.unresolvedExpenseAmount ? (
                 <span className="text-gray-400"> ({formatCurrency(dataHealth.unresolvedExpenseAmount)})</span>

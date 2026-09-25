@@ -26,13 +26,18 @@ const FAQ_ITEMS = [
           The difference is that QuickBooks reports and JobProfitAI tells you where to look. Plus
           shows income, cost and margin for a job you go and open. It doesn&rsquo;t compare that
           margin to a target you set, flag which jobs are drifting below it, tell you a type of work
-          consistently runs over estimate, forecast where an in-progress job lands, or email you
-          once a week with what changed.
+          consistently runs over estimate, forecast where an in-progress job lands, build a WIP
+          report of what&rsquo;s over and under billed, email you the day a job goes over its
+          estimate, or send you a weekly brief of what changed.
         </span>
         <span className="mt-3 block">
           It also won&rsquo;t tell you that six of your jobs have no estimate on file and four have
           revenue with no costs assigned to them. That is usually the reason the reports looked fine
           and the bank balance didn&rsquo;t.
+        </span>
+        <span className="mt-3 block">
+          QuickBooks Online Advanced has project tools that cover some of this. JobProfitAI is built
+          for contractors on Plus who want it without moving to Advanced.
         </span>
       </>
     ),
@@ -76,9 +81,10 @@ const FAQ_ITEMS = [
     q: "What counts as an “active job”?",
     a: (
       <>
-        A QuickBooks Project you haven&rsquo;t marked completed yet. QuickBooks doesn&rsquo;t
-        expose project status through its API, so you mark jobs completed inside JobProfitAI,
-        one at a time or in bulk from the jobs list. Completed jobs stay in your history and
+        A QuickBooks Project (or customer, if you make one customer per job) you haven&rsquo;t
+        marked completed yet. QuickBooks doesn&rsquo;t expose project status through its API, so
+        you mark jobs completed inside JobProfitAI, one at a time, in bulk from the jobs list, or
+        all at once for jobs with no activity in 90 days. Completed jobs stay in your history and
         your trend analysis; they don&rsquo;t count against the limit.
       </>
     ),

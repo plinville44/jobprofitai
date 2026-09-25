@@ -1,3 +1,5 @@
+import { notFound } from "next/navigation";
+import { getAdminSession } from "@/lib/adminAuth";
 import { prisma } from "@/lib/prisma";
 import { countPayingClients } from "@/lib/partners";
 import { partnerTierFor } from "@/lib/plans";
@@ -11,6 +13,11 @@ export const dynamic = "force-dynamic";
 const money = formatCents;
 
 export default async function AdminPartnersPage() {
+  // Checked here as well as in the admin layout. Next.js does not re-run a
+  // layout on client-side navigation, so a layout-only check can be skipped
+  // by requesting this page's data directly.
+  if (!(await getAdminSession())) notFound();
+
   const partners = await prisma.partner.findMany({
     orderBy: [{ status: "asc" }, { createdAt: "desc" }],
     take: 200,

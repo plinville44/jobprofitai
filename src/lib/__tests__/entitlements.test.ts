@@ -71,7 +71,7 @@ describe("entitlement resolution", () => {
     // Pro-only additions.
     expect(ent.has("forecast_at_completion")).toBe(false);
     expect(ent.has("cross_job_benchmarking")).toBe(false);
-    expect(ent.limits).toEqual({ maxConnections: 1, maxActiveJobs: 100 });
+    expect(ent.limits).toEqual({ maxConnections: 1, maxActiveJobs: 100, maxTeamMembers: 3 });
   });
 
   it("gives Pro everything plus its higher limits", async () => {
@@ -82,7 +82,7 @@ describe("entitlement resolution", () => {
     expect(ent.has("ai_insights")).toBe(true);
     expect(ent.has("forecast_at_completion")).toBe(true);
     expect(ent.has("cross_job_benchmarking")).toBe(true);
-    expect(ent.limits).toEqual({ maxConnections: 3, maxActiveJobs: null });
+    expect(ent.limits).toEqual({ maxConnections: 3, maxActiveJobs: null, maxTeamMembers: 10 });
   });
 
   it("keeps access during past_due but flags the payment problem", async () => {

@@ -4,6 +4,10 @@
 // happening to a customer's tokens at each step.
 
 const QBO_SCOPE = "com.intuit.quickbooks.accounting";
+/** OpenID Connect scopes for Sign in with Intuit. */
+export const OPENID_SCOPES = "openid profile email";
+/** QuickBooks access plus the signed-in person's Intuit identity (App Store "Get integration now"). */
+export const CONNECT_WITH_OPENID_SCOPES = `${QBO_SCOPE} ${OPENID_SCOPES}`;
 
 function isSandbox() {
   return (process.env.QBO_ENVIRONMENT ?? "sandbox") === "sandbox";
@@ -50,6 +54,7 @@ interface DiscoveryDocument {
   authorization_endpoint: string;
   token_endpoint: string;
   revocation_endpoint: string;
+  userinfo_endpoint: string;
 }
 
 // Hardcoded fallback only - used if the discovery document fetch itself
@@ -60,7 +65,10 @@ const FALLBACK_ENDPOINTS: DiscoveryDocument = {
   authorization_endpoint: "https://appcenter.intuit.com/connect/oauth2",
   token_endpoint: "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
   revocation_endpoint: "https://developer.api.intuit.com/v2/oauth2/tokens/revoke",
+  userinfo_endpoint: "https://accounts.platform.intuit.com/v1/openid_connect/userinfo",
 };
+
+const SANDBOX_USERINFO_FALLBACK = "https://sandbox-accounts.platform.intuit.com/v1/openid_connect/userinfo";
 
 let discoveryCache: DiscoveryDocument | null = null;
 let discoveryCacheAt = 0;
@@ -92,12 +100,17 @@ async function getDiscoveryDocument(): Promise<DiscoveryDocument> {
       authorization_endpoint: doc.authorization_endpoint,
       token_endpoint: doc.token_endpoint,
       revocation_endpoint: doc.revocation_endpoint ?? FALLBACK_ENDPOINTS.revocation_endpoint,
+      userinfo_endpoint: doc.userinfo_endpoint ?? fallbackUserinfo(),
     };
     discoveryCacheAt = now;
     return discoveryCache;
   } catch {
-    return FALLBACK_ENDPOINTS;
+    return { ...FALLBACK_ENDPOINTS, userinfo_endpoint: fallbackUserinfo() };
   }
+}
+
+function fallbackUserinfo(): string {
+  return isSandbox() ? SANDBOX_USERINFO_FALLBACK : FALLBACK_ENDPOINTS.userinfo_endpoint;
 }
 
 /**
@@ -105,11 +118,11 @@ async function getDiscoveryDocument(): Promise<DiscoveryDocument> {
  * `state` should be a signed, single-use token you can verify on callback (CSRF protection) -
  * see /api/quickbooks/connect for how it's generated and /api/quickbooks/callback for verification.
  */
-export async function buildAuthorizeUrl(state: string): Promise<string> {
+export async function buildAuthorizeUrl(state: string, scope: string = QBO_SCOPE): Promise<string> {
   const { authorization_endpoint } = await getDiscoveryDocument();
   const params = new URLSearchParams({
     client_id: process.env.QBO_CLIENT_ID ?? "",
-    scope: QBO_SCOPE,
+    scope,
     redirect_uri: process.env.QBO_REDIRECT_URI ?? "",
     response_type: "code",
     state,
@@ -122,6 +135,41 @@ export interface QboTokenResponse {
   refresh_token: string;
   expires_in: number; // seconds
   x_refresh_token_expires_in: number; // seconds
+  /** Present when OpenID scopes were requested. */
+  id_token?: string;
+}
+
+export interface IntuitUserInfo {
+  /** Intuit's permanent id for the person. The only thing accounts are matched on. */
+  sub: string;
+  email: string | null;
+  emailVerified: boolean;
+  givenName: string | null;
+  familyName: string | null;
+}
+
+/**
+ * The signed-in Intuit user's profile, from Intuit's userinfo endpoint.
+ * Called server to server with the access token just issued, so the answer
+ * comes directly from Intuit. Only the fields the app uses are kept.
+ */
+export async function fetchIntuitUserInfo(accessToken: string): Promise<IntuitUserInfo> {
+  const { userinfo_endpoint } = await getDiscoveryDocument();
+  const res = await fetch(userinfo_endpoint, {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Intuit userinfo failed with status ${res.status} (intuit_tid: ${intuitTid(res)})`);
+  }
+  const body = await res.json();
+  if (typeof body?.sub !== "string" || body.sub.length === 0) throw new Error("Intuit userinfo had no sub");
+  return {
+    sub: body.sub,
+    email: typeof body.email === "string" ? body.email.trim().toLowerCase() : null,
+    emailVerified: body.emailVerified === true,
+    givenName: typeof body.givenName === "string" ? body.givenName : null,
+    familyName: typeof body.familyName === "string" ? body.familyName : null,
+  };
 }
 
 function basicAuthHeader(): string {
@@ -313,6 +361,28 @@ async function qboGet(realmId: string, accessToken: string, pathAndQuery: string
     throw new Error(`QuickBooks API request failed with status ${res.status} (intuit_tid: ${intuitTid(res)})`);
   }
   return res.json();
+}
+
+/**
+ * QuickBooks' own Profit and Loss for one customer or project, accrual
+ * basis, from `startDate` to `endDate` (YYYY-MM-DD). Standard Reports API,
+ * no extra scope. Used by "Check against QuickBooks" on the job page.
+ */
+export async function qboProfitAndLossForCustomer(
+  realmId: string,
+  accessToken: string,
+  customerId: string,
+  startDate: string,
+  endDate: string
+): Promise<any> {
+  const params = new URLSearchParams({
+    customer: customerId,
+    accounting_method: "Accrual",
+    start_date: startDate,
+    end_date: endDate,
+    minorversion: "70",
+  });
+  return qboGet(realmId, accessToken, `reports/ProfitAndLoss?${params.toString()}`);
 }
 
 /** Fetches the connected company's display name and basic info (standard Accounting API, no extra scope needed). */

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSession } from "@/lib/auth";
+import { getAccount } from "@/lib/account";
 import { prisma } from "@/lib/prisma";
 import { createBillingPortalSession } from "@/lib/stripe/billing";
 
@@ -16,14 +16,17 @@ export const runtime = "nodejs";
 
 export async function POST() {
   try {
-    const session = await getSession();
-    if (!session) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const account = await getAccount();
+    if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    if (account.role !== "owner") {
+      return NextResponse.json({ error: "Only the account owner can manage billing." }, { status: 403 });
+    }
 
     // The portal is only meaningful for someone who has actually been
     // through checkout. Sending a trial user there produces a confusing
     // empty portal, so send them to plan selection instead.
     const subscription = await prisma.subscription.findUnique({
-      where: { userId: session.userId },
+      where: { userId: account.ownerId },
       select: { stripeCustomerId: true },
     });
     if (!subscription?.stripeCustomerId) {
@@ -33,7 +36,7 @@ export async function POST() {
       );
     }
 
-    const url = await createBillingPortalSession(session.userId);
+    const url = await createBillingPortalSession(account.ownerId);
     return NextResponse.json({ url });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

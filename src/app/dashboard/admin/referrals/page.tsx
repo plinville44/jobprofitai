@@ -1,3 +1,5 @@
+import { notFound } from "next/navigation";
+import { getAdminSession } from "@/lib/adminAuth";
 import { prisma } from "@/lib/prisma";
 import { NO_VALUE, formatDate, formatCents } from "@/lib/format";
 import { AdminSection, AdminTable, Pill, Td } from "@/components/dashboard/AdminTable";
@@ -22,6 +24,11 @@ const TONE: Record<string, "neutral" | "good" | "warn" | "bad" | "info"> = {
  * Stripe balance transaction is impossible without knowing who's who.
  */
 export default async function AdminReferralsPage() {
+  // Checked here as well as in the admin layout. Next.js does not re-run a
+  // layout on client-side navigation, so a layout-only check can be skipped
+  // by requesting this page's data directly.
+  if (!(await getAdminSession())) notFound();
+
   const referrals = await prisma.referral.findMany({
     orderBy: { signedUpAt: "desc" },
     take: 300,

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession } from "@/lib/auth";
+import { getAccount } from "@/lib/account";
 import { isPlanId } from "@/lib/plans";
 import { createCheckoutSession } from "@/lib/stripe/billing";
+import { getEntitlements } from "@/lib/entitlements";
 
 /**
  * POST /api/billing/checkout  { plan: "profit_intelligence" | "profit_intelligence_pro" }
@@ -15,8 +16,11 @@ export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
-    const session = await getSession();
-    if (!session) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const account = await getAccount();
+    if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    if (account.role !== "owner") {
+      return NextResponse.json({ error: "Only the account owner can change the plan." }, { status: 403 });
+    }
 
     const body = await req.json().catch(() => ({}));
     const plan = body?.plan;
@@ -25,7 +29,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Choose a valid plan." }, { status: 400 });
     }
 
-    const { url } = await createCheckoutSession(session.userId, plan);
+    // One subscription per account. The Billing page hides these buttons
+    // from paying customers; this is the server-side rule behind that, so
+    // a double click or a second tab can't start a second subscription.
+    const entitlements = await getEntitlements(account.ownerId);
+    if (entitlements.access === "active" || entitlements.access === "past_due") {
+      return NextResponse.json(
+        { error: "You already have a subscription. Use Manage Billing to switch plans." },
+        { status: 409 }
+      );
+    }
+
+    const { url } = await createCheckoutSession(account.ownerId, plan);
     return NextResponse.json({ url });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

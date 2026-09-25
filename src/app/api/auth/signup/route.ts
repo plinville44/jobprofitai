@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { refuseCrossSite } from "@/lib/sameOrigin";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { hashPassword, createSession } from "@/lib/auth";
 import { newTrialSubscriptionData } from "@/lib/trial";
-import { attributeReferral, REFERRAL_COOKIE } from "@/lib/referrals";
-import { sendEmailVerification, sendPartnerNewSignup, sendReferralSignup } from "@/lib/email/lifecycle";
+import { REFERRAL_COOKIE } from "@/lib/referrals";
+import { attributeSignupReferral } from "@/lib/signupReferral";
+import { sendEmailVerification } from "@/lib/email/lifecycle";
 import { createEmailVerification, VERIFY_TOKEN_TTL_HOURS } from "@/lib/emailVerification";
 
 export const runtime = "nodejs";
@@ -14,7 +15,19 @@ const SignupSchema = z.object({
   email: z.string().email().max(320),
   password: z.string().min(8, "Password must be at least 8 characters").max(200),
   name: z.string().trim().max(120).optional(),
+  timeZone: z.string().max(64).optional(),
 });
+
+/** A real IANA zone name, or null. */
+function validTimeZone(tz: string | undefined): string | null {
+  if (!tz) return null;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return tz;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * POST /api/auth/signup
@@ -31,12 +44,15 @@ const SignupSchema = z.object({
  * break it.
  */
 export async function POST(req: NextRequest) {
+  const refused = refuseCrossSite(req);
+  if (refused) return refused;
   const body = await req.json().catch(() => ({}));
   const parsed = SignupSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
   const { password, name } = parsed.data;
+  const timeZone = validTimeZone(parsed.data.timeZone);
   // New accounts store a normalized address so "Sam@x.com" and "sam@x.com"
   // can't become two accounts. Existing rows are left exactly as they are -
   // login handles both (see the login route).
@@ -62,6 +78,7 @@ export async function POST(req: NextRequest) {
         email,
         passwordHash,
         name: name || null,
+        timeZone,
         subscription: { create: newTrialSubscriptionData() },
       },
     });
@@ -80,39 +97,9 @@ export async function POST(req: NextRequest) {
 
   // --- Everything below is best-effort and never fails the signup ---
 
-  // Whether a referral cookie was present at all. The cookie is cleared on
-  // the way out regardless of what attribution decided, so the code is spent
-  // by the first account that uses it. Left in place it lived for 30 more
-  // days and attributed every subsequent signup from that browser to the
-  // same referrer - a contractor setting up a login for their bookkeeper,
-  // or a partner who once clicked their own link, would quietly generate
-  // referral after referral from one machine.
-  let hadReferralCookie = false;
-
-  try {
-    const cookieStore = await cookies();
-    const refCode = cookieStore.get(REFERRAL_COOKIE)?.value ?? null;
-    hadReferralCookie = refCode != null;
-    const attribution = await attributeReferral(user.id, refCode);
-
-    if (attribution.attributed) {
-      const referral = attribution.referral;
-      if (referral.kind === "customer" && referral.referrerUserId) {
-        await sendReferralSignup(referral.referrerUserId, referral.id);
-      } else if (referral.kind === "partner" && referral.partnerId) {
-        const partner = await prisma.partner.findUnique({
-          where: { id: referral.partnerId },
-          select: { userId: true },
-        });
-        if (partner) await sendPartnerNewSignup(partner.userId, referral.id);
-      }
-    }
-  } catch (err) {
-    console.error(
-      "signup: referral attribution/notification failed:",
-      err instanceof Error ? err.message : "Unknown error"
-    );
-  }
+  // Referral credit and the referrer's notice. The cookie is cleared on the
+  // way out whatever attribution decided (see attributeSignupReferral).
+  const hadReferralCookie = await attributeSignupReferral(user.id);
 
   // The verification link, not the welcome. The welcome now goes out once
   // the address is confirmed (see src/app/verify-email/page.tsx), so a new

@@ -46,14 +46,20 @@ export function decryptToken(stored: string): string {
 }
 
 // Deterministic hash of a QuickBooks realm (company) ID, used only as a
-// lookup key. Intuit's security review requires the realm ID be encrypted
-// at rest like the tokens - but AES-256-GCM uses a random IV, so the same
-// realmId encrypts to a different value every time and can't be used in a
-// `WHERE realmId = ...` lookup. So we store the realId encrypted (via
-// encryptToken/decryptToken, not queryable) alongside this SHA-256 hash
-// (deterministic, queryable, safe to index) purely to find "is this
-// QuickBooks company already connected" without ever storing the real ID in
-// plain text.
+// lookup key: the realm ID itself is stored encrypted (random IV, so not
+// searchable), and this is what "is this company already connected" looks
+// up.
+//
+// Keyed (HMAC-SHA256 with the token encryption key) rather than a plain
+// SHA-256. Realm IDs are numbers from a fairly small range, so a plain hash
+// of one could be reversed by trying them all; without the server key it
+// can't. The "h2:" prefix keeps these apart from the older plain hashes,
+// which legacyHashRealmId still computes so existing rows can be found and
+// upgraded on their next connect (see /api/quickbooks/callback).
 export function hashRealmId(realmId: string): string {
+  return "h2:" + crypto.createHmac("sha256", getKey()).update(`realm:${realmId}`).digest("hex");
+}
+
+export function legacyHashRealmId(realmId: string): string {
   return crypto.createHash("sha256").update(realmId).digest("hex");
 }

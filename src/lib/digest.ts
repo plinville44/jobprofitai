@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { AI_MODEL, anthropic } from "./ai";
 import type { ConnectionMetrics, DataHealthReport } from "./profitability";
 import { computeConnectionMetrics } from "./profitability";
 import { formatCurrency } from "./format";
@@ -11,12 +11,13 @@ import {
 } from "./weekOverWeek";
 import { cleanDigestText, withoutOpenJobUnderspend } from "./digestText";
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
 const SYSTEM_PROMPT = `You write the narrative part of a weekly job-cost email for a contractor who runs their business on QuickBooks Online.
 
 What the data means. Read this before anything else:
+- "jobs" are the jobs that matter now: every job still open, plus jobs with any activity in the last 90 days. Older finished jobs are left out on purpose.
 - "jobs" and "totals" are JOB-TO-DATE figures: everything billed and spent on each job over its whole life. They are NOT this week's activity. Never say a job did something "this week" based on them, and never describe the totals as what "the week" produced.
+- "estimatedRevenue" is the job's contract value. "overUnderBilling" (open jobs only) is billed to date minus the revenue earned by the work done so far: positive means billed ahead of the work, negative means work done that hasn't been billed yet. "percentComplete" is how far along the job is (0 to 1). "forecastMarginPct", when present, is the margin the job is on track to finish at.
+- An open job's "marginPct" is margin to date and mostly reflects billing timing. Never call an open job unprofitable or below target from marginPct alone; use forecastMarginPct when it is there, and otherwise talk about spend against the estimate.
 - "weekOverWeek" is the only source for what changed since the last brief. A deterministic "What changed" section built from it is shown to the reader directly above your text, word for word. Do not repeat it line by line. You may refer to it ("the new costs on Torres Kitchen above").
 - If weekOverWeek.noComparisonReason is set, there is no previous brief to compare against. Do not speculate about what changed.
 
@@ -45,8 +46,10 @@ export async function generateWeeklyDigest(
   companyName: string,
   weekOverWeek: WeekOverWeekReport
 ): Promise<string> {
+  const inBrief = new Set(metrics.briefJobIds);
+  const dh = metrics.briefDataHealth;
   const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-5",
+    model: AI_MODEL,
     max_tokens: 1200,
     system: SYSTEM_PROMPT,
     messages: [
@@ -55,13 +58,21 @@ export async function generateWeeklyDigest(
         content: `Company: ${companyName}
 Week starting: ${metrics.weekStarting.toISOString().slice(0, 10)}
 
-Job-to-date figures for every job, plus what changed since the previous brief. Write the narrative as described.
+Job-to-date figures for the jobs that matter now, plus what changed since the previous brief. Write the narrative as described.
 
 ${JSON.stringify(
   {
-    ...metrics,
-    jobs: metrics.jobs.map(withoutOpenJobUnderspend),
+    totals: metrics.totals,
+    jobs: metrics.jobs.filter((j) => inBrief.has(j.jobId)).map(withoutOpenJobUnderspend),
     topConcerns: metrics.topConcerns.map(withoutOpenJobUnderspend),
+    // Counts only. The full lists are on the Data Health page.
+    dataHealth: {
+      openJobsMissingEstimates: dh.jobsMissingEstimates.length,
+      jobsWithRevenueButNoCosts: dh.jobsMissingCosts.length,
+      untaggedJobCostsLast12Months: dh.untaggedJobCostCount,
+      timeEntriesWithoutPayRate: dh.timeEntriesWithoutPayRate,
+      possibleDuplicateCosts: dh.possibleDuplicates.length,
+    },
     weekOverWeek: weekOverWeekForModel(weekOverWeek),
   },
   null,
@@ -107,13 +118,13 @@ export function buildDataHealthDigestBody(dataHealth: DataHealthReport, companyN
 
   if (total === 0) {
     lines.push(
-      `We didn't write a profitability summary for ${companyName} this week because no jobs have synced from QuickBooks yet. JobProfitAI reads QuickBooks Projects, so once a Project has invoices or costs on it, it shows up here.`
+      `We didn't write a profitability summary for ${companyName} this week because there are no open or recently active jobs synced from QuickBooks yet. Once a job has invoices or costs on it, it shows up here.`
     );
     return lines.join("\n");
   }
 
   lines.push(
-    `We didn't write a profitability summary for ${companyName} this week. ${without.length} of your ${total} jobs don't have both revenue and costs in QuickBooks yet, so their profit can't be calculated, and a summary built on the rest would be misleading.`
+    `We didn't write a profitability summary for ${companyName} this week. ${without.length} of your ${total} open or recently active jobs don't have both revenue and costs in QuickBooks yet, so their profit can't be calculated, and a summary built on the rest would be misleading.`
   );
   lines.push("");
   lines.push("Jobs without enough data yet:");
@@ -122,13 +133,13 @@ export function buildDataHealthDigestBody(dataHealth: DataHealthReport, companyN
 
   const bullet = (n: number | null, label: string) => (n == null || n === 0 ? null : `- ${n} ${label}`);
   const other = [
-    bullet(dataHealth.jobsMissingEstimates.length, "job(s) with no cost estimate on file"),
+    bullet(dataHealth.jobsMissingEstimates.length, "open job(s) with no cost estimate on file"),
     bullet(dataHealth.staleJobs.length, "open job(s) with no synced activity in 30+ days"),
     bullet(dataHealth.completedJobsWithUnresolvedActivity.length, "completed job(s) with unresolved activity"),
     bullet(
-      dataHealth.unassignedExpenseCount,
-      `expense(s) not tagged to any customer${
-        dataHealth.unassignedExpenseAmount ? ` (${formatCurrency(dataHealth.unassignedExpenseAmount)})` : ""
+      dataHealth.untaggedJobCostCount,
+      `job cost(s) in the last 12 months not tagged to any job${
+        dataHealth.untaggedJobCostAmount ? ` (${formatCurrency(dataHealth.untaggedJobCostAmount)})` : ""
       }`
     ),
     bullet(
@@ -137,7 +148,7 @@ export function buildDataHealthDigestBody(dataHealth: DataHealthReport, companyN
         dataHealth.unresolvedExpenseAmount ? ` (${formatCurrency(dataHealth.unresolvedExpenseAmount)})` : ""
       }`
     ),
-    bullet(dataHealth.timeEntriesWithoutRate, "time entry(ies) with no hourly rate"),
+    bullet(dataHealth.timeEntriesWithoutPayRate, "time entry(ies) from employees with no pay rate set in QuickBooks"),
     bullet(dataHealth.possibleDuplicates.length, "possible duplicate cost(s)"),
   ].filter((l): l is string => l != null);
 
@@ -170,6 +181,9 @@ export async function generateWeeklyDigestForConnection(
   narrative: string;
   kind: "narrative" | "data_health";
   metrics: ConnectionMetrics & { weekOverWeek: ReturnType<typeof weekOverWeekForModel> };
+  /** The written part alone (AI summary or Data Health notice), for the HTML email. */
+  body: string;
+  weekOverWeek: WeekOverWeekReport;
 }> {
   const metrics = await computeConnectionMetrics(connectionId, weekStarting);
 
@@ -194,14 +208,15 @@ export async function generateWeeklyDigestForConnection(
   // The changes section goes on both kinds of brief. It is arithmetic on
   // stored numbers, so it stays trustworthy even in a week when the data is
   // too thin for the AI narrative to be.
-  if (TOO_LOW_FOR_NARRATIVE.has(metrics.dataHealth.overallConfidence)) {
-    return {
-      narrative: `${changesSection}\n\n${buildDataHealthDigestBody(metrics.dataHealth, companyName)}`,
-      kind: "data_health",
-      metrics: stored,
-    };
+  //
+  // Judged on the jobs the brief is about, not on the company's whole
+  // history: old jobs that were never fully tagged must not silence the
+  // brief for jobs that are.
+  if (TOO_LOW_FOR_NARRATIVE.has(metrics.briefDataHealth.overallConfidence)) {
+    const body = buildDataHealthDigestBody(metrics.briefDataHealth, companyName);
+    return { narrative: `${changesSection}\n\n${body}`, kind: "data_health", metrics: stored, body, weekOverWeek };
   }
 
   const body = await generateWeeklyDigest(metrics, companyName, weekOverWeek);
-  return { narrative: `${changesSection}\n\n${body}`, kind: "narrative", metrics: stored };
+  return { narrative: `${changesSection}\n\n${body}`, kind: "narrative", metrics: stored, body, weekOverWeek };
 }

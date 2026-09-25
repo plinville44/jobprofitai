@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { SignInWithIntuitButton } from "@/components/IntuitButtons";
 import Link from "next/link";
 
 const inputClass =
@@ -32,7 +33,19 @@ export default function SignupForm() {
       const res = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, name: name.trim() || undefined }),
+        body: JSON.stringify({
+          email,
+          password,
+          name: name.trim() || undefined,
+          // So the weekly brief defaults to 8am where they actually are.
+          timeZone: (() => {
+            try {
+              return Intl.DateTimeFormat().resolvedOptions().timeZone;
+            } catch {
+              return undefined;
+            }
+          })(),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -71,6 +84,25 @@ export default function SignupForm() {
           You were referred to JobProfitAI. Your 14-day free trial is ready to go.
         </p>
       ) : null}
+
+      {!partnerIntent && (
+        <>
+          {/* One step with the QuickBooks login they already have: Intuit
+              sign-in and QuickBooks access together, account and trial
+              created on the way back (see src/lib/intuitSignIn.ts). */}
+          <div className="mt-7 flex flex-col items-center gap-2">
+            <SignInWithIntuitButton intent="appstore" />
+            <p className="text-center text-xs text-jp-muted">
+              Uses your QuickBooks login and connects your company in the same step.
+            </p>
+          </div>
+          <div className="mt-6 flex items-center gap-3 text-xs uppercase tracking-wide text-jp-muted">
+            <span className="h-px flex-1 bg-jp-line" />
+            or with email
+            <span className="h-px flex-1 bg-jp-line" />
+          </div>
+        </>
+      )}
 
       <form onSubmit={handleSubmit} className="mt-7 space-y-4">
         <div>

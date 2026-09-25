@@ -55,7 +55,7 @@ export default function ConnectionActions({ connectionId }: { connectionId: stri
         disabled={busy}
         className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
       >
-        Disconnect
+        Disconnect from QuickBooks
       </button>
       {status && <span className="text-sm text-gray-500">{status}</span>}
     </div>

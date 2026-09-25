@@ -1,92 +1,150 @@
 import { prisma } from "@/lib/prisma";
-import { qboQueryAll, qboCompanyInfo, qboCdc, refreshTokens } from "@/lib/quickbooks";
+import { qboQuery, qboQueryAll, qboCompanyInfo, qboCdc, refreshTokens } from "@/lib/quickbooks";
 import { encryptToken, decryptToken } from "@/lib/crypto";
+import {
+  buildJobIndex,
+  contractValueFromEstimates,
+  costEntryId,
+  emptyLookups,
+  estimateFromTxn,
+  estimateRowId,
+  expenseLines,
+  qboDate,
+  resolveJob,
+  revenueFromTxn,
+  revenueId,
+  round2,
+  selectJobCustomers,
+  timeActivityCost,
+  type AccountInfo,
+  type ExpenseSourceType,
+  type ItemInfo,
+  type JobIndex,
+  type JobSource,
+  type Lookups,
+  type RevenueSourceType,
+} from "@/lib/qboNormalize";
 
 /**
- * The QuickBooks sync engine. Lives here (not inline in the route handler)
- * so it can be called in-process both by POST /api/quickbooks/sync (a
- * logged-in user clicking "Sync now") and by the weekly-email cron job
- * (api/cron/weekly-email), which has no user session to authenticate as and
- * needs to sync a connection before generating that connection's digest.
- * `runSyncForConnection` is the only export - callers are responsible for
- * deciding whether the caller is allowed to sync a given connection (the
- * route checks session + ownership; the cron job iterates connections
- * directly from the database) before calling in here.
+ * The QuickBooks sync engine: reads a connection's job-costing data from
+ * QuickBooks and writes it into Job / CostEntry / InvoiceSummary /
+ * JobEstimate, so every page and the weekly brief run on local data.
  *
- * Pulls this connection's job-costing data from QuickBooks and writes it into
- * our own tables (Job / CostEntry / InvoiceSummary), so the profitability
- * engine and digest generator can run against local data rather than hitting
- * the QBO API live every time.
+ * Called by POST /api/quickbooks/sync (a person clicking Sync now), by the
+ * nightly sync cron and by the weekly-email cron. Callers decide whether the
+ * caller may sync this connection; this module only does the work.
  *
- * Every run is recorded as a SyncRun (status/mode/entities-updated/error) so
- * sync is observable, per the product spec and Intuit's own guidance. The
- * first sync for a connection (or any sync more than FULL_SYNC_INTERVAL_DAYS
- * since the last full sync) does a full pull; every other sync uses QBO's
- * Change Data Capture (CDC) endpoint to pull only what changed, which is
- * faster and lighter for both us and Intuit's API.
+ * What a payload MEANS (bill rate vs pay rate, refunds, tax, which
+ * customers are jobs) is decided in src/lib/qboNormalize.ts, which is pure
+ * and tested. This file is the database side: it keeps local rows exactly
+ * in step with QuickBooks, which means it also REMOVES rows. A full sync
+ * deletes every stored row QuickBooks no longer returns (a deleted bill, a
+ * voided check, a line moved to another job), and an incremental sync
+ * removes what Change Data Capture reports as deleted or changed.
+ *
+ * Every run is recorded as a SyncRun, and a connection can only have one
+ * sync running at a time (see claimSync).
  */
 
+/**
+ * Bump when the way rows are stored changes. A connection whose
+ * syncVersion is lower gets a full sync next time, which rewrites every
+ * row under the new rules and sweeps away rows stored under the old ones.
+ *
+ * 2: row ids include the connection id; labor at pay rate; refunds,
+ *    vendor credits, sales receipts, credit memos, journal entries; tax
+ *    removed from revenue; deletions honoured.
+ */
+export const SYNC_VERSION = 2;
+
 const FULL_SYNC_INTERVAL_DAYS = 30;
-const CDC_ENTITIES = ["Customer", "Purchase", "Bill", "TimeActivity", "Invoice", "Estimate"];
+/** Data Health tallies look at the last 12 months, not the company's whole history. */
+const COUNTER_WINDOW_DAYS = 365;
+/** A sync that has been "in progress" longer than this is assumed dead. */
+const STALE_SYNC_MINUTES = 10;
+/** Incremental syncs re-read this much before the last sync's start. */
+const CDC_OVERLAP_MS = 5 * 60_000;
+/** QuickBooks' Change Data Capture returns at most this many records. */
+const CDC_MAX_PER_ENTITY = 1000;
+
+const EXPENSE_TYPES: ExpenseSourceType[] = ["Purchase", "Bill", "VendorCredit", "JournalEntry"];
+const REVENUE_TYPES: RevenueSourceType[] = ["Invoice", "SalesReceipt", "CreditMemo", "RefundReceipt"];
+const CDC_ENTITIES = ["Customer", ...EXPENSE_TYPES, "TimeActivity", ...REVENUE_TYPES, "Estimate"];
+
+export class SyncAlreadyRunningError extends Error {
+  constructor() {
+    super("A QuickBooks sync is already running for this company. Give it a minute and refresh.");
+    this.name = "SyncAlreadyRunningError";
+  }
+}
 
 export async function runSyncForConnection(
   connectionId: string,
   options: { forceFull?: boolean } = {}
 ): Promise<Record<string, any>> {
-  const connection = await prisma.quickBooksConnection.findUniqueOrThrow({
-    where: { id: connectionId },
-  });
-
-  const accessToken = await getValidAccessToken(connection);
-  const realmId = decryptToken(connection.realmId);
+  if (!(await claimSync(connectionId))) throw new SyncAlreadyRunningError();
+  // Read after taking the claim, so the refresh token is the one the last
+  // sync left behind, not one it rotated a moment ago.
+  const connection = await prisma.quickBooksConnection.findUniqueOrThrow({ where: { id: connectionId } });
 
   const fullSyncDue =
     !connection.lastFullSyncAt ||
-    Date.now() - connection.lastFullSyncAt.getTime() > FULL_SYNC_INTERVAL_DAYS * 24 * 60 * 60 * 1000;
-  // forceFull exists because an incremental sync cannot repair anything. It
-  // only looks at what QuickBooks says changed, so a code change on our side
-  // that alters how a record is stored - or a field we started capturing that
-  // we did not capture before - never reaches rows QuickBooks considers
-  // unchanged. Without this the only remedy was waiting up to
-  // FULL_SYNC_INTERVAL_DAYS.
-  let mode: "full" | "incremental" = options.forceFull || fullSyncDue ? "full" : "incremental";
+    Date.now() - connection.lastFullSyncAt.getTime() > FULL_SYNC_INTERVAL_DAYS * 86_400_000;
+  // forceFull exists because an incremental sync cannot repair anything: it
+  // only sees what QuickBooks says changed. The same goes for a connection
+  // stored under an older version of these rules.
+  let mode: "full" | "incremental" =
+    options.forceFull || fullSyncDue || connection.syncVersion < SYNC_VERSION ? "full" : "incremental";
 
   const syncRun = await prisma.syncRun.create({
     data: { connectionId: connection.id, status: "in_progress", mode },
   });
 
   let counts: Record<string, any>;
+  // The next incremental sync asks QuickBooks for changes since this sync
+  // STARTED (less a small overlap), not since it finished: anything edited
+  // while this one was running would otherwise fall in the gap until the
+  // next full sync. Reprocessing a transaction twice is harmless.
+  const syncStartedAt = new Date();
   try {
+    const accessToken = await getValidAccessToken(connection);
+    const realmId = decryptToken(connection.realmId);
+    const ctx: SyncCtx = {
+      connectionId: connection.id,
+      realmId,
+      accessToken,
+      jobSource: (connection.jobSource === "customers" ? "customers" : "projects") as JobSource,
+      autoDetectSource: !connection.lastSyncedAt,
+      laborFromTimeEntries: connection.laborFromTimeEntries,
+      startedAt: syncStartedAt,
+    };
+
     if (mode === "full") {
-      counts = await runFullSync(connection.id, realmId, accessToken);
+      counts = await runFullSync(ctx);
     } else {
       try {
-        counts = await runIncrementalSync(connection.id, realmId, accessToken, connection.lastSyncedAt ?? new Date(0));
+        counts = await runIncrementalSync(
+          ctx,
+          new Date((connection.lastSyncedAt?.getTime() ?? 0) - CDC_OVERLAP_MS)
+        );
       } catch (cdcErr) {
-        // CDC itself failing (not one of the per-entity steps inside it,
-        // which are already isolated via runStep) is rare but should fall
-        // back to a full sync rather than fail the whole request - the
-        // customer clicking "Sync now" shouldn't get an error just because
-        // the lighter-weight path had a problem.
+        if (isReconnectError(cdcErr)) throw cdcErr;
+        // CDC itself failing is rare; a full read is the safe fallback.
         mode = "full";
         await prisma.syncRun.update({ where: { id: syncRun.id }, data: { mode } });
-        counts = await runFullSync(connection.id, realmId, accessToken);
+        counts = await runFullSync(ctx);
       }
     }
 
-    // CompanyInfo is cheap and worth refreshing on every sync, full or incremental.
+    // CompanyInfo is cheap and worth refreshing on every sync.
     try {
       const info = await qboCompanyInfo(realmId, accessToken);
       const companyName = info?.CompanyInfo?.CompanyName;
       if (companyName) {
-        await prisma.quickBooksConnection.update({
-          where: { id: connection.id },
-          data: { companyName },
-        });
+        await prisma.quickBooksConnection.update({ where: { id: connection.id }, data: { companyName } });
       }
     } catch {
-      // Non-fatal - the dashboard already falls back to the decrypted realm
-      // ID if companyName is never populated. Don't fail the whole sync over it.
+      // Non-fatal: the dashboard falls back to a generic label.
     }
 
     const now = new Date();
@@ -97,12 +155,12 @@ export async function runSyncForConnection(
     await prisma.quickBooksConnection.update({
       where: { id: connection.id },
       data: {
-        lastSyncedAt: now,
+        lastSyncedAt: syncStartedAt,
         lastSyncStatus: "success",
         lastSyncError: null,
         lastSyncAttemptAt: now,
         lastSyncEntitiesUpdated: counts,
-        ...(mode === "full" ? { lastFullSyncAt: now } : {}),
+        ...(mode === "full" ? { lastFullSyncAt: now, syncVersion: SYNC_VERSION } : {}),
       },
     });
   } catch (err) {
@@ -115,616 +173,1023 @@ export async function runSyncForConnection(
       where: { id: connection.id },
       data: { lastSyncStatus: "error", lastSyncError: message, lastSyncAttemptAt: new Date() },
     });
-    throw err; // handled by the caller (the sync route's POST try/catch, or the cron route's per-connection try/catch)
+    throw err;
   }
 
   return { ok: true, mode, ...counts };
 }
 
 /**
- * Runs one entity's fetch+process step in isolation. A failure here (e.g. a
- * malformed query against one entity type) is recorded and surfaced in the
- * sync result instead of aborting the whole sync - Bill/TimeActivity/Estimate
- * are new this phase and less proven than Customer/Purchase/Invoice, so one
- * of them having an issue must not take down sync entirely (that's exactly
- * the regression hit when Phase 2 first shipped: one bad query broke
- * everything, including the parts that were already working). Every
- * per-entity error is tagged with the entity name so it's actually
- * diagnosable from the SyncRun record - no more "status 400" with no
- * context about which query caused it.
+ * Marks the connection as syncing, unless a sync is already running.
+ * Atomic: two callers (the first-run setup and a cron, or two tabs) cannot
+ * both win, which also stops two refreshes of the same QuickBooks refresh
+ * token racing each other. A claim older than STALE_SYNC_MINUTES is treated
+ * as a sync that died (a function timeout never reaches its catch block).
+ */
+async function claimSync(connectionId: string): Promise<boolean> {
+  const staleBefore = new Date(Date.now() - STALE_SYNC_MINUTES * 60_000);
+  const claimed = await prisma.quickBooksConnection.updateMany({
+    where: {
+      id: connectionId,
+      OR: [
+        { lastSyncStatus: null },
+        { lastSyncStatus: { not: "in_progress" } },
+        { lastSyncAttemptAt: null },
+        { lastSyncAttemptAt: { lt: staleBefore } },
+      ],
+    },
+    data: { lastSyncStatus: "in_progress", lastSyncAttemptAt: new Date() },
+  });
+  return claimed.count === 1;
+}
+
+/**
+ * Runs `fn` with a working access token for a connection, outside a sync.
+ * A still-valid token is used as is. A refresh takes the same claim a sync
+ * does, so it can never race a running sync's refresh of the same token;
+ * if a sync is running, this says so rather than waiting.
+ */
+export class SyncBusyError extends Error {
+  constructor() {
+    super("A sync is running for this company. Try again in a minute.");
+    this.name = "SyncBusyError";
+  }
+}
+
+export async function withAccessToken<T>(
+  connectionId: string,
+  fn: (realmId: string, accessToken: string) => Promise<T>
+): Promise<T> {
+  const c = await prisma.quickBooksConnection.findUnique({ where: { id: connectionId } });
+  if (!c || c.disconnectedAt) throw new Error("This QuickBooks company isn't connected.");
+  const realmId = decryptToken(c.realmId);
+  if (c.accessTokenExpiresAt.getTime() - Date.now() > 5 * 60 * 1000) {
+    return fn(realmId, decryptToken(c.accessToken));
+  }
+  if (!(await claimSync(connectionId))) throw new SyncBusyError();
+  let token: string;
+  try {
+    token = await getValidAccessToken(c);
+  } catch (err) {
+    if (isReconnectError(err)) {
+      await prisma.quickBooksConnection.update({
+        where: { id: connectionId },
+        data: { lastSyncStatus: "error", lastSyncError: (err as Error).message, lastSyncAttemptAt: new Date() },
+      });
+    } else {
+      await prisma.quickBooksConnection
+        .update({ where: { id: connectionId }, data: { lastSyncStatus: c.lastSyncStatus, lastSyncAttemptAt: c.lastSyncAttemptAt } })
+        .catch(() => {});
+    }
+    throw err;
+  }
+  await prisma.quickBooksConnection.update({
+    where: { id: connectionId },
+    data: { lastSyncStatus: c.lastSyncStatus, lastSyncAttemptAt: c.lastSyncAttemptAt },
+  });
+  return fn(realmId, token);
+}
+
+/**
+ * Asks QuickBooks whether a connection still works, without syncing. Used
+ * by the Disconnect landing page: when someone disconnects the app from
+ * inside QuickBooks, Intuit revokes the grant and sends them to us, and the
+ * company should show as disconnected straight away rather than at the next
+ * sync. Safe to call from a plain GET: it only records what Intuit reports.
+ *
+ * "revoked" marks the connection disconnected (its history is kept and
+ * comes back on reconnect). "unknown" covers a sync already running and any
+ * error that isn't Intuit refusing the grant.
+ */
+export async function probeConnection(connectionId: string): Promise<"ok" | "revoked" | "unknown"> {
+  const before = await prisma.quickBooksConnection.findUnique({ where: { id: connectionId } });
+  if (!before || before.disconnectedAt) return "unknown";
+  if (!(await claimSync(connectionId))) return "unknown";
+  const release = () =>
+    prisma.quickBooksConnection.update({
+      where: { id: connectionId },
+      data: { lastSyncStatus: before.lastSyncStatus, lastSyncAttemptAt: before.lastSyncAttemptAt },
+    });
+  try {
+    const accessToken = await getValidAccessToken(before);
+    await qboCompanyInfo(decryptToken(before.realmId), accessToken);
+    await release();
+    return "ok";
+  } catch (err) {
+    if (isReconnectError(err)) {
+      await prisma.quickBooksConnection.update({
+        where: { id: connectionId },
+        data: {
+          disconnectedAt: new Date(),
+          lastSyncStatus: "error",
+          lastSyncError: err instanceof Error ? err.message : "Disconnected in QuickBooks.",
+          lastSyncAttemptAt: new Date(),
+        },
+      });
+      return "revoked";
+    }
+    await release().catch(() => {});
+    return "unknown";
+  }
+}
+
+function isReconnectError(err: unknown): boolean {
+  return err instanceof Error && err.name === "ReconnectRequiredError";
+}
+
+// ---------------------------------------------------------------------------
+// Shared context and state
+// ---------------------------------------------------------------------------
+
+interface SyncCtx {
+  connectionId: string;
+  realmId: string;
+  accessToken: string;
+  jobSource: JobSource;
+  /** First sync: switch to one-customer-per-job when there are no projects. */
+  autoDetectSource: boolean;
+  laborFromTimeEntries: boolean;
+  startedAt: Date;
+}
+
+interface ExistingCost {
+  id: string;
+  jobId: string;
+  amount: number;
+  category: string;
+  txnDate: number;
+  description: string | null;
+  attributionMethod: string;
+  accountName: string | null;
+  qboSourceType: string;
+  qboSourceId: string;
+}
+
+interface ExistingRevenue {
+  id: string;
+  jobId: string;
+  amount: number;
+  taxAmount: number | null;
+  status: string;
+  txnDate: number;
+  qboSourceType: string;
+  qboInvoiceId: string;
+}
+
+interface Tallies {
+  untaggedJobCostCount: number;
+  untaggedJobCostAmount: number;
+  untaggedOverheadCount: number;
+  untaggedOverheadAmount: number;
+  unresolvedExpenseCount: number;
+  unresolvedExpenseAmount: number;
+  costsMatchedViaParentCount: number;
+  costsMatchedViaParentAmount: number;
+  timeEntriesWithoutPayRate: number;
+  vendorTimeEntriesSkipped: number;
+  unresolvedSamples: { source: string; txnId: string; customerId: string; customerName: string | null; amount: number }[];
+}
+
+const newTallies = (): Tallies => ({
+  untaggedJobCostCount: 0,
+  untaggedJobCostAmount: 0,
+  untaggedOverheadCount: 0,
+  untaggedOverheadAmount: 0,
+  unresolvedExpenseCount: 0,
+  unresolvedExpenseAmount: 0,
+  costsMatchedViaParentCount: 0,
+  costsMatchedViaParentAmount: 0,
+  timeEntriesWithoutPayRate: 0,
+  vendorTimeEntriesSkipped: 0,
+  unresolvedSamples: [],
+});
+
+/** Collects the writes a sync decides on, then applies them in bulk. */
+class Writer {
+  private costCreates: any[] = [];
+  private revenueCreates: any[] = [];
+  costUpdates = 0;
+  revenueUpdates = 0;
+  seenCost = new Set<string>();
+  seenRevenue = new Set<string>();
+
+  constructor(
+    private readonly existingCost: Map<string, ExistingCost>,
+    private readonly existingRevenue: Map<string, ExistingRevenue>
+  ) {}
+
+  async cost(row: {
+    id: string;
+    jobId: string;
+    qboSourceType: string;
+    qboSourceId: string;
+    category: string;
+    accountName: string | null;
+    description: string | null;
+    amount: number;
+    txnDate: Date;
+    attributionMethod: string;
+  }) {
+    this.seenCost.add(row.id);
+    const ex = this.existingCost.get(row.id);
+    if (!ex) {
+      this.costCreates.push(row);
+      if (this.costCreates.length >= 500) await this.flush();
+      return;
+    }
+    const changed =
+      ex.jobId !== row.jobId ||
+      Math.abs(ex.amount - row.amount) >= 0.005 ||
+      ex.category !== row.category ||
+      ex.txnDate !== row.txnDate.getTime() ||
+      (ex.description ?? null) !== (row.description ?? null) ||
+      ex.attributionMethod !== row.attributionMethod ||
+      (ex.accountName ?? null) !== (row.accountName ?? null);
+    if (!changed) return;
+    this.costUpdates++;
+    await prisma.costEntry.update({
+      where: { id: row.id },
+      data: {
+        jobId: row.jobId,
+        category: row.category,
+        accountName: row.accountName,
+        description: row.description,
+        amount: row.amount,
+        txnDate: row.txnDate,
+        attributionMethod: row.attributionMethod,
+      },
+    });
+  }
+
+  async revenue(row: {
+    id: string;
+    jobId: string;
+    qboSourceType: string;
+    qboInvoiceId: string;
+    amount: number;
+    taxAmount: number;
+    status: string;
+    txnDate: Date;
+  }) {
+    this.seenRevenue.add(row.id);
+    const ex = this.existingRevenue.get(row.id);
+    if (!ex) {
+      this.revenueCreates.push(row);
+      if (this.revenueCreates.length >= 500) await this.flush();
+      return;
+    }
+    const changed =
+      ex.jobId !== row.jobId ||
+      Math.abs(ex.amount - row.amount) >= 0.005 ||
+      Math.abs((ex.taxAmount ?? 0) - row.taxAmount) >= 0.005 ||
+      ex.status !== row.status ||
+      ex.txnDate !== row.txnDate.getTime();
+    if (!changed) return;
+    this.revenueUpdates++;
+    await prisma.invoiceSummary.update({
+      where: { id: row.id },
+      data: { jobId: row.jobId, amount: row.amount, taxAmount: row.taxAmount, status: row.status, txnDate: row.txnDate },
+    });
+  }
+
+  async flush() {
+    if (this.costCreates.length) {
+      await prisma.costEntry.createMany({ data: this.costCreates, skipDuplicates: true });
+      this.costCreates = [];
+    }
+    if (this.revenueCreates.length) {
+      await prisma.invoiceSummary.createMany({ data: this.revenueCreates, skipDuplicates: true });
+      this.revenueCreates = [];
+    }
+  }
+
+  /** Existing cost rows of these source types that this sync did not see. */
+  unseenCost(types: Set<string>, txnFilter?: (r: ExistingCost) => boolean): string[] {
+    const out: string[] = [];
+    for (const r of this.existingCost.values()) {
+      if (!types.has(r.qboSourceType) || this.seenCost.has(r.id)) continue;
+      if (txnFilter && !txnFilter(r)) continue;
+      out.push(r.id);
+    }
+    return out;
+  }
+
+  unseenRevenue(types: Set<string>, txnFilter?: (r: ExistingRevenue) => boolean): string[] {
+    const out: string[] = [];
+    for (const r of this.existingRevenue.values()) {
+      if (!types.has(r.qboSourceType) || this.seenRevenue.has(r.id)) continue;
+      if (txnFilter && !txnFilter(r)) continue;
+      out.push(r.id);
+    }
+    return out;
+  }
+}
+
+async function deleteCostRows(ids: string[]): Promise<number> {
+  let n = 0;
+  for (let i = 0; i < ids.length; i += 500) {
+    n += (await prisma.costEntry.deleteMany({ where: { id: { in: ids.slice(i, i + 500) } } })).count;
+  }
+  return n;
+}
+
+async function deleteRevenueRows(ids: string[]): Promise<number> {
+  let n = 0;
+  for (let i = 0; i < ids.length; i += 500) {
+    n += (await prisma.invoiceSummary.deleteMany({ where: { id: { in: ids.slice(i, i + 500) } } })).count;
+  }
+  return n;
+}
+
+/**
+ * Stored rows to diff against. All of them for a full sync; for an
+ * incremental one, only those of the transactions in `onlyTxns` (source
+ * type -> QuickBooks ids).
+ */
+async function loadExisting(connectionId: string, onlyTxns?: Map<string, string[]>) {
+  const revenueTypes = new Set<string>(REVENUE_TYPES);
+  const costFilter = onlyTxns
+    ? [...onlyTxns].filter(([t]) => !revenueTypes.has(t)).map(([t, ids]) => ({ qboSourceType: t, qboSourceId: { in: ids } }))
+    : null;
+  const revenueFilter = onlyTxns
+    ? [...onlyTxns].filter(([t]) => revenueTypes.has(t)).map(([t, ids]) => ({ qboSourceType: t, qboInvoiceId: { in: ids } }))
+    : null;
+  const [costRows, revenueRows] = await Promise.all([
+    costFilter && costFilter.length === 0 ? Promise.resolve([]) : prisma.costEntry.findMany({
+      where: { job: { connectionId }, ...(costFilter ? { OR: costFilter } : {}) },
+      select: {
+        id: true, jobId: true, amount: true, category: true, txnDate: true, description: true,
+        attributionMethod: true, accountName: true, qboSourceType: true, qboSourceId: true,
+      },
+    }),
+    revenueFilter && revenueFilter.length === 0 ? Promise.resolve([]) : prisma.invoiceSummary.findMany({
+      where: { job: { connectionId }, ...(revenueFilter ? { OR: revenueFilter } : {}) },
+      select: { id: true, jobId: true, amount: true, taxAmount: true, status: true, txnDate: true, qboSourceType: true, qboInvoiceId: true },
+    }),
+  ]);
+  const existingCost = new Map<string, ExistingCost>();
+  for (const r of costRows) {
+    existingCost.set(r.id, { ...r, amount: Number(r.amount), txnDate: r.txnDate.getTime() });
+  }
+  const existingRevenue = new Map<string, ExistingRevenue>();
+  for (const r of revenueRows) {
+    existingRevenue.set(r.id, {
+      ...r,
+      amount: Number(r.amount),
+      taxAmount: r.taxAmount == null ? null : Number(r.taxAmount),
+      txnDate: r.txnDate.getTime(),
+    });
+  }
+  return { existingCost, existingRevenue };
+}
+
+// ---------------------------------------------------------------------------
+// Lookups: accounts, items, the contractor's own category mappings
+// ---------------------------------------------------------------------------
+
+/**
+ * The chart of accounts and product list decide which lines are job cost
+ * and which category each lands in. Without them every bill would be
+ * re-categorised and journal-entry costs would drop out, so a failure here
+ * stops the sync before anything is written; the next one tries again.
+ */
+async function loadLookups(ctx: SyncCtx): Promise<Lookups> {
+  const lookups = emptyLookups();
+  const accounts = await qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM Account WHERE Active IN (true, false)", "Account").catch(
+    (err) => {
+      if (isReconnectError(err)) throw err;
+      throw new Error("Couldn't read your QuickBooks chart of accounts, so nothing was changed. The next sync will try again.");
+    }
+  );
+  for (const a of accounts) {
+    if (a?.Id == null) continue;
+    const info: AccountInfo = {
+      name: String(a.Name ?? ""),
+      fullName: String(a.FullyQualifiedName ?? a.Name ?? ""),
+      type: typeof a.AccountType === "string" ? a.AccountType : null,
+      subType: typeof a.AccountSubType === "string" ? a.AccountSubType : null,
+    };
+    lookups.accounts.set(String(a.Id), info);
+  }
+  const items = await qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM Item WHERE Active IN (true, false)", "Item").catch(
+    (err) => {
+      if (isReconnectError(err)) throw err;
+      throw new Error("Couldn't read your QuickBooks products and services, so nothing was changed. The next sync will try again.");
+    }
+  );
+  for (const it of items) {
+    if (it?.Id == null) continue;
+    const info: ItemInfo = {
+      name: String(it.FullyQualifiedName ?? it.Name ?? ""),
+      expenseAccountId: it.ExpenseAccountRef?.value != null ? String(it.ExpenseAccountRef.value) : null,
+    };
+    lookups.items.set(String(it.Id), info);
+  }
+  const mappings = await prisma.categoryMapping.findMany({ where: { connectionId: ctx.connectionId } });
+  for (const m of mappings) lookups.mappings.set(m.sourceName, m.category);
+  return lookups;
+}
+
+/**
+ * Runs one entity's fetch in isolation, so one failing entity type can't
+ * take the whole sync down with it. Failures are recorded by entity name
+ * in the sync result, and a type that failed is never swept (its stored
+ * rows are left alone rather than deleted for "not being returned").
  */
 async function runStep<T>(label: string, errors: Record<string, string>, fn: () => Promise<T>, fallback: T): Promise<T> {
   try {
     return await fn();
   } catch (err) {
+    if (isReconnectError(err)) throw err;
     errors[label] = err instanceof Error ? err.message : "Unknown error";
     return fallback;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Full sync: pulls everything via the query endpoint, same approach as the
-// original Week 1 implementation, extended to Bill/TimeActivity/Estimate.
-// Customer/Purchase/Invoice are the proven-working Week 1 entities and are
-// NOT wrapped in runStep - if one of those fails, the sync genuinely failed
-// and should report an error, same as before this phase. Bill/TimeActivity/
-// Estimate are new and isolated via runStep so a problem with one of them
-// can't break the rest.
+// Jobs
 // ---------------------------------------------------------------------------
-async function runFullSync(connectionId: string, realmId: string, accessToken: string): Promise<Record<string, any>> {
-  const errors: Record<string, string> = {};
 
-  // SELECT *, and every Customer rather than only the jobs, for two reasons.
-  //
-  // First, the same projection trap documented below for Line: ParentRef is a
-  // composite field, and naming it explicitly in a column list got it back as
-  // {value} with no name, which is why the customer name on every job came
-  // out blank the first time this was fixed.
-  //
-  // Second, even a populated ParentRef.name is QuickBooks' denormalised copy.
-  // Resolving from the parent's own record means a renamed customer shows up
-  // renamed on their jobs at the next full sync, rather than carrying
-  // whatever the name was when the job was first seen.
-  //
-  // Third: WHERE Active IN (true, false), which is how QuickBooks is asked
-  // for inactive records. Its query endpoint silently returns only active
-  // ones otherwise. Deactivating a customer is how a contractor marks a job
-  // finished, so without this clause a job disappears from the sync the
-  // moment it completes, keeps whatever status it last had, and never
-  // becomes "closed" here. Profit Intelligence compares completed jobs, so
-  // it could never have produced a single pattern for anybody.
-  const allCustomers = await qboQueryAll(
-    realmId,
-    accessToken,
-    "SELECT * FROM Customer WHERE Active IN (true, false)",
-    "Customer"
+/** How long a job with the contractor's own entries is kept after it stops appearing in QuickBooks. */
+const MISSING_JOB_GRACE_MS = 3 * 86_400_000;
+
+function hasManualData(j: {
+  estimatedCost: unknown;
+  manualContractValue: unknown;
+  percentCompleteOverride: unknown;
+  category: string | null;
+  statusOverride: string | null;
+}): boolean {
+  return (
+    j.estimatedCost != null ||
+    j.manualContractValue != null ||
+    j.percentCompleteOverride != null ||
+    j.category != null ||
+    j.statusOverride != null
   );
-  const customerNameById = new Map<string, string>();
-  for (const c of allCustomers) {
-    if (c?.Id && typeof c.DisplayName === "string") {
-      customerNameById.set(String(c.Id), cleanCustomerName(c.DisplayName, c.Active));
+}
+
+/**
+ * `fullList`: `customers` is every customer in the company (a full sync).
+ * `allowRemoval`: that list is known to be complete, so jobs missing from
+ * it may be removed.
+ */
+async function upsertJobs(ctx: SyncCtx, customers: any[], fullList: boolean, allowRemoval = false): Promise<number> {
+  const nameById = new Map<string, string>();
+  if (fullList) {
+    for (const c of customers) if (c?.Id != null && typeof c.DisplayName === "string") nameById.set(String(c.Id), c.DisplayName);
+  }
+  const existing = await prisma.job.findMany({
+    where: { connectionId: ctx.connectionId },
+    select: {
+      id: true, qboId: true, parentQboId: true, customerName: true, name: true, status: true, qboCreatedAt: true,
+      missingSince: true, estimatedCost: true, manualContractValue: true, percentCompleteOverride: true,
+      category: true, statusOverride: true,
+    },
+  });
+  const byQboId = new Map(existing.map((j) => [j.qboId, j]));
+  const existingIds = new Set(existing.map((j) => j.qboId));
+  // An incremental sync sees only the customers that changed, so "has no
+  // sub-customers" can't be judged from that list alone. A customer that is
+  // already the parent of a stored job is a client, not a job, unless it is
+  // itself a job already (see keepIds in selectJobCustomers).
+  const knownParents = new Set(existing.map((j) => j.parentQboId).filter((v): v is string => Boolean(v)));
+  const candidates = selectJobCustomers(
+    customers,
+    ctx.jobSource,
+    fullList ? nameById : undefined,
+    ctx.jobSource === "customers" ? existingIds : undefined
+  ).filter((c) => fullList || ctx.jobSource === "projects" || !knownParents.has(c.qboId) || existingIds.has(c.qboId));
+
+  for (const c of candidates) {
+    const status = c.active ? "open" : "closed";
+    const ex = byQboId.get(c.qboId);
+    if (!ex) {
+      await prisma.job.create({
+        data: {
+          connectionId: ctx.connectionId,
+          qboId: c.qboId,
+          parentQboId: c.parentQboId,
+          customerName: c.customerName,
+          name: c.name,
+          status,
+          qboCreatedAt: c.createdAt,
+        },
+      });
+      continue;
+    }
+    const changed =
+      ex.missingSince != null ||
+      ex.parentQboId !== c.parentQboId ||
+      (c.customerName != null && ex.customerName !== c.customerName) ||
+      ex.name !== c.name ||
+      ex.status !== status ||
+      (c.createdAt != null && ex.qboCreatedAt?.getTime() !== c.createdAt.getTime());
+    if (!changed) continue;
+    await prisma.job.update({
+      where: { id: ex.id },
+      data: {
+        parentQboId: c.parentQboId,
+        // Only written when resolved: an incremental sync that cannot see
+        // the parent must not blank a name a full sync already got right.
+        ...(c.customerName ? { customerName: c.customerName } : {}),
+        name: c.name,
+        status,
+        missingSince: null,
+        ...(c.createdAt ? { qboCreatedAt: c.createdAt } : {}),
+      },
+    });
+  }
+  // Never on an empty list: a QuickBooks response with no customers at all
+  // is far likelier to be a glitch than a company with none, and deleting
+  // every job would take the contractor's own estimates with it.
+  // Nor on a list that came back shorter than QuickBooks says it should be
+  // (allowRemoval is false then).
+  if (fullList && allowRemoval && candidates.length > 0) {
+    // Jobs that no longer are jobs: the contractor switched between
+    // Projects and one-customer-per-job in Settings, or the customer was
+    // deleted in QuickBooks. A job with nothing typed into it here is
+    // removed with its rows; the costs and revenue are re-read below
+    // against the jobs that do exist. A job with the contractor's own
+    // entries is hidden first and removed only if it is still missing a
+    // few days later.
+    const keep = new Set(candidates.map((c) => c.qboId));
+    const now = ctx.startedAt.getTime();
+    const missing = existing.filter((j) => !keep.has(j.qboId));
+    const gone = missing
+      .filter((j) => !hasManualData(j) || (j.missingSince != null && now - j.missingSince.getTime() > MISSING_JOB_GRACE_MS))
+      .map((j) => j.id);
+    const hide = missing.filter((j) => hasManualData(j) && j.missingSince == null).map((j) => j.id);
+    for (let i = 0; i < gone.length; i += 500) {
+      await prisma.job.deleteMany({ where: { id: { in: gone.slice(i, i + 500) }, connectionId: ctx.connectionId } });
+    }
+    for (let i = 0; i < hide.length; i += 500) {
+      await prisma.job.updateMany({
+        where: { id: { in: hide.slice(i, i + 500) }, connectionId: ctx.connectionId },
+        data: { missingSince: ctx.startedAt },
+      });
     }
   }
-  const projectJobs = allCustomers.filter((c: any) => c.Job === true);
-  await upsertJobsFromCustomers(connectionId, projectJobs, customerNameById);
+  return candidates.length;
+}
 
-  // Deliberately SELECT * rather than an explicit column list - same reason
-  // as TimeActivity below. "Line" is a composite/array field, and QBO's
-  // query endpoint doesn't reliably project those when explicitly named in
-  // a column list (confirmed: explicitly selecting Line returned an empty
-  // array for every Purchase/Bill in testing, even though TotalAmt was
-  // non-zero - switching to SELECT * fixed it for TimeActivity earlier).
-  const purchases = await qboQueryAll(realmId, accessToken, "SELECT * FROM Purchase", "Purchase");
-  const purchaseCounts = await upsertCostEntriesFromExpenseTxns(connectionId, purchases, "Purchase");
+async function loadJobIndex(connectionId: string): Promise<JobIndex> {
+  // A job that has gone missing from QuickBooks gets no transactions: they
+  // belong to whatever the customer is now (a project under it, say).
+  const jobs = await prisma.job.findMany({
+    where: { connectionId, missingSince: null },
+    select: { id: true, qboId: true, parentQboId: true },
+  });
+  return buildJobIndex(jobs);
+}
 
-  const invoices = await qboQueryAll(
-    realmId,
-    accessToken,
-    "SELECT Id, TxnDate, TotalAmt, Balance, CustomerRef FROM Invoice",
-    "Invoice"
-  );
-  await upsertInvoices(connectionId, invoices);
+// ---------------------------------------------------------------------------
+// Transaction processing (shared by full and incremental)
+// ---------------------------------------------------------------------------
 
-  const bills = await runStep(
-    "Bill",
-    errors,
-    async () => {
-      return qboQueryAll(realmId, accessToken, "SELECT * FROM Bill", "Bill");
-    },
-    [] as any[]
-  );
-  const billCounts = await upsertCostEntriesFromExpenseTxns(connectionId, bills, "Bill");
+interface Processor {
+  ctx: SyncCtx;
+  lookups: Lookups;
+  index: JobIndex;
+  writer: Writer;
+  tallies: Tallies;
+  windowStart: number;
+}
 
-  const timeActivities = await runStep(
-    "TimeActivity",
-    errors,
-    async () => {
-      // Deliberately SELECT * rather than an explicit column list - some QBO
-      // entities (TimeActivity among them, per community reports) are
-      // pickier about which combinations of columns are projectable, and the
-      // response shape is identical either way (still keyed by field name).
-      return qboQueryAll(realmId, accessToken, "SELECT * FROM TimeActivity", "TimeActivity");
-    },
-    [] as any[]
-  );
-  const timeCounts = await upsertCostEntriesFromTimeActivities(connectionId, timeActivities);
+function inWindow(p: Processor, date: Date | null): boolean {
+  return date != null && date.getTime() >= p.windowStart;
+}
 
-  const estimates = await runStep(
-    "Estimate",
-    errors,
-    async () => {
-      return qboQueryAll(realmId, accessToken, "SELECT Id, TxnDate, TotalAmt, CustomerRef FROM Estimate", "Estimate");
-    },
-    [] as any[]
-  );
-  await applyEstimatesToJobs(connectionId, estimates);
+function noteUnresolved(p: Processor, source: string, txnId: string, customerId: string, customerName: string | null, amount: number, date: Date | null) {
+  if (!inWindow(p, date)) return;
+  p.tallies.unresolvedExpenseCount++;
+  p.tallies.unresolvedExpenseAmount += amount;
+  if (p.tallies.unresolvedSamples.length < 5) {
+    p.tallies.unresolvedSamples.push({ source, txnId, customerId, customerName, amount });
+  }
+}
+
+async function processExpenseTxn(p: Processor, txn: any, sourceType: ExpenseSourceType) {
+  if (txn?.Id == null) return;
+  const txnId = String(txn.Id);
+  const txnDate = qboDate(txn.TxnDate);
+  if (!txnDate) return;
+  for (const line of expenseLines(txn, sourceType, p.lookups)) {
+    if (!line.customerQboId) {
+      if (!inWindow(p, txnDate)) continue;
+      // Journal entries without a customer are usually company-wide
+      // postings (a payroll summary, an allocation), not a job cost someone
+      // forgot to tag, so they count with overhead.
+      if (line.isJobCostAccount && sourceType !== "JournalEntry") {
+        p.tallies.untaggedJobCostCount++;
+        p.tallies.untaggedJobCostAmount += line.amount;
+      } else {
+        p.tallies.untaggedOverheadCount++;
+        p.tallies.untaggedOverheadAmount += line.amount;
+      }
+      continue;
+    }
+    const resolved = resolveJob(p.index, line.customerQboId);
+    if (!resolved) {
+      noteUnresolved(p, sourceType, txnId, line.customerQboId, line.customerName, line.amount, txnDate);
+      continue;
+    }
+    if (resolved.method === "parent_customer_fallback") {
+      p.tallies.costsMatchedViaParentCount++;
+      p.tallies.costsMatchedViaParentAmount += line.amount;
+    }
+    await p.writer.cost({
+      id: costEntryId(p.ctx.connectionId, sourceType, txnId, line.lineId),
+      jobId: resolved.jobId,
+      qboSourceType: sourceType,
+      qboSourceId: txnId,
+      category: line.category,
+      accountName: line.accountName,
+      description: line.description,
+      amount: line.amount,
+      txnDate,
+      attributionMethod: resolved.method,
+    });
+  }
+}
+
+async function processTimeActivity(p: Processor, ta: any) {
+  if (ta?.Id == null) return;
+  const txnId = String(ta.Id);
+  const txnDate = qboDate(ta.TxnDate);
+  if (!txnDate) return;
+  const result = timeActivityCost(ta);
+  if (result.kind === "skip") {
+    if (result.reason === "no_pay_rate" && inWindow(p, txnDate)) p.tallies.timeEntriesWithoutPayRate++;
+    if (result.reason === "vendor_time") p.tallies.vendorTimeEntriesSkipped++;
+    return;
+  }
+  const customerId = String(ta.CustomerRef.value);
+  const resolved = resolveJob(p.index, customerId);
+  if (!resolved) {
+    noteUnresolved(p, "TimeActivity", txnId, customerId, ta.CustomerRef?.name ?? null, result.amount, txnDate);
+    return;
+  }
+  if (resolved.method === "parent_customer_fallback") {
+    p.tallies.costsMatchedViaParentCount++;
+    p.tallies.costsMatchedViaParentAmount += result.amount;
+  }
+  // Hours and who, never the pay rate: the job page is not the place to
+  // publish what each employee earns.
+  const who = ta.EmployeeRef?.name ? `${ta.EmployeeRef.name}, ` : "";
+  await p.writer.cost({
+    id: costEntryId(p.ctx.connectionId, "TimeActivity", txnId, 0),
+    jobId: resolved.jobId,
+    qboSourceType: "TimeActivity",
+    qboSourceId: txnId,
+    category: result.category,
+    accountName: "Time entries (pay rate)",
+    description: ta.Description ?? `${who}${round2(result.hours)} h`,
+    amount: result.amount,
+    txnDate,
+    attributionMethod: resolved.method,
+  });
+}
+
+async function processRevenueTxn(p: Processor, txn: any, sourceType: RevenueSourceType) {
+  const r = revenueFromTxn(txn, sourceType);
+  if (!r.customerQboId || !r.txnDate) return;
+  const resolved = resolveJob(p.index, r.customerQboId);
+  if (!resolved) return;
+  await p.writer.revenue({
+    id: revenueId(p.ctx.connectionId, sourceType, String(txn.Id)),
+    jobId: resolved.jobId,
+    qboSourceType: sourceType,
+    qboInvoiceId: String(txn.Id),
+    amount: r.amount,
+    taxAmount: r.tax,
+    status: r.status,
+    txnDate: r.txnDate,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Estimates -> contract value
+// ---------------------------------------------------------------------------
+
+async function applyEstimates(ctx: SyncCtx, estimates: any[], full: boolean): Promise<void> {
+  const touchedCustomers = new Set<string>();
+  const existing = await prisma.jobEstimate.findMany({ where: { connectionId: ctx.connectionId } });
+  const existingById = new Map(existing.map((e) => [e.id, e]));
+  const seen = new Set<string>();
+
+  for (const est of estimates) {
+    if (est?.Id == null) continue;
+    const id = estimateRowId(ctx.connectionId, String(est.Id));
+    const prior = existingById.get(id);
+    if (est.status === "Deleted") {
+      if (prior) {
+        touchedCustomers.add(prior.customerQboId);
+        await prisma.jobEstimate.delete({ where: { id } });
+      }
+      continue;
+    }
+    const { customerQboId, record } = estimateFromTxn(est);
+    if (!customerQboId || !record) continue;
+    seen.add(id);
+    touchedCustomers.add(customerQboId);
+    if (prior) touchedCustomers.add(prior.customerQboId);
+    const data = {
+      connectionId: ctx.connectionId,
+      qboEstimateId: String(est.Id),
+      customerQboId,
+      amount: record.amount,
+      status: record.status,
+      txnDate: record.txnDate,
+    };
+    const unchanged =
+      prior &&
+      prior.customerQboId === data.customerQboId &&
+      Math.abs(Number(prior.amount) - data.amount) < 0.005 &&
+      prior.status === data.status &&
+      prior.txnDate.getTime() === data.txnDate.getTime();
+    if (unchanged) continue;
+    await prisma.jobEstimate.upsert({ where: { id }, create: { id, ...data }, update: data });
+  }
+
+  if (full) {
+    const gone = existing.filter((e) => !seen.has(e.id));
+    for (const e of gone) touchedCustomers.add(e.customerQboId);
+    if (gone.length) await prisma.jobEstimate.deleteMany({ where: { id: { in: gone.map((e) => e.id) } } });
+  }
+
+  // Recompute every job the changed estimates can affect, from all of that
+  // job's estimates rather than from just the ones in this batch.
+  const index = await loadJobIndex(ctx.connectionId);
+  const all = await prisma.jobEstimate.findMany({ where: { connectionId: ctx.connectionId } });
+  const byJob = new Map<string, { amount: number; status: string; txnDate: Date }[]>();
+  for (const e of all) {
+    const resolved = resolveJob(index, e.customerQboId);
+    if (!resolved) continue;
+    byJob.set(resolved.jobId, [...(byJob.get(resolved.jobId) ?? []), { amount: Number(e.amount), status: e.status, txnDate: e.txnDate }]);
+  }
+  const affectedJobs = new Set<string>();
+  if (full) {
+    for (const id of index.byQboId.values()) affectedJobs.add(id);
+  } else {
+    for (const c of touchedCustomers) {
+      const r = resolveJob(index, c);
+      if (r) affectedJobs.add(r.jobId);
+    }
+  }
+  const current = await prisma.job.findMany({
+    where: { id: { in: [...affectedJobs] } },
+    select: { id: true, estimatedRevenue: true },
+  });
+  for (const job of current) {
+    const value = contractValueFromEstimates(byJob.get(job.id) ?? []);
+    const now = job.estimatedRevenue == null ? null : Number(job.estimatedRevenue);
+    if (value === now || (value != null && now != null && Math.abs(value - now) < 0.005)) continue;
+    await prisma.job.update({ where: { id: job.id }, data: { estimatedRevenue: value } });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Full sync
+// ---------------------------------------------------------------------------
+
+async function runFullSync(ctx: SyncCtx): Promise<Record<string, any>> {
+  const errors: Record<string, string> = {};
+  const lookups = await loadLookups(ctx);
+
+  // SELECT * (composite fields such as ParentRef and Line come back empty
+  // when named in a column list) and inactive records too: QuickBooks'
+  // query endpoint returns only active records unless asked, and making a
+  // customer inactive is how many contractors mark a job finished.
+  const allCustomers = await qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM Customer WHERE Active IN (true, false)", "Customer");
+  // Paging has no guaranteed order, so a customer added or changed mid-read
+  // can shift a page and drop a record. Only a list at least as long as
+  // QuickBooks' own count is trusted to remove jobs.
+  let customerListComplete = false;
+  try {
+    const counted = await qboQuery(ctx.realmId, ctx.accessToken, "SELECT COUNT(*) FROM Customer WHERE Active IN (true, false)");
+    const total = Number(counted?.QueryResponse?.totalCount);
+    customerListComplete = Number.isFinite(total) && allCustomers.length >= total;
+  } catch (err) {
+    if (isReconnectError(err)) throw err;
+  }
+
+  if (ctx.autoDetectSource && ctx.jobSource === "projects" && !allCustomers.some((c: any) => c?.Job === true) && allCustomers.length > 0) {
+    // No projects or sub-customers at all: this contractor makes one
+    // customer per job. Recorded so Settings shows it and can change it.
+    ctx.jobSource = "customers";
+    await prisma.quickBooksConnection.update({ where: { id: ctx.connectionId }, data: { jobSource: "customers" } });
+  }
+  const jobCount = await upsertJobs(ctx, allCustomers, true, customerListComplete);
+  const index = await loadJobIndex(ctx.connectionId);
+
+  const { existingCost, existingRevenue } = await loadExisting(ctx.connectionId);
+  const writer = new Writer(existingCost, existingRevenue);
+  const tallies = newTallies();
+  const p: Processor = { ctx, lookups, index, writer, tallies, windowStart: ctx.startedAt.getTime() - COUNTER_WINDOW_DAYS * 86_400_000 };
+  const fetched: Record<string, number> = {};
+  const sweepCost = new Set<string>();
+  const sweepRevenue = new Set<string>();
+
+  // Purchase is the backbone of job costing: if it cannot be read, the
+  // sync genuinely failed and says so.
+  for (const type of EXPENSE_TYPES) {
+    const query = `SELECT * FROM ${type}`;
+    const rows = type === "Purchase"
+      ? await qboQueryAll(ctx.realmId, ctx.accessToken, query, type)
+      : await runStep(type, errors, () => qboQueryAll(ctx.realmId, ctx.accessToken, query, type), null as any[] | null);
+    if (rows == null) continue;
+    fetched[type] = rows.length;
+    for (const txn of rows) await processExpenseTxn(p, txn, type);
+    sweepCost.add(type);
+  }
+
+  if (ctx.laborFromTimeEntries) {
+    const rows = await runStep("TimeActivity", errors, () =>
+      qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM TimeActivity", "TimeActivity"), null as any[] | null);
+    if (rows != null) {
+      fetched.TimeActivity = rows.length;
+      for (const ta of rows) await processTimeActivity(p, ta);
+      sweepCost.add("TimeActivity");
+    }
+  } else {
+    // Turned off in Settings: every stored time-based cost goes.
+    sweepCost.add("TimeActivity");
+  }
+
+  for (const type of REVENUE_TYPES) {
+    const query = `SELECT * FROM ${type}`;
+    const rows = type === "Invoice"
+      ? await qboQueryAll(ctx.realmId, ctx.accessToken, query, type)
+      : await runStep(type, errors, () => qboQueryAll(ctx.realmId, ctx.accessToken, query, type), null as any[] | null);
+    if (rows == null) continue;
+    fetched[type] = rows.length;
+    for (const txn of rows) await processRevenueTxn(p, txn, type);
+    sweepRevenue.add(type);
+  }
+
+  await writer.flush();
+
+  // Everything stored for a successfully read type that QuickBooks no
+  // longer returns: deleted transactions, voided ones, lines moved to a
+  // job-less customer, and rows stored under the previous id scheme.
+  const removedCosts = await deleteCostRows(writer.unseenCost(sweepCost));
+  const removedRevenue = await deleteRevenueRows(writer.unseenRevenue(sweepRevenue));
+
+  const estimates = await runStep("Estimate", errors, () =>
+    qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM Estimate", "Estimate"), null as any[] | null);
+  if (estimates != null) {
+    fetched.Estimate = estimates.length;
+    await applyEstimates(ctx, estimates, true);
+  }
 
   return {
-    jobs: projectJobs.length,
-    purchases: purchases.length,
-    bills: bills.length,
-    timeActivities: timeActivities.length,
-    invoices: invoices.length,
-    estimates: estimates.length,
-    unassignedExpenseCount: purchaseCounts.unassignedCount + billCounts.unassignedCount,
-    unassignedExpenseAmount: purchaseCounts.unassignedAmount + billCounts.unassignedAmount,
-    // "Unresolved" = the transaction line WAS tagged to a real QBO customer,
-    // but that customer isn't one of your synced Jobs and isn't unambiguously
-    // one of their Projects either (see resolveJobForCustomerRef) - counted
-    // here instead of silently vanishing. "Matched via parent" = it resolved
-    // successfully, but only by falling back to the job's parent customer -
-    // a judgment call worth being able to spot, not a guessed dollar amount.
-    unresolvedExpenseCount: purchaseCounts.unresolvedCount + billCounts.unresolvedCount + timeCounts.unresolvedCount,
-    unresolvedExpenseAmount: purchaseCounts.unresolvedAmount + billCounts.unresolvedAmount + timeCounts.unresolvedAmount,
-    costsMatchedViaParentCount: purchaseCounts.viaParentCount + billCounts.viaParentCount + timeCounts.viaParentCount,
-    costsMatchedViaParentAmount: purchaseCounts.viaParentAmount + billCounts.viaParentAmount + timeCounts.viaParentAmount,
-    timeActivitiesSkippedNoRate: timeCounts.skippedNoRate,
-    // Diagnostic only - up to 5 unresolved lines (which real QBO customer
-    // they were tagged to) and the full list of your synced Jobs with their
-    // own parent linkage, so a mismatch is visible directly from this
-    // record instead of needing another round of guessing.
-    unresolvedSamples: [...purchaseCounts.unresolvedSamples, ...billCounts.unresolvedSamples, ...timeCounts.unresolvedSamples].slice(0, 5),
-    jobsSummary: projectJobs.map((c: any) => ({
-      id: c.Id,
-      name: c.DisplayName,
-      parentId: c.ParentRef?.value ?? null,
-      parentName: c.ParentRef?.name ?? null,
-    })),
-    // Diagnostic: transactions QBO returned with no Line array at all - was
-    // consistently equal to purchases+bills before switching those queries
-    // to SELECT *. Should be 0 (or near 0) now; if it's still high, the
-    // Line-projection theory was wrong.
-    purchaseEmptyLineTxnCount: purchaseCounts.emptyLineTxnCount,
-    billEmptyLineTxnCount: billCounts.emptyLineTxnCount,
+    jobs: jobCount,
+    jobSource: ctx.jobSource,
+    ...fetched,
+    purchases: fetched.Purchase ?? 0,
+    bills: fetched.Bill ?? 0,
+    timeActivities: fetched.TimeActivity ?? 0,
+    invoices: fetched.Invoice ?? 0,
+    estimates: fetched.Estimate ?? 0,
+    costRowsWritten: writer.seenCost.size,
+    costRowsUpdated: writer.costUpdates,
+    costRowsRemoved: removedCosts,
+    revenueRowsUpdated: writer.revenueUpdates,
+    revenueRowsRemoved: removedRevenue,
+    countersWindowDays: COUNTER_WINDOW_DAYS,
+    ...roundTallies(tallies),
     ...(Object.keys(errors).length > 0 ? { partialErrors: errors } : {}),
   };
 }
 
+function roundTallies(t: Tallies) {
+  return {
+    ...t,
+    untaggedJobCostAmount: round2(t.untaggedJobCostAmount),
+    untaggedOverheadAmount: round2(t.untaggedOverheadAmount),
+    unresolvedExpenseAmount: round2(t.unresolvedExpenseAmount),
+    costsMatchedViaParentAmount: round2(t.costsMatchedViaParentAmount),
+  };
+}
+
 // ---------------------------------------------------------------------------
-// Incremental sync: pulls only what changed since the last sync via QBO's
-// CDC endpoint, and runs the exact same upsert helpers as full sync so the
-// two modes can never drift out of sync with each other's logic.
-//
-// Known simplification: CDC can report deletions (entities with
-// status:"Deleted"), which this does not yet remove locally - a deleted QBO
-// transaction will linger in our tables until the next full sync (at most
-// FULL_SYNC_INTERVAL_DAYS later) cleans it up implicitly via re-upsert of
-// what still exists. Flagged as a known limitation, not silently ignored -
-// worth hardening once this has run against real customer data.
+// Incremental sync (Change Data Capture)
 // ---------------------------------------------------------------------------
-async function runIncrementalSync(
-  connectionId: string,
-  realmId: string,
-  accessToken: string,
-  changedSince: Date
-): Promise<Record<string, any>> {
-  const cdcResult = await qboCdc(realmId, accessToken, CDC_ENTITIES, changedSince);
-  const responses: any[] = cdcResult?.CDCResponse?.[0]?.QueryResponse ?? [];
+
+async function runIncrementalSync(ctx: SyncCtx, changedSince: Date): Promise<Record<string, any>> {
+  const errors: Record<string, string> = {};
+  const cdc = await qboCdc(ctx.realmId, ctx.accessToken, CDC_ENTITIES, changedSince);
+  const responses: any[] = cdc?.CDCResponse?.[0]?.QueryResponse ?? [];
   const byEntity = (name: string): any[] => {
     const match = responses.find((r) => Array.isArray(r?.[name]));
     return match?.[name] ?? [];
   };
 
-  // No name map here: CDC returns only what changed, so the parents of these
-  // jobs usually are not in the response. upsertJobsFromCustomers falls back
-  // to ParentRef.name and leaves the stored name alone when it cannot work
-  // one out, rather than blanking a value a full sync already got right.
-  const customers = byEntity("Customer").filter((c) => c.Job === true);
-  await upsertJobsFromCustomers(connectionId, customers);
+  // QuickBooks caps each entity at 1,000 changed records per call and says
+  // nothing about the rest. A capped list can't be trusted to be complete,
+  // so the caller falls back to a full sync (see runSyncForConnection).
+  // Checked across all entities together, in case the cap applies to the
+  // whole response rather than to each type.
+  const cdcTotal = CDC_ENTITIES.reduce((sum, name) => sum + byEntity(name).length, 0);
+  if (cdcTotal >= CDC_MAX_PER_ENTITY) throw new Error(`Change Data Capture returned ${cdcTotal} records, at or over its cap`);
 
-  const purchases = byEntity("Purchase");
-  const purchaseCounts = await upsertCostEntriesFromExpenseTxns(connectionId, purchases, "Purchase");
+  const lookups = await loadLookups(ctx);
+  const customers = byEntity("Customer").filter((c) => c?.status !== "Deleted");
+  const jobCount = await upsertJobs(ctx, customers, false);
+  const index = await loadJobIndex(ctx.connectionId);
 
-  const bills = byEntity("Bill");
-  const billCounts = await upsertCostEntriesFromExpenseTxns(connectionId, bills, "Bill");
+  // Only the stored rows of the transactions that changed are loaded:
+  // everything else is left exactly as it is, and a nightly sync doesn't
+  // read a company's whole history to update a handful of bills.
+  const changedIds = new Map<string, string[]>();
+  for (const type of [...EXPENSE_TYPES, "TimeActivity", ...REVENUE_TYPES]) {
+    const ids = byEntity(type).filter((t) => t?.Id != null).map((t) => String(t.Id));
+    if (ids.length) changedIds.set(type, ids);
+  }
+  const { existingCost, existingRevenue } = await loadExisting(ctx.connectionId, changedIds);
+  const writer = new Writer(existingCost, existingRevenue);
+  const tallies = newTallies();
+  const p: Processor = { ctx, lookups, index, writer, tallies, windowStart: ctx.startedAt.getTime() - COUNTER_WINDOW_DAYS * 86_400_000 };
 
-  const timeActivities = byEntity("TimeActivity");
-  const timeCounts = await upsertCostEntriesFromTimeActivities(connectionId, timeActivities);
+  // Every transaction CDC reports is re-read in full, so for each one the
+  // stored rows can be made to match exactly: lines added, changed, moved
+  // or removed (a void zeroes every line), or the whole thing deleted.
+  const touchedCost = new Map<string, Set<string>>(); // source type -> txn ids
+  const touchedRevenue = new Map<string, Set<string>>();
+  const touch = (m: Map<string, Set<string>>, type: string, id: string) => m.set(type, (m.get(type) ?? new Set()).add(id));
+  const counts: Record<string, number> = {};
 
-  const invoices = byEntity("Invoice");
-  await upsertInvoices(connectionId, invoices);
+  for (const type of EXPENSE_TYPES) {
+    const rows = byEntity(type);
+    counts[type] = rows.length;
+    for (const txn of rows) {
+      if (txn?.Id == null) continue;
+      touch(touchedCost, type, String(txn.Id));
+      if (txn.status !== "Deleted") await processExpenseTxn(p, txn, type);
+    }
+  }
+  const times = ctx.laborFromTimeEntries ? byEntity("TimeActivity") : [];
+  counts.TimeActivity = times.length;
+  for (const ta of times) {
+    if (ta?.Id == null) continue;
+    touch(touchedCost, "TimeActivity", String(ta.Id));
+    if (ta.status !== "Deleted") await processTimeActivity(p, ta);
+  }
+  for (const type of REVENUE_TYPES) {
+    const rows = byEntity(type);
+    counts[type] = rows.length;
+    for (const txn of rows) {
+      if (txn?.Id == null) continue;
+      touch(touchedRevenue, type, String(txn.Id));
+      if (txn.status !== "Deleted") await processRevenueTxn(p, txn, type);
+    }
+  }
+  await writer.flush();
+
+  const costTypes = new Set(touchedCost.keys());
+  const removedCosts = await deleteCostRows(
+    writer.unseenCost(costTypes, (r) => touchedCost.get(r.qboSourceType)?.has(r.qboSourceId) ?? false)
+  );
+  const revenueTypes = new Set(touchedRevenue.keys());
+  const removedRevenue = await deleteRevenueRows(
+    writer.unseenRevenue(revenueTypes, (r) => touchedRevenue.get(r.qboSourceType)?.has(r.qboInvoiceId) ?? false)
+  );
 
   const estimates = byEntity("Estimate");
-  await applyEstimatesToJobs(connectionId, estimates);
+  counts.Estimate = estimates.length;
+  if (estimates.length) await applyEstimates(ctx, estimates, false);
 
   return {
-    jobs: customers.length,
-    purchases: purchases.length,
-    bills: bills.length,
-    timeActivities: timeActivities.length,
-    invoices: invoices.length,
-    estimates: estimates.length,
-    unassignedExpenseCount: purchaseCounts.unassignedCount + billCounts.unassignedCount,
-    unassignedExpenseAmount: purchaseCounts.unassignedAmount + billCounts.unassignedAmount,
-    unresolvedExpenseCount: purchaseCounts.unresolvedCount + billCounts.unresolvedCount + timeCounts.unresolvedCount,
-    unresolvedExpenseAmount: purchaseCounts.unresolvedAmount + billCounts.unresolvedAmount + timeCounts.unresolvedAmount,
-    costsMatchedViaParentCount: purchaseCounts.viaParentCount + billCounts.viaParentCount + timeCounts.viaParentCount,
-    costsMatchedViaParentAmount: purchaseCounts.viaParentAmount + billCounts.viaParentAmount + timeCounts.viaParentAmount,
-    timeActivitiesSkippedNoRate: timeCounts.skippedNoRate,
-    unresolvedSamples: [...purchaseCounts.unresolvedSamples, ...billCounts.unresolvedSamples, ...timeCounts.unresolvedSamples].slice(0, 5),
+    jobs: jobCount,
+    jobSource: ctx.jobSource,
+    ...counts,
+    purchases: counts.Purchase ?? 0,
+    bills: counts.Bill ?? 0,
+    timeActivities: counts.TimeActivity ?? 0,
+    invoices: counts.Invoice ?? 0,
+    estimates: counts.Estimate ?? 0,
+    costRowsUpdated: writer.costUpdates,
+    costRowsRemoved: removedCosts,
+    revenueRowsUpdated: writer.revenueUpdates,
+    revenueRowsRemoved: removedRevenue,
+    ...(Object.keys(errors).length > 0 ? { partialErrors: errors } : {}),
   };
 }
 
 // ---------------------------------------------------------------------------
-// Shared upsert helpers (used by both full and incremental sync)
+// Tokens
 // ---------------------------------------------------------------------------
 
-/**
- * QuickBooks renames a customer to "Whatever (deleted)" when you make it
- * inactive, and inactive is exactly how a contractor marks a job finished.
- * Stored verbatim, that meant every completed job read "Kitchen Remodel
- * (deleted)" forever, including inside AI-written findings, which made
- * finished work look like data someone had thrown away.
- *
- * Only stripped when the record is actually inactive, and only as a
- * trailing suffix, so a customer who genuinely has those characters in
- * their name keeps them while active.
- */
-function cleanCustomerName(displayName: unknown, active: unknown): string {
-  const name = typeof displayName === "string" ? displayName : "";
-  if (active === false) return name.replace(/\s*\(deleted\)\s*$/i, "").trim() || name;
-  return name;
-}
-
-async function upsertJobsFromCustomers(
-  connectionId: string,
-  customers: any[],
-  customerNameById?: Map<string, string>
-) {
-  for (const c of customers) {
-    const parentQboId: string | null = c.ParentRef?.value ?? null;
-    // The parent customer IS the client, and this is what the job page shows
-    // as the job's customer. Prefer the parent's own DisplayName when the
-    // caller has the full customer list; fall back to QuickBooks'
-    // denormalised copy on ParentRef when it does not. A job with no parent
-    // genuinely has no client to show and stays null.
-    const customerName: string | null =
-      (parentQboId ? customerNameById?.get(parentQboId) : undefined) ?? c.ParentRef?.name ?? null;
-    const jobName = cleanCustomerName(c.DisplayName, c.Active);
-    await prisma.job.upsert({
-      where: { connectionId_qboId: { connectionId, qboId: c.Id } },
-      create: {
-        connectionId,
-        qboId: c.Id,
-        parentQboId,
-        customerName,
-        name: jobName,
-        status: c.Active ? "open" : "closed",
-      },
-      update: {
-        parentQboId,
-        // Written only when one was actually resolved. An incremental sync
-        // that cannot see the parent must not blank a name a full sync
-        // already got right.
-        ...(customerName ? { customerName } : {}),
-        name: jobName,
-        status: c.Active ? "open" : "closed",
-      },
-    });
-  }
-}
-
-/**
- * Resolves a QBO CustomerRef value (as it appears on a Purchase/Bill/
- * TimeActivity/Invoice/Estimate line) to one of our synced Jobs.
- *
- * Tries a direct qboId match first - this is how it's always worked, and
- * covers the common case where a transaction was entered directly against
- * the Project (e.g. invoices created from inside a Project automatically
- * carry the Project's own id).
- *
- * Falls back to matching the transaction's customer as the PARENT of one of
- * our Jobs - this covers the equally common real-world case where a
- * bookkeeper tags an expense to the top-level customer instead of drilling
- * into the specific Project. The fallback only fires when it's unambiguous
- * (exactly one Job under that parent); if a parent has multiple Jobs, we
- * genuinely can't tell which one the cost belongs to, so it's left
- * unresolved rather than guessed at - the "never invent a financial
- * attribution" rule applies to WHICH job a real dollar amount belongs to,
- * not just to the dollar amount itself.
- */
-async function resolveJobForCustomerRef(
-  connectionId: string,
-  customerQboId: string
-): Promise<{ job: { id: string }; method: "direct" | "parent_customer_fallback" } | null> {
-  const direct = await prisma.job.findUnique({
-    where: { connectionId_qboId: { connectionId, qboId: customerQboId } },
-  });
-  if (direct) return { job: direct, method: "direct" };
-
-  const childrenOfParent = await prisma.job.findMany({
-    where: { connectionId, parentQboId: customerQboId },
-    select: { id: true },
-  });
-  if (childrenOfParent.length === 1) {
-    return { job: childrenOfParent[0], method: "parent_customer_fallback" };
-  }
-  return null; // no Job at all, or ambiguous (multiple Jobs under this parent)
-}
-
-/** Reads a job reference + category name off an expense line, checking both
- * account-based and item-based expense line details - the original
- * implementation only checked AccountBasedExpenseLineDetail, which silently
- * dropped any line item bought against an Item (materials purchased as a
- * product/item rather than posted straight to an expense account). */
-function parseExpenseLine(line: any): {
-  jobQboId: string | null;
-  jobQboName: string | null;
-  categoryName: string | null;
-  amount: number;
-  description: string | null;
-} {
-  const acct = line?.AccountBasedExpenseLineDetail;
-  const item = line?.ItemBasedExpenseLineDetail;
-  return {
-    jobQboId: acct?.CustomerRef?.value ?? item?.CustomerRef?.value ?? null,
-    // QBO's own display name for whatever customer/sub-customer the line is
-    // tagged to - kept purely for diagnostics (see unresolvedSamples below),
-    // never used for matching logic itself.
-    jobQboName: acct?.CustomerRef?.name ?? item?.CustomerRef?.name ?? null,
-    categoryName: acct?.AccountRef?.name ?? item?.ItemRef?.name ?? null,
-    amount: typeof line?.Amount === "number" ? line.Amount : 0,
-    description: line?.Description ?? null,
-  };
-}
-
-/** Shared by Purchase and Bill processing - same line shape, same category logic. */
-async function upsertCostEntriesFromExpenseTxns(
-  connectionId: string,
-  txns: any[],
-  sourceType: "Purchase" | "Bill"
-): Promise<{
-  unassignedCount: number;
-  unassignedAmount: number;
-  unresolvedCount: number;
-  unresolvedAmount: number;
-  viaParentCount: number;
-  viaParentAmount: number;
-  unresolvedSamples: { source: string; txnId: string; customerId: string; customerName: string | null; amount: number }[];
-  emptyLineTxnCount: number;
-}> {
-  let unassignedCount = 0;
-  let unassignedAmount = 0;
-  let unresolvedCount = 0;
-  let unresolvedAmount = 0;
-  let viaParentCount = 0;
-  let viaParentAmount = 0;
-  const unresolvedSamples: { source: string; txnId: string; customerId: string; customerName: string | null; amount: number }[] = [];
-  // Diagnostic: how many transactions came back with no Line array at all
-  // (regardless of TotalAmt) - if this is still non-zero after switching to
-  // SELECT *, the Line-projection theory was wrong and something else is
-  // going on.
-  let emptyLineTxnCount = 0;
-
-  for (const txn of txns) {
-    if (!Array.isArray(txn.Line) || txn.Line.length === 0) emptyLineTxnCount++;
-    for (const line of txn.Line ?? []) {
-      const parsed = parseExpenseLine(line);
-      if (parsed.amount === 0) continue; // summary/subtotal lines, nothing to record
-
-      if (!parsed.jobQboId) {
-        // Not tagged to a job - either genuine overhead (fine) or a missed
-        // tagging opportunity. We can't tell which from here, so it's
-        // counted for the Data Health "unassigned expenses" surface rather
-        // than silently dropped.
-        unassignedCount++;
-        unassignedAmount += parsed.amount;
-        continue;
-      }
-
-      const resolved = await resolveJobForCustomerRef(connectionId, parsed.jobQboId);
-      if (!resolved) {
-        // Tagged to a real QBO customer, but not one of your synced Jobs and
-        // not unambiguously one of their Projects either - counted here
-        // instead of silently disappearing (see Data Health, Phase 4). A
-        // few samples (id + QBO's own display name) are kept so this is
-        // diagnosable from the SyncRun record without guessing.
-        unresolvedCount++;
-        unresolvedAmount += parsed.amount;
-        if (unresolvedSamples.length < 5) {
-          unresolvedSamples.push({
-            source: sourceType,
-            txnId: txn.Id,
-            customerId: parsed.jobQboId,
-            customerName: parsed.jobQboName,
-            amount: parsed.amount,
-          });
-        }
-        continue;
-      }
-      if (resolved.method === "parent_customer_fallback") {
-        viaParentCount++;
-        viaParentAmount += parsed.amount;
-      }
-
-      const entryId = `${sourceType}-${txn.Id}-${line.Id ?? "0"}`;
-      await prisma.costEntry.upsert({
-        where: { id: entryId },
-        create: {
-          id: entryId,
-          jobId: resolved.job.id,
-          qboSourceType: sourceType,
-          qboSourceId: txn.Id,
-          category: categorize(parsed.categoryName),
-          description: parsed.description,
-          amount: parsed.amount,
-          txnDate: new Date(txn.TxnDate),
-          attributionMethod: resolved.method,
-        },
-        update: {
-          amount: parsed.amount,
-          description: parsed.description,
-          attributionMethod: resolved.method,
-        },
-      });
-    }
-  }
-
-  return { unassignedCount, unassignedAmount, unresolvedCount, unresolvedAmount, viaParentCount, viaParentAmount, unresolvedSamples, emptyLineTxnCount };
-}
-
-/** TimeActivity has no Line array - the transaction itself is the cost entry.
- * Cost in dollars requires an hourly rate on file; entries without one are
- * skipped and counted (never guessed at) - see the "not synced today" note
- * in the plan about labor-cost reliability. */
-async function upsertCostEntriesFromTimeActivities(
-  connectionId: string,
-  timeActivities: any[]
-): Promise<{
-  skippedNoRate: number;
-  unresolvedCount: number;
-  unresolvedAmount: number;
-  viaParentCount: number;
-  viaParentAmount: number;
-  unresolvedSamples: { source: string; txnId: string; customerId: string; customerName: string | null; amount: number }[];
-}> {
-  let skippedNoRate = 0;
-  let unresolvedCount = 0;
-  let unresolvedAmount = 0;
-  let viaParentCount = 0;
-  let viaParentAmount = 0;
-  const unresolvedSamples: { source: string; txnId: string; customerId: string; customerName: string | null; amount: number }[] = [];
-
-  for (const ta of timeActivities) {
-    const jobQboId = ta.CustomerRef?.value;
-    if (!jobQboId) continue;
-
-    const hourlyRate = typeof ta.HourlyRate === "number" ? ta.HourlyRate : null;
-    if (hourlyRate == null || hourlyRate <= 0) {
-      skippedNoRate++;
-      continue;
-    }
-
-    const hours = (typeof ta.Hours === "number" ? ta.Hours : 0) + (typeof ta.Minutes === "number" ? ta.Minutes / 60 : 0);
-    const amount = Math.round(hours * hourlyRate * 100) / 100;
-    if (amount <= 0) continue;
-
-    const resolved = await resolveJobForCustomerRef(connectionId, jobQboId);
-    if (!resolved) {
-      unresolvedCount++;
-      unresolvedAmount += amount;
-      if (unresolvedSamples.length < 5) {
-        unresolvedSamples.push({
-          source: "TimeActivity",
-          txnId: ta.Id,
-          customerId: jobQboId,
-          customerName: ta.CustomerRef?.name ?? null,
-          amount,
-        });
-      }
-      continue;
-    }
-    if (resolved.method === "parent_customer_fallback") {
-      viaParentCount++;
-      viaParentAmount += amount;
-    }
-
-    const entryId = `TimeActivity-${ta.Id}-0`;
-    await prisma.costEntry.upsert({
-      where: { id: entryId },
-      create: {
-        id: entryId,
-        jobId: resolved.job.id,
-        qboSourceType: "TimeActivity",
-        qboSourceId: ta.Id,
-        category: "labor",
-        description: ta.Description ?? null,
-        amount,
-        txnDate: new Date(ta.TxnDate),
-        attributionMethod: resolved.method,
-      },
-      update: { amount, attributionMethod: resolved.method },
-    });
-  }
-
-  return { skippedNoRate, unresolvedCount, unresolvedAmount, viaParentCount, viaParentAmount, unresolvedSamples };
-}
-
-async function upsertInvoices(connectionId: string, invoices: any[]) {
-  for (const inv of invoices) {
-    const jobQboId = inv.CustomerRef?.value;
-    if (!jobQboId) continue;
-
-    const resolved = await resolveJobForCustomerRef(connectionId, jobQboId);
-    if (!resolved) continue; // tagged to a customer that isn't a Job and isn't unambiguously one of their Projects
-
-    await prisma.invoiceSummary.upsert({
-      where: { id: inv.Id },
-      create: {
-        id: inv.Id,
-        jobId: resolved.job.id,
-        qboInvoiceId: inv.Id,
-        amount: inv.TotalAmt ?? 0,
-        status: inv.Balance > 0 ? "open" : "paid",
-        txnDate: new Date(inv.TxnDate),
-      },
-      update: {
-        amount: inv.TotalAmt ?? 0,
-        status: inv.Balance > 0 ? "open" : "paid",
-      },
-    });
-  }
-}
-
-/** Applies the most recent Estimate per job as Job.estimatedRevenue - a
- * revision history isn't summed, since summing would double-count a job that
- * simply had its quote revised. Estimated *cost* is intentionally untouched
- * here (stays manual - see plan §6, QBO Estimates are customer-facing revenue
- * quotes, not internal cost budgets). */
-async function applyEstimatesToJobs(connectionId: string, estimates: any[]) {
-  const latestByJob = new Map<string, { amount: number; date: Date }>();
-  for (const est of estimates) {
-    const jobQboId = est.CustomerRef?.value;
-    if (!jobQboId) continue;
-    const date = new Date(est.TxnDate);
-    const existing = latestByJob.get(jobQboId);
-    if (!existing || date > existing.date) {
-      latestByJob.set(jobQboId, { amount: est.TotalAmt ?? 0, date });
-    }
-  }
-
-  for (const [jobQboId, { amount }] of latestByJob) {
-    const resolved = await resolveJobForCustomerRef(connectionId, jobQboId);
-    if (!resolved) continue;
-    await prisma.job.update({ where: { id: resolved.job.id }, data: { estimatedRevenue: amount } });
-  }
-}
-
-/** Maps a QBO expense account/item name to one of our cost categories. Loose
- * on purpose - contractors name accounts inconsistently, and a mis-bucketed
- * cost is far less harmful than a missing one. */
-function categorize(accountOrItemName: string | null | undefined): string {
-  const name = (accountOrItemName ?? "").toLowerCase();
-  // Subcontractor is tested BEFORE labor, and the order is load-bearing.
-  // "Subcontracted labor" and "Sub labor" are both common account names in a
-  // contractor's chart of accounts, and both contain the word "labor". With
-  // labor checked first they bucketed as in-house labor, which is exactly
-  // backwards: the whole point of separating the two is that subbing work out
-  // and doing it with your own crew have different margins. Intuit's own
-  // Construction template happens to name the account "Subcontractors" and so
-  // dodged this, which is why it survived until a real chart of accounts was
-  // tested against.
-  if (name.includes("subcontractor") || name.includes("sub-contractor") || name.includes("sub ")) return "subcontractor";
-  if (name.includes("labor") || name.includes("payroll") || name.includes("wage")) return "labor";
-  if (name.includes("material") || name.includes("supply") || name.includes("supplies")) return "materials";
-  if (name.includes("equipment") || name.includes("rental") || name.includes("lease")) return "equipment";
-  if (name.includes("overhead") || name.includes("admin")) return "overhead";
-  return "other";
-}
-
-// Module-private on purpose. This was briefly exported for a temporary
-// sandbox-token debug route (src/app/api/debug/qbo-token). That route is
-// gone, and nothing outside this module should be able to obtain a decrypted
-// customer access token, so the export went with it. Anything that needs
-// QuickBooks data goes through the sync functions below rather than getting
-// a raw token to use however it likes.
+// Module-private on purpose: nothing outside this module should be able to
+// obtain a decrypted customer access token.
 async function getValidAccessToken(connection: {
   id: string;
   accessToken: string;
   refreshToken: string;
   accessTokenExpiresAt: Date;
 }): Promise<string> {
-  // Refresh a little early (5 min buffer) rather than racing the exact expiry instant.
+  // Refresh a little early (5 min buffer) rather than racing the exact expiry.
   const stillValid = connection.accessTokenExpiresAt.getTime() - Date.now() > 5 * 60 * 1000;
   if (stillValid) return decryptToken(connection.accessToken);
 

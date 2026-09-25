@@ -1,12 +1,12 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { getSession } from "@/lib/auth";
+import { getAccount, getActiveConnection } from "@/lib/account";
 import { getEntitlements } from "@/lib/entitlements";
 import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
-import { prisma } from "@/lib/prisma";
 import { getConnectionProfitData, type DataHealthReport } from "@/lib/profitability";
 import { formatCurrency, formatDateTime } from "@/lib/format";
 import { DataQualityBadge, StatusDot } from "@/components/dashboard/Badges";
+import CloseIdleJobsButton from "@/components/dashboard/CloseIdleJobsButton";
 
 /**
  * What each data-completeness level actually means for the customer's
@@ -22,28 +22,26 @@ const COMPLETENESS_EXPLANATION: Record<string, string> = {
   high: "Your dashboard totals are built on complete data, so you can act on them directly.",
   medium:
     "Company totals are still directionally right, but check an individual job below before making a decision on it.",
-  low: "More than half your jobs are missing revenue or cost data, so company totals may be misleading until that is filled in.",
+  low: "More than half of these jobs are missing revenue or cost data, so company totals may be misleading until that is filled in.",
   insufficient_data:
     "There is not enough synced data yet to say anything reliable about job profitability.",
 };
 
 export default async function DataHealthPage() {
-  const session = await getSession();
-  if (!session) redirect("/login");
+  const account = await getAccount();
+  if (!account) redirect("/login");
 
   // Server-side entitlement gate. An expired trial gets a proper "choose a
   // plan" screen rather than an authorization error - and because the check
   // happens here, before any financial data is loaded, a lapsed account
   // never has its numbers computed and sent to the browser either.
-  const entitlements = await getEntitlements(session.userId);
+  const entitlements = await getEntitlements(account.ownerId);
   if (!entitlements.active) {
     return <UpgradeRequired access={entitlements.access} />;
   }
 
-  const connection = await prisma.quickBooksConnection.findFirst({
-    where: { userId: session.userId, disconnectedAt: null },
-    orderBy: { connectedAt: "desc" },
-  });
+  // The company picked in the company switcher (see src/lib/account.ts).
+  const { connection } = await getActiveConnection(account.ownerId);
 
   if (!connection) {
     return (
@@ -64,18 +62,50 @@ export default async function DataHealthPage() {
     <main>
       <h1 className="text-2xl font-bold text-navy">Data Health</h1>
       <p className="mt-2 text-sm text-gray-500">
-        A plain-English look at where your QuickBooks data is complete enough to trust, and where it isn&apos;t - so nothing
-        about your numbers is a surprise.
+        A plain-English look at where your QuickBooks data is complete enough to trust, and where it isn&apos;t, so nothing
+        about your numbers is a surprise. It covers every open job and every job with activity in the last 12 months;
+        older finished jobs are left out.
       </p>
+
+      {h.idleOpenJobs.length > 0 ? (
+        <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-5">
+          <h2 className="text-sm font-semibold text-navy">
+            {h.idleOpenJobs.length} open {h.idleOpenJobs.length === 1 ? "job has" : "jobs have"} had no activity in 90 days or more
+          </h2>
+          <p className="mt-1 text-sm text-gray-700">
+            These are almost always finished jobs that were never marked complete. QuickBooks doesn&apos;t tell us when a
+            project wraps up, so until they are marked here they count as active, show up as stale, and are left out of the
+            comparisons between finished jobs. You can reopen any of them later from its job page.
+          </p>
+          <ul className="mt-3 max-h-40 space-y-1 overflow-y-auto text-sm">
+            {h.idleOpenJobs.slice(0, 50).map((j) => (
+              <li key={j.jobId} className="flex justify-between gap-3">
+                <Link href={`/dashboard/jobs/${j.jobId}`} className="text-brand hover:underline">
+                  {j.jobName}
+                </Link>
+                <span className="text-xs text-gray-500">
+                  {j.daysSinceActivity == null ? "no activity ever" : `${j.daysSinceActivity} days`}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {h.idleOpenJobs.length > 50 ? (
+            <p className="mt-1 text-xs text-gray-500">and {h.idleOpenJobs.length - 50} more</p>
+          ) : null}
+          <div className="mt-4">
+            <CloseIdleJobsButton connectionId={connection.id} count={h.idleOpenJobs.length} />
+          </div>
+        </div>
+      ) : null}
 
       <div className="mt-6 rounded-xl border border-gray-200 p-5">
         <div className="flex flex-wrap items-center gap-3">
           <h2 className="text-lg font-semibold text-navy">
             {h.totalJobs === 0
-              ? "No jobs synced from QuickBooks yet"
+              ? "No open or recently active jobs synced from QuickBooks yet"
               : h.jobsMissingData === 0
-                ? `All ${h.totalJobs} of your jobs have what we need to calculate profit`
-                : `${h.jobsWithEnoughData} of your ${h.totalJobs} jobs have what we need to calculate profit`}
+                ? `All ${h.totalJobs} of your open and recent jobs have what we need to calculate profit`
+                : `${h.jobsWithEnoughData} of your ${h.totalJobs} open and recent jobs have what we need to calculate profit`}
           </h2>
           <DataQualityBadge confidence={h.overallConfidence} />
         </div>
@@ -134,8 +164,8 @@ export default async function DataHealthPage() {
 
       <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <JobListSection
-          title="Jobs missing a cost estimate"
-          help="Without an estimate on file, we can't tell you if a job is on track or headed for trouble."
+          title="Open jobs missing a cost estimate"
+          help="Without an estimated cost we can't tell you if a job is on track or headed for trouble. Add them one at a time in Job Details, import them from a spreadsheet on the Jobs page, or fill them from your target margin there."
           items={h.jobsMissingEstimates}
         />
         <JobListSection
@@ -159,14 +189,14 @@ export default async function DataHealthPage() {
 
       <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <CountAmountSection
-          title="Unassigned expenses"
-          help="Expenses synced from QuickBooks with no customer or project tagged at all - could be genuine overhead, or a missed tagging opportunity worth a look."
-          count={h.unassignedExpenseCount}
-          amount={h.unassignedExpenseAmount}
+          title="Job costs not tagged to a job (last 12 months)"
+          help="Bills and expenses posted to a job-cost account (Cost of Goods Sold) or bought as an item, with no customer or project on the line. Each one belongs to some job and is missing from it. Tag the customer or project on the line in QuickBooks. Overhead such as rent, fuel or insurance is not counted here."
+          count={h.untaggedJobCostCount}
+          amount={h.untaggedJobCostAmount}
         />
         <CountAmountSection
           title="Expenses tagged to an unrecognized customer"
-          help="Tagged to a real QuickBooks customer, but not one of your tracked jobs, and not unambiguously one of their sub-projects either - so it isn't counted toward any job's cost."
+          help="Last 12 months. Tagged to a real QuickBooks customer, but not one of your tracked jobs, and not unambiguously one of their projects either, so it isn't counted toward any job's cost. Usually the customer has two or more projects and the cost was tagged to the customer instead of the project."
           count={h.unresolvedExpenseCount}
           amount={h.unresolvedExpenseAmount}
         />
@@ -181,16 +211,28 @@ export default async function DataHealthPage() {
           neutral
         />
         <DuplicatesSection items={h.possibleDuplicates} />
+        <JobListSection
+          title="Labor that may be counted twice"
+          help="These jobs have labor from timesheets and labor from journal entries (often a payroll service posting wages to jobs). That is usually the same wages twice. If your payroll posts to jobs, turn off labor from time entries in Settings; otherwise check the journal entries."
+          items={h.jobsWithDoubleLabor}
+        />
       </div>
 
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <CountAmountSection
-          title="Time entries with no hourly rate"
-          help="QuickBooks only stores an hourly rate on time it marks billable, so hours logged as non-billable arrive with no rate and can't be costed. These hours are real work that counts as zero labor cost here. Set an hourly rate on the entry in QuickBooks, or record that labor as a bill or expense instead."
-          count={h.timeEntriesWithoutRate}
+          title="Employee time with no pay rate (last 12 months)"
+          help="Labor is costed as hours times what you pay the employee. These entries are for employees with no pay rate (cost rate) in QuickBooks, so their hours add no labor cost here. Set the employee's pay rate in QuickBooks and sync again. If you tag payroll to jobs another way, turn off labor from time entries in Settings."
+          count={h.timeEntriesWithoutPayRate}
           amount={null}
           noun="time entry"
           nounPlural="time entries"
+        />
+        <CountAmountSection
+          title="Overhead not tagged to a job (last 12 months)"
+          help="Information only, not a problem. Rent, fuel, insurance, software and other overhead are supposed to stay off individual jobs. Overhead can be spread across jobs with the overhead setting in Settings."
+          count={h.untaggedOverheadCount}
+          amount={h.untaggedOverheadAmount}
+          neutral
         />
       </div>
 

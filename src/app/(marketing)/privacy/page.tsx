@@ -82,9 +82,21 @@ export default function PrivacyPage() {
               readable form.
             </li>
             <li>
+              <span className="font-medium text-jp-ink">Sign in with Intuit:</span> if you use it,
+              Intuit tells us its permanent ID for your Intuit account, your name, your email
+              address and whether Intuit has verified that address. We store the ID to recognize
+              you next time, and use the name and email for your account.
+            </li>
+            <li>
+              <span className="font-medium text-jp-ink">Team members:</span> the email addresses of
+              people you invite to your account, when they were invited and whether they accepted.
+              Someone who accepts has their own account information as above.
+            </li>
+            <li>
               <span className="font-medium text-jp-ink">Settings and job details:</span> target
-              margins, overhead settings, estimated costs, job types, job status, your time zone,
-              and the email addresses you choose to receive the Weekly Profit Brief.
+              margins, overhead settings, estimated costs, contract values, percent complete, job
+              types, job status, cost category choices, your time zone, and up to 10 email
+              addresses you choose to receive the Weekly Profit Brief and profit alerts.
             </li>
             <li>
               <span className="font-medium text-jp-ink">Feedback:</span> answers to our trial
@@ -108,16 +120,31 @@ export default function PrivacyPage() {
             data from it. We copy and store the data needed for job profitability analysis:
           </p>
           <LegalList>
-            <li>projects (jobs), and the customer each job belongs to, including customer names;</li>
             <li>
-              cost lines from bills, expenses, purchases and time activities, including the
-              amount, date, cost category and line description (a description can contain whatever
-              text was typed into QuickBooks, such as a vendor or employee name);
+              projects (jobs), or customers if you make one customer per job, and the customer each
+              job belongs to, including customer names;
             </li>
-            <li>invoice totals, dates and payment status;</li>
-            <li>estimate totals from QuickBooks estimates; and</li>
+            <li>
+              cost lines from bills, checks, expenses, credit card charges and refunds, vendor
+              credits and journal entries that are tagged to a job, including the amount, date,
+              account or product name, cost category and line description (a description can
+              contain whatever text was typed into QuickBooks, such as a vendor or employee name);
+            </li>
+            <li>
+              time entries, as the employee&rsquo;s name, hours and a labor cost calculated from
+              the pay rate QuickBooks holds for them. We don&rsquo;t store the pay rate itself, but
+              it can be worked out from a single entry, so anyone with a login to your account can
+              see it. You can turn off labor from timesheets in Settings;
+            </li>
+            <li>invoice, sales receipt, credit memo and refund totals, sales tax amounts, dates and payment status;</li>
+            <li>estimate totals and status from QuickBooks estimates; and</li>
             <li>your company name and basic company information.</li>
           </LegalList>
+          <p>
+            When you use Check against QuickBooks on a job, we read QuickBooks&rsquo; Profit and Loss
+            report for that job&rsquo;s customer or project to show you beside our figures. We
+            don&rsquo;t store that report.
+          </p>
           <p>
             We also store the access and refresh tokens Intuit issues for the connection, and your
             QuickBooks company ID. All three are encrypted with AES-256-GCM before they are saved.
@@ -133,10 +160,16 @@ export default function PrivacyPage() {
         <LegalSub title="Information we create">
           <p>
             From the data above we calculate profitability figures, data-quality checks, trends,
-            forecasts and comparisons, and we store the Weekly Profit Briefs and insights we
-            generate for you. We also keep records of sync runs, the emails we send you (type,
-            recipient, time and delivery status), your subscription status, and referral and
+            forecasts and comparisons, and we store the Weekly Profit Briefs, profit alerts and
+            insights we generate for you. We also keep records of sync runs, the emails we send you
+            (type, recipient, time and delivery status), your subscription status, and referral and
             partner program activity.
+          </p>
+          <p>
+            To limit password guessing we record sign-in attempts as keyed one-way hashes of the
+            email address and network address, never the addresses themselves, and delete them
+            after a day. To give each QuickBooks company one free trial, we record a keyed one-way
+            hash of the company&rsquo;s ID with the date it started a trial.
           </p>
         </LegalSub>
 
@@ -160,7 +193,7 @@ export default function PrivacyPage() {
         </LegalSub>
 
         <LegalSub title="Cookies">
-          <p>We use two cookies, both first-party and both needed for the Service to work:</p>
+          <p>We use these cookies, all first-party and all needed for the Service to work:</p>
           <LegalList>
             <li>
               <span className="font-medium text-jp-ink">jmai_session</span> keeps you signed in. It
@@ -170,6 +203,17 @@ export default function PrivacyPage() {
               <span className="font-medium text-jp-ink">jpai_ref</span> is set only when you arrive
               through a referral or partner link. It stores the referral code for up to 30 days so
               the referral can be credited if you sign up, and it is cleared when you do.
+            </li>
+            <li>
+              <span className="font-medium text-jp-ink">jpai_company</span> remembers which of
+              your QuickBooks companies you were looking at, for up to a year.
+            </li>
+            <li>
+              <span className="font-medium text-jp-ink">jpai_oidc</span> and{" "}
+              <span className="font-medium text-jp-ink">jpai_intuit</span> are used only while you
+              sign in with Intuit: the first checks the sign-in came back to the browser that
+              started it (10 minutes), the second holds your Intuit sign-in while you link it to an
+              account (15 minutes).
             </li>
           </LegalList>
           <p>
@@ -194,8 +238,8 @@ export default function PrivacyPage() {
             showing it in your dashboard.
           </li>
           <li>
-            To send the Weekly Profit Brief to the recipients you choose, once you have confirmed
-            your email address.
+            To send the Weekly Profit Brief and profit alerts to the recipients you choose, once
+            you have confirmed your email address, and team invitations to the people you invite.
           </li>
           <li>
             To send account and service emails, such as email confirmation, password resets,
@@ -319,8 +363,9 @@ export default function PrivacyPage() {
             <span className="font-medium text-jp-ink">When you delete your account:</span> we
             revoke any live QuickBooks connection with Intuit, cancel any subscription, and delete
             your account together with your QuickBooks connections and tokens, jobs, cost data,
-            invoices, estimates, Weekly Profit Briefs, insights, settings, trial feedback, in-app
-            feedback, referral codes and email records.
+            invoices, estimates, Weekly Profit Briefs, alerts, insights, settings, team
+            invitations, trial feedback, in-app feedback, referral codes and email records. Team
+            members you invited lose access at once; their own logins remain theirs to delete.
           </li>
           <li>
             <span className="font-medium text-jp-ink">What we keep after deletion:</span> if you
@@ -328,7 +373,9 @@ export default function PrivacyPage() {
             the partner can be paid and our accounts reconcile. They contain amounts, dates and
             internal and Stripe reference numbers, not your name, email or any QuickBooks data. A
             record that a referral link led to an account is also kept with your account removed
-            from it. Stripe keeps its own records of your payments, as payment processors are
+            from it. The one-free-trial-per-company record (a keyed hash of the QuickBooks company
+            ID, the date and an internal account number) is kept so the same company can&rsquo;t
+            start another trial. Stripe keeps its own records of your payments, as payment processors are
             required to. We may also keep information we are legally required to keep, such as
             tax and accounting records.
           </li>
