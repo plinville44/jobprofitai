@@ -9,6 +9,10 @@ import { resolveStatusFilter, STATUS_OPTIONS } from "@/lib/dateRange";
 import SortSelect from "@/components/dashboard/SortSelect";
 import JobsTable, { type JobRow } from "@/components/dashboard/JobsTable";
 import JobBudgetTools from "@/components/dashboard/JobBudgetTools";
+import JobTypeSuggestions from "@/components/dashboard/JobTypeSuggestions";
+import { getJobTypes } from "@/lib/jobTypesServer";
+import { getJobTypeSuggestions } from "@/lib/jobTypeSuggestions";
+import { selectableJobTypes } from "@/lib/jobTypes";
 
 type SortKey =
   | "lowest_margin"
@@ -122,6 +126,9 @@ export default async function JobsPage(props: {
   // lifetime question).
   const profitData = await getConnectionProfitData(connection.id, new Date(), { statusFilter });
   const jobs = sortJobs(profitData.jobs, sort);
+  const jobTypes = await getJobTypes(connection.id);
+  const typeOptions = selectableJobTypes(jobTypes).map((t) => ({ value: t.value, label: t.label }));
+  const suggestions = await getJobTypeSuggestions(connection.id, jobTypes);
 
   const linkWithParams = (overrides: Record<string, string>) => {
     const params = new URLSearchParams({ sort, status: statusFilter, ...overrides });
@@ -157,6 +164,14 @@ export default async function JobsPage(props: {
         hasTarget={connection.targetMarginPct != null || (await hasJobTypeTargets(connection.id))}
       />
 
+      <JobTypeSuggestions
+        connectionId={connection.id}
+        rows={suggestions.rows}
+        untyped={suggestions.untyped}
+        withoutSuggestion={suggestions.withoutSuggestion}
+        types={typeOptions}
+      />
+
       {jobs.length === 0 ? (
         /* "No jobs match this filter" was the same sentence whether nothing
            had ever synced or the customer was simply on the Completed tab
@@ -189,7 +204,7 @@ export default async function JobsPage(props: {
           )}
         </div>
       ) : (
-        <JobsTable jobs={jobs.map(toRow)} />
+        <JobsTable jobs={jobs.map(toRow)} jobTypes={typeOptions} />
       )}
     </main>
   );

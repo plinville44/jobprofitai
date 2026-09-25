@@ -17,6 +17,9 @@ import JobMarginBarChart from "@/components/charts/JobMarginBarChart";
 import EstimateVsActualChart from "@/components/charts/EstimateVsActualChart";
 import MarginTrendChart from "@/components/charts/MarginTrendChart";
 import DataHealthSummary from "@/components/dashboard/DataHealthSummary";
+import OpportunitySummary from "@/components/opportunities/OpportunitySummary";
+import FeedItemCard from "@/components/opportunities/FeedItemCard";
+import { getOpportunityData } from "@/lib/opportunityData";
 
 export default async function DashboardPage(props: {
   // Next.js 16: searchParams arrives as a Promise. Awaited into a local of
@@ -72,6 +75,11 @@ export default async function DashboardPage(props: {
     ? await getConnectionProfitData(connection.id, now, { dateRange, statusFilter })
     : null;
   const marginTrend = connection ? await getMarginTrend(connection.id, trendGranularity) : [];
+  // The Profit Opportunity Feed leads the dashboard: what to change and what
+  // it's worth. Whole-life figures across every job, whatever the tab or
+  // period below is set to.
+  const opportunities =
+    connection && profitData && entitlements.has("profit_opportunities") ? await getOpportunityData(connection.id, now) : null;
 
   // Only fetched when the trend has nothing to draw, purely so the empty
   // state can say WHICH of the three reasons it is. The overwhelmingly
@@ -168,6 +176,44 @@ export default async function DashboardPage(props: {
               </Link>
             </div>
           ) : null}
+
+          {opportunities && (
+            <section className="mt-8">
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-navy">Profit Opportunities</h2>
+                  <p className="mt-1 text-sm text-gray-600">
+                    What to change to make more money, and what each change is worth. Worked out from your own jobs and
+                    target margins.
+                  </p>
+                </div>
+                <Link href="/dashboard/opportunities" className="text-sm font-semibold text-brand hover:underline">
+                  See all {opportunities.feed.items.length} opportunities
+                </Link>
+              </div>
+              <div className="mt-4">
+                <OpportunitySummary summary={opportunities.feed.summary} />
+              </div>
+              {opportunities.feed.items.filter((i) => i.section !== "working").length > 0 ? (
+                <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+                  {opportunities.feed.items
+                    .filter((i) => i.section !== "working")
+                    .sort((a, b) => (b.impactKind === "cash" ? 0 : b.impact ?? 0) - (a.impactKind === "cash" ? 0 : a.impact ?? 0))
+                    .slice(0, 3)
+                    .map((item) => (
+                      <FeedItemCard key={item.id} item={item} jobNames={{}} connectionId={connection.id} compact />
+                    ))}
+                </div>
+              ) : opportunities.feed.setup[0] ? (
+                <p className="mt-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+                  {opportunities.feed.setup[0].message}{" "}
+                  <Link href={opportunities.feed.setup[0].href} className="font-semibold text-brand hover:underline">
+                    {opportunities.feed.setup[0].linkText}
+                  </Link>
+                </p>
+              ) : null}
+            </section>
+          )}
 
           {/* Filters */}
           <div className="mt-8 flex flex-wrap items-center justify-between gap-4">

@@ -2,8 +2,11 @@ import type { Metadata } from "next";
 import { ButtonLink, FinalCta, Section, SectionHeading } from "@/components/marketing/ui";
 import {
   DashboardPreview,
-  InsightPreview,
+  EstimateCheckPreview,
   JobListPreview,
+  OpportunityFeedPreview,
+  PricingBreakdownPreview,
+  TrackedChangePreview,
   WeeklyBriefPreview,
 } from "@/components/marketing/ProductPreview";
 
@@ -21,7 +24,7 @@ import {
 export const metadata: Metadata = {
   title: "See JobProfitAI with sample data",
   description:
-    "Look around JobProfitAI using an example contractor's jobs: margins by job, jobs that need attention, the Weekly Profit Brief and Profit Intelligence. No signup needed.",
+    "Look around JobProfitAI using an example contractor's jobs: what to change and what it's worth, the Estimate Check, results tracking, margins by job and the Weekly Profit Brief. No signup needed.",
   alternates: { canonical: "/demo" },
   openGraph: {
     title: "See JobProfitAI with sample data",
@@ -51,13 +54,58 @@ export default function DemoPage() {
         <SectionHeading
           eyebrow="Sample data demo"
           title="See what JobProfitAI shows you, before you connect anything"
-          intro="This is an example contractor with seven jobs. It is the same dashboard, job list and weekly email you get once your QuickBooks Online company is connected, just with made-up numbers."
+          intro="This is an invented contractor, Example Builders, with a year of kitchens, bathrooms, roofs and service calls. The opportunities, estimate check and tracked change below are worked out by the real product from their made-up numbers. The dashboard, job list and weekly email are illustrations of the same screens you get once your QuickBooks Online company is connected."
         />
         <SampleBanner />
       </Section>
 
       <Section className="!pt-0 !pb-10">
-        <h2 className="text-xl font-bold text-jp-ink">1. Your Profit Dashboard</h2>
+        <h2 className="text-xl font-bold text-jp-ink">1. What to change, and what it&rsquo;s worth</h2>
+        <p className="mt-2 max-w-3xl text-jp-slate">
+          The Profit Opportunity Feed leads with four numbers, then lists what to change, biggest
+          first: an estimate to fix before it goes out, a job type priced below target, a customer
+          whose work doesn&rsquo;t pay. Each says why, what to do, and how sure it is.
+        </p>
+        <div className="mt-6">
+          <OpportunityFeedPreview items={4} />
+        </div>
+      </Section>
+
+      <Section className="!pt-0 !pb-10">
+        <h2 className="text-xl font-bold text-jp-ink">2. Which part of the price is thin</h2>
+        <p className="mt-2 max-w-3xl text-jp-slate">
+          Example Builders&rsquo; estimates split labor, materials and subs, so JobProfitAI can see
+          that on kitchens it&rsquo;s the labor: customers paid for it and it cost nearly as much again.
+        </p>
+        <div className="mt-6">
+          <PricingBreakdownPreview />
+        </div>
+      </Section>
+
+      <Section className="!pt-0 !pb-10">
+        <h2 className="text-xl font-bold text-jp-ink">3. The Estimate Check</h2>
+        <p className="mt-2 max-w-3xl text-jp-slate">
+          A pending kitchen estimate, checked part by part against what their last eight kitchens
+          actually cost, before it goes to the customer.
+        </p>
+        <div className="mt-6">
+          <EstimateCheckPreview />
+        </div>
+      </Section>
+
+      <Section className="!pt-0 !pb-10">
+        <h2 className="text-xl font-bold text-jp-ink">4. Did the change work?</h2>
+        <p className="mt-2 max-w-3xl text-jp-slate">
+          Last October their roofs were finishing at 21%. They raised roofing prices and pressed
+          &ldquo;I&rsquo;m making this change.&rdquo; Five roofs set up since then have finished.
+        </p>
+        <div className="mt-6">
+          <TrackedChangePreview />
+        </div>
+      </Section>
+
+      <Section className="!pt-0 !pb-10">
+        <h2 className="text-xl font-bold text-jp-ink">5. Your Profit Dashboard</h2>
         <p className="mt-2 max-w-3xl text-jp-slate">
           The top row totals every job. Needs Your Attention lists the jobs to look at first, how much
           is at stake on each, and how strong the evidence is.
@@ -68,7 +116,7 @@ export default function DemoPage() {
       </Section>
 
       <Section className="!pt-0 !pb-10">
-        <h2 className="text-xl font-bold text-jp-ink">2. Every job, with its margin</h2>
+        <h2 className="text-xl font-bold text-jp-ink">6. Every job, with its margin</h2>
         <p className="mt-2 max-w-3xl text-jp-slate">
           Revenue and costs come straight from the invoices, bills and expenses tagged to each
           QuickBooks project. Jobs under your target margin stand out.
@@ -79,10 +127,10 @@ export default function DemoPage() {
       </Section>
 
       <Section className="!pt-0 !pb-10">
-        <h2 className="text-xl font-bold text-jp-ink">3. The Weekly Profit Brief, every week</h2>
+        <h2 className="text-xl font-bold text-jp-ink">7. The Weekly Profit Brief, every week</h2>
         <p className="mt-2 max-w-3xl text-jp-slate">
-          What changed since last week, and the one job to look at, in your inbox on the day and time you choose. You don&rsquo;t have
-          to log in to get the value.
+          The money first, then what changed since last week, in your inbox on the day and time you
+          choose. You don&rsquo;t have to log in to get the value.
         </p>
         <div className="mt-6">
           <WeeklyBriefPreview />
@@ -90,15 +138,7 @@ export default function DemoPage() {
       </Section>
 
       <Section className="!pt-0">
-        <h2 className="text-xl font-bold text-jp-ink">4. Patterns across your finished jobs</h2>
-        <p className="mt-2 max-w-3xl text-jp-slate">
-          Once you have completed jobs, Profit Intelligence compares them and points out what keeps
-          costing you, with the jobs behind every finding.
-        </p>
-        <div className="mt-6">
-          <InsightPreview />
-        </div>
-        <div className="mt-10">
+        <div className="mt-2">
           <SampleBanner />
         </div>
       </Section>

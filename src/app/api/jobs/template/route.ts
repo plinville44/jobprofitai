@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { connectionForAccount, getAccount } from "@/lib/account";
 import { OPEN_JOB_WHERE } from "@/lib/jobStatus";
-import { jobTypeLabel } from "@/lib/jobTypes";
+import { labelForJobType } from "@/lib/jobTypes";
+import { getJobTypes } from "@/lib/jobTypesServer";
 import { toCsv } from "@/lib/csv";
 
 /**
@@ -24,12 +25,13 @@ export async function GET(req: NextRequest) {
     orderBy: { name: "asc" },
     select: { name: true, customerName: true, category: true, estimatedCost: true, manualContractValue: true, estimatedRevenue: true, percentCompleteOverride: true },
   });
+  const jobTypes = await getJobTypes(connection.id);
   const rows = [
     ["Job", "Customer", "Job type", "Estimated cost", "Contract value", "Percent complete", "Contract value from QuickBooks (for reference)"],
     ...jobs.map((j) => [
       j.name,
       j.customerName ?? "",
-      j.category ? jobTypeLabel(j.category) : "",
+      j.category ? labelForJobType(jobTypes, j.category) : "",
       j.estimatedCost != null ? Number(j.estimatedCost) : "",
       j.manualContractValue != null ? Number(j.manualContractValue) : "",
       j.percentCompleteOverride != null ? Number(j.percentCompleteOverride) : "",

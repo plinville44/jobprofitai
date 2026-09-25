@@ -312,12 +312,83 @@ export interface EstimateRecord {
   txnDate: Date;
 }
 
-export function estimateFromTxn(est: any): { customerQboId: string | null; record: EstimateRecord | null } {
+/** One priced line on an estimate, compacted for storage. */
+export interface EstimateLine {
+  /** Product or service name, or null for a line without one. */
+  n: string | null;
+  /** Cost category the product or service belongs to. */
+  c: CostCategory;
+  /** Price quoted to the customer, net of discounts and without tax. */
+  a: number;
+}
+
+export interface EstimateDetails {
+  docNumber: string | null;
+  customerName: string | null;
+  emailStatus: string | null;
+  expirationDate: Date | null;
+  lines: EstimateLine[];
+}
+
+/**
+ * The priced lines on an estimate, each put in the cost category of its
+ * product or service by the same rules as cost lines (so a "Framing labor"
+ * service is labor, and the contractor's own category mappings apply).
+ *
+ * Group (bundle) lines are opened up. Discounts, shipping and any other
+ * difference between the lines and the total are spread across the lines in
+ * proportion, so the lines always add up to the estimate's amount net of tax.
+ * Lines with the same name and category are merged.
+ */
+export function estimateLines(est: any, lookups: Lookups, netTotal: number): EstimateLine[] {
+  const raw: { name: string | null; itemId: string | null; amount: number }[] = [];
+  const walk = (lines: unknown) => {
+    if (!Array.isArray(lines)) return;
+    for (const line of lines) {
+      if (line?.GroupLineDetail) {
+        walk(line.GroupLineDetail.Line);
+        continue;
+      }
+      const d = line?.SalesItemLineDetail;
+      if (!d) continue; // subtotal, discount, description-only
+      const amount = num(line.Amount);
+      if (amount === 0) continue;
+      raw.push({ name: str(d.ItemRef?.name), itemId: str(d.ItemRef?.value), amount });
+    }
+  };
+  walk(est?.Line);
+  const gross = raw.reduce((s, l) => s + l.amount, 0);
+  if (gross <= 0 || netTotal <= 0) return [];
+  const scale = netTotal / gross;
+
+  const merged = new Map<string, EstimateLine>();
+  for (const l of raw) {
+    const itemName = l.itemId ? lookups.items.get(l.itemId)?.name ?? l.name : l.name;
+    const { category } = categorizeLine({ sourceName: itemName, accountId: null, itemId: l.itemId }, lookups);
+    const key = `${itemName ?? ""}\u0000${category}`;
+    const cur = merged.get(key) ?? { n: itemName ?? null, c: category, a: 0 };
+    cur.a += l.amount * scale;
+    merged.set(key, cur);
+  }
+  return [...merged.values()].map((l) => ({ ...l, a: round2(l.a) })).filter((l) => l.a !== 0);
+}
+
+export function estimateFromTxn(
+  est: any,
+  lookups?: Lookups
+): { customerQboId: string | null; record: EstimateRecord | null; details: EstimateDetails } {
   const txnDate = qboDate(est?.TxnDate);
   const total = num(est?.TotalAmt) - num(est?.TxnTaxDetail?.TotalTax);
   return {
     customerQboId: str(est?.CustomerRef?.value),
     record: txnDate ? { amount: round2(total), status: str(est?.TxnStatus) ?? "Pending", txnDate } : null,
+    details: {
+      docNumber: str(est?.DocNumber),
+      customerName: str(est?.CustomerRef?.name),
+      emailStatus: str(est?.EmailStatus),
+      expirationDate: qboDate(est?.ExpirationDate),
+      lines: lookups ? estimateLines(est, lookups, round2(total)) : [],
+    },
   };
 }
 

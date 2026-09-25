@@ -68,6 +68,8 @@ describe("entitlement resolution", () => {
     // The core promise is NOT withheld from the entry plan.
     expect(ent.has("ai_insights")).toBe(true);
     expect(ent.has("margin_alerts")).toBe(true);
+    // The Profit Opportunity Feed and Estimate Check are on both plans.
+    expect(ent.has("profit_opportunities")).toBe(true);
     // Pro-only additions.
     expect(ent.has("forecast_at_completion")).toBe(false);
     expect(ent.has("cross_job_benchmarking")).toBe(false);

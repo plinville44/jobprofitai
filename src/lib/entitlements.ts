@@ -41,7 +41,7 @@ export type Feature =
   | "on_demand_analysis"
   | "margin_alerts"
   | "ai_insights" // Profit Intelligence findings + recommended actions
-  | "profit_opportunities" // cross-job pattern rollups
+  | "profit_opportunities" // the Profit Opportunity Feed, Estimate Check and change tracking (src/lib/opportunities.ts)
   | "forecast_at_completion"
   | "cross_job_benchmarking";
 
@@ -61,30 +61,31 @@ const PROFIT_MONITOR_FEATURES: Feature[] = [
 ];
 
 /**
- * $149 Profit Intelligence. Deliberately includes ai_insights: the core
- * product promise ("tell me where I'm making money, where I'm losing it,
- * why, and what to do about it") has to be delivered by the entry paid plan,
- * not withheld to force an upgrade.
+ * $149 Profit Intelligence. Deliberately includes ai_insights and
+ * profit_opportunities: the core product promise ("tell me what to change
+ * and what it's worth") has to be delivered by the entry paid plan, not
+ * withheld to force an upgrade. profit_opportunities moved here from Pro on
+ * 2026-09-25 when it became the Profit Opportunity Feed, the Estimate Check
+ * and change tracking (src/lib/opportunities.ts).
  */
-const PROFIT_INTELLIGENCE_FEATURES: Feature[] = [...PROFIT_MONITOR_FEATURES, "ai_insights"];
+const PROFIT_INTELLIGENCE_FEATURES: Feature[] = [...PROFIT_MONITOR_FEATURES, "ai_insights", "profit_opportunities"];
 
 /**
- * $299 Pro adds forward-looking and cross-job analysis. All three are real,
- * shipped calculations in src/lib/profitability.ts, not placeholders:
+ * $299 Pro adds forward-looking analysis of jobs in progress and more scale.
+ * Both features are real, shipped calculations in src/lib/profitability.ts:
  *
- *   forecast_at_completion  -> computeForecastAtCompletion
- *   profit_opportunities    -> computeProfitOpportunities
+ *   forecast_at_completion  -> computeForecastAtCompletion (and, in the
+ *                              feed, open jobs heading below target)
  *   cross_job_benchmarking  -> the peer cost-outlier rule inside
  *                              computeNeedsAttentionForJob, gated where the
  *                              peer data is assembled in
  *                              getConnectionProfitData / getJobProfitData
  *
- * Every one of these is enforced server-side. If you add a fourth, gate it
+ * Every one of these is enforced server-side. If you add another, gate it
  * before it ships, not after: the pricing page treats this list as the truth.
  */
 const PROFIT_INTELLIGENCE_PRO_FEATURES: Feature[] = [
   ...PROFIT_INTELLIGENCE_FEATURES,
-  "profit_opportunities",
   "forecast_at_completion",
   "cross_job_benchmarking",
 ];

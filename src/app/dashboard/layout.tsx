@@ -43,10 +43,11 @@ export default async function DashboardLayout({ children }: { children: React.Re
             </Link>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <NavLink href="/dashboard">Dashboard</NavLink>
+              <NavLink href="/dashboard/opportunities">Opportunities</NavLink>
+              <NavLink href="/dashboard/estimates">Estimate Check</NavLink>
               <NavLink href="/dashboard/jobs">Jobs</NavLink>
               <NavLink href="/dashboard/wip">WIP</NavLink>
               <NavLink href="/dashboard/data-health">Data Health</NavLink>
-              <NavLink href="/dashboard/intelligence">Intelligence</NavLink>
               {account.role === "owner" ? <NavLink href="/dashboard/referrals">Refer</NavLink> : null}
               {/* Only surfaced once someone is actually in the partner
                   program - it's irrelevant clutter for a contractor. */}

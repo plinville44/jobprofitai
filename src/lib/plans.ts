@@ -60,9 +60,9 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     name: "Profit Intelligence",
     priceCents: 14_900,
     priceLabel: "$149",
-    tagline: "Know which jobs make money, which ones don't, and what to do about it.",
+    tagline: "See what to change to make more money on your jobs, and what each change is worth.",
     bestFor:
-      "Contractors who want ongoing visibility into where they're making and losing money.",
+      "Contractors who want to know where their pricing leaks money and what to fix first.",
     mostPopular: true,
     limits: { maxConnections: 1, maxActiveJobs: 100, maxTeamMembers: 3 },
     marketingFeatures: [
@@ -71,6 +71,15 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
       "Up to 100 active jobs",
       // src/lib/team.ts
       "3 team logins for your office manager, PMs or bookkeeper",
+      // The Profit Opportunity Feed - src/lib/opportunities.ts computeOpportunityFeed
+      "Profit Opportunity Feed: what to change, ranked by what it's worth",
+      "Pricing gaps by job type, customer, job size and part of the job (labor, materials, subs)",
+      // computeEstimateCheck + /dashboard/estimates
+      "Estimate Check: pending QuickBooks estimates checked against your own finished jobs",
+      // ProfitAction + computeActionOutcome
+      "Track a pricing change and see its result on the jobs that follow",
+      // JobType + src/lib/jobTypeSuggestions.ts
+      "Your own job types, with suggestions from job names, estimates and AI",
       // Core profitability - src/lib/profitability.ts computeJobFinancials/computeDashboardTotals
       "Job profitability dashboard",
       "Revenue, cost, gross profit and margin by job",
@@ -91,11 +100,11 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
       "Historical profitability trends",
       // Intelligence - src/lib/intelligence.ts (this is the core promise; it is
       // deliberately NOT held back for the higher tier)
-      "AI-generated profit insights with recommended actions",
+      "AI advisor notes on your opportunities (the figures are calculated, never written by AI)",
       // Data health - computeDataHealth
       "Data Health checks on your QuickBooks data",
       // Weekly email - src/app/api/cron/weekly-email
-      "Weekly Profit Brief by email",
+      "Weekly Profit Brief by email, leading with new margin risk and estimates to fix",
       "Email support",
     ],
     stripePriceEnvVar: "STRIPE_PRICE_PROFIT_INTELLIGENCE_MONTHLY",
@@ -105,7 +114,7 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     name: "Profit Intelligence Pro",
     priceCents: 29_900,
     priceLabel: "$299",
-    tagline: "Deeper analysis, more companies, and forward-looking job forecasting.",
+    tagline: "Everything in Profit Intelligence, plus forecasts for jobs in progress and more scale.",
     bestFor:
       "Larger or growing contractors who need more scale and forward-looking analysis.",
     mostPopular: false,
@@ -116,11 +125,10 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
       "Unlimited active jobs",
       "10 team logins",
       // computeForecastAtCompletion - real, and gated to this tier today;
-      // forecast_below_target alerts come with it
-      "Forecast at completion on in-progress jobs, with an alert when one heads below target",
-      // computeProfitOpportunities - real cross-job pattern rollups
-      "Cross-job benchmarking and pattern analysis",
-      "Company-wide profit opportunity findings",
+      // forecast_below_target alerts and feed items come with it
+      "Forecast at completion on in-progress jobs, with an alert and an opportunity when one heads below target",
+      // the peer cost-outlier rule in computeNeedsAttentionForJob
+      "Benchmarking: each job's costs against your similar finished jobs",
       "Priority support",
     ],
     stripePriceEnvVar: "STRIPE_PRICE_PROFIT_INTELLIGENCE_PRO_MONTHLY",

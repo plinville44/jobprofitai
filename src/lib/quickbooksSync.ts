@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { qboQuery, qboQueryAll, qboCompanyInfo, qboCdc, refreshTokens } from "@/lib/quickbooks";
 import { encryptToken, decryptToken } from "@/lib/crypto";
@@ -54,8 +55,18 @@ import {
  * 2: row ids include the connection id; labor at pay rate; refunds,
  *    vendor credits, sales receipts, credit memos, journal entries; tax
  *    removed from revenue; deletions honoured.
+ * 3: estimate lines, numbers, email status and expiry dates, for the
+ *    Estimate Check and estimate accuracy by cost category.
  */
-export const SYNC_VERSION = 2;
+export const SYNC_VERSION = 3;
+
+/**
+ * The last version that changed how COSTS and REVENUE are stored. The weekly
+ * brief waits for a company's upgrade sync only below this, because only
+ * those upgrades can make figures read wrong mid-way. Version 3 only adds
+ * estimate details, so a brief never waits on it.
+ */
+export const COST_SYNC_VERSION = 2;
 
 const FULL_SYNC_INTERVAL_DAYS = 30;
 /** Data Health tallies look at the last 12 months, not the company's whole history. */
@@ -872,7 +883,12 @@ async function processRevenueTxn(p: Processor, txn: any, sourceType: RevenueSour
 // Estimates -> contract value
 // ---------------------------------------------------------------------------
 
-async function applyEstimates(ctx: SyncCtx, estimates: any[], full: boolean): Promise<void> {
+function sameLines(stored: unknown, next: { n: string | null; c: string; a: number }[]): boolean {
+  if (!Array.isArray(stored) || stored.length !== next.length) return false;
+  return stored.every((l: any, i) => l?.n === next[i].n && l?.c === next[i].c && Math.abs(Number(l?.a) - next[i].a) < 0.005);
+}
+
+async function applyEstimates(ctx: SyncCtx, estimates: any[], full: boolean, lookups: Lookups): Promise<void> {
   const touchedCustomers = new Set<string>();
   const existing = await prisma.jobEstimate.findMany({ where: { connectionId: ctx.connectionId } });
   const existingById = new Map(existing.map((e) => [e.id, e]));
@@ -889,7 +905,7 @@ async function applyEstimates(ctx: SyncCtx, estimates: any[], full: boolean): Pr
       }
       continue;
     }
-    const { customerQboId, record } = estimateFromTxn(est);
+    const { customerQboId, record, details } = estimateFromTxn(est, lookups);
     if (!customerQboId || !record) continue;
     seen.add(id);
     touchedCustomers.add(customerQboId);
@@ -901,13 +917,25 @@ async function applyEstimates(ctx: SyncCtx, estimates: any[], full: boolean): Pr
       amount: record.amount,
       status: record.status,
       txnDate: record.txnDate,
+      docNumber: details.docNumber,
+      customerName: details.customerName,
+      emailStatus: details.emailStatus,
+      expirationDate: details.expirationDate,
+      lines: details.lines as unknown as Prisma.InputJsonValue,
     };
     const unchanged =
       prior &&
       prior.customerQboId === data.customerQboId &&
       Math.abs(Number(prior.amount) - data.amount) < 0.005 &&
       prior.status === data.status &&
-      prior.txnDate.getTime() === data.txnDate.getTime();
+      prior.txnDate.getTime() === data.txnDate.getTime() &&
+      prior.docNumber === data.docNumber &&
+      prior.customerName === data.customerName &&
+      prior.emailStatus === data.emailStatus &&
+      (prior.expirationDate?.getTime() ?? null) === (data.expirationDate?.getTime() ?? null) &&
+      // Compared field by field: Postgres returns JSON objects with their
+      // keys in its own order, so the raw JSON never matches.
+      sameLines(prior.lines, details.lines);
     if (unchanged) continue;
     await prisma.jobEstimate.upsert({ where: { id }, create: { id, ...data }, update: data });
   }
@@ -1040,7 +1068,7 @@ async function runFullSync(ctx: SyncCtx): Promise<Record<string, any>> {
     qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM Estimate", "Estimate"), null as any[] | null);
   if (estimates != null) {
     fetched.Estimate = estimates.length;
-    await applyEstimates(ctx, estimates, true);
+    await applyEstimates(ctx, estimates, true, lookups);
   }
 
   return {
@@ -1158,7 +1186,7 @@ async function runIncrementalSync(ctx: SyncCtx, changedSince: Date): Promise<Rec
 
   const estimates = byEntity("Estimate");
   counts.Estimate = estimates.length;
-  if (estimates.length) await applyEstimates(ctx, estimates, false);
+  if (estimates.length) await applyEstimates(ctx, estimates, false, lookups);
 
   return {
     jobs: jobCount,

@@ -7,6 +7,7 @@ import {
   contractValueFromEstimates,
   costEntryId,
   emptyLookups,
+  estimateFromTxn,
   expenseLines,
   resolveJob,
   revenueFromTxn,
@@ -259,5 +260,62 @@ describe("matching transactions to jobs", () => {
 describe("row ids", () => {
   it("include the connection, so two companies' 'Purchase 145' never share a row", () => {
     expect(costEntryId("connA", "Purchase", "145", "1")).not.toBe(costEntryId("connB", "Purchase", "145", "1"));
+  });
+});
+
+describe("estimate lines", () => {
+  const lookups = emptyLookups();
+  lookups.accounts.set("80", { name: "Cost of labor", fullName: "Cost of labor", type: "Cost of Goods Sold", subType: "CostOfLaborCos" });
+  lookups.items.set("1", { name: "Framing labor", expenseAccountId: null });
+  lookups.items.set("2", { name: "Lumber", expenseAccountId: null });
+  lookups.items.set("3", { name: "Install", expenseAccountId: "80" });
+  lookups.items.set("4", { name: "Overhead and profit", expenseAccountId: null });
+
+  const est = {
+    Id: "1043",
+    DocNumber: "1043",
+    TxnDate: "2026-09-01",
+    ExpirationDate: "2026-10-01",
+    TxnStatus: "Pending",
+    EmailStatus: "NeedToSend",
+    CustomerRef: { value: "58", name: "Smith:Kitchen" },
+    TotalAmt: 10_800,
+    TxnTaxDetail: { TotalTax: 800 },
+    Line: [
+      { Amount: 4_000, DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { value: "1", name: "Framing labor" } } },
+      {
+        DetailType: "GroupLineDetail",
+        GroupLineDetail: {
+          Line: [
+            { Amount: 4_000, DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { value: "2", name: "Lumber" } } },
+            { Amount: 1_000, DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { value: "3", name: "Install" } } },
+          ],
+        },
+      },
+      { Amount: 2_000, DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { value: "4", name: "Overhead and profit" } } },
+      { Amount: 11_000, DetailType: "SubTotalLineDetail", SubTotalLineDetail: {} },
+      { Amount: 1_000, DetailType: "DiscountLineDetail", DiscountLineDetail: { PercentBased: false } },
+    ],
+  };
+
+  it("categorizes each product or service and spreads the discount so lines add up to the total without tax", () => {
+    const { details, record } = estimateFromTxn(est, lookups);
+    expect(record!.amount).toBe(10_000);
+    const byName = Object.fromEntries(details.lines.map((l) => [l.n, l]));
+    expect(byName["Framing labor"].c).toBe("labor");
+    expect(byName["Lumber"].c).toBe("materials");
+    // Named for nothing, but its expense account is labor.
+    expect(byName["Install"].c).toBe("labor");
+    expect(byName["Overhead and profit"].c).toBe("overhead");
+    // 11,000 of lines scaled to 10,000.
+    expect(byName["Framing labor"].a).toBeCloseTo(4_000 * (10_000 / 11_000), 2);
+    expect(details.lines.reduce((s, l) => s + l.a, 0)).toBeCloseTo(10_000, 1);
+    expect(details).toMatchObject({ docNumber: "1043", customerName: "Smith:Kitchen", emailStatus: "NeedToSend" });
+    expect(details.expirationDate?.toISOString().slice(0, 10)).toBe("2026-10-01");
+  });
+
+  it("stores no lines without lookups, and none for an empty estimate", () => {
+    expect(estimateFromTxn(est).details.lines).toEqual([]);
+    expect(estimateFromTxn({ ...est, Line: [] }, lookups).details.lines).toEqual([]);
   });
 });

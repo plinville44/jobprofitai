@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { JOB_TYPE_OPTIONS } from "@/lib/jobTypes";
 
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const HOURS = Array.from({ length: 24 }, (_, h) => h);
@@ -33,6 +32,8 @@ function hourLabel(h: number) {
 
 type Props = {
   connectionId: string;
+  /** The company's job types that can take a target (hidden ones are left out). */
+  jobTypes: { value: string; label: string }[];
   initial: {
     targetMarginPct: number | null;
     overheadEnabled: boolean;
@@ -50,7 +51,7 @@ type Props = {
   };
 };
 
-export default function SettingsForm({ connectionId, initial }: Props) {
+export default function SettingsForm({ connectionId, jobTypes, initial }: Props) {
   const router = useRouter();
   const [targetMarginPct, setTargetMarginPct] = useState(initial.targetMarginPct?.toString() ?? "");
   const [overheadEnabled, setOverheadEnabled] = useState(initial.overheadEnabled);
@@ -65,7 +66,7 @@ export default function SettingsForm({ connectionId, initial }: Props) {
   const [laborFromTimeEntries, setLaborFromTimeEntries] = useState(initial.laborFromTimeEntries);
   const [alertsEnabled, setAlertsEnabled] = useState(initial.alertsEnabled);
   const [marginTargets, setMarginTargets] = useState<Record<string, string>>(
-    Object.fromEntries(JOB_TYPE_OPTIONS.filter((o) => o.value).map((o) => [o.value, initial.marginTargets[o.value]?.toString() ?? ""]))
+    Object.fromEntries(jobTypes.map((o) => [o.value, initial.marginTargets[o.value]?.toString() ?? ""]))
   );
   const [showTypeTargets, setShowTypeTargets] = useState(Object.keys(initial.marginTargets).length > 0);
   // A zone captured from the browser at signup may not be in the short list.
@@ -134,7 +135,7 @@ export default function SettingsForm({ connectionId, initial }: Props) {
           <input
             type="number"
             min={0}
-            max={100}
+            max={90}
             step="0.1"
             value={targetMarginPct}
             onChange={(e) => setTargetMarginPct(e.target.value)}
@@ -150,13 +151,13 @@ export default function SettingsForm({ connectionId, initial }: Props) {
           </button>
           {showTypeTargets && (
             <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-              {JOB_TYPE_OPTIONS.filter((o) => o.value).map((o) => (
+              {jobTypes.map((o) => (
                 <label key={o.value} className="flex flex-col text-xs text-gray-600">
                   {o.label} (%)
                   <input
                     type="number"
                     min={0}
-                    max={100}
+                    max={90}
                     step="0.1"
                     value={marginTargets[o.value] ?? ""}
                     onChange={(e) => setMarginTargets((m) => ({ ...m, [o.value]: e.target.value }))}

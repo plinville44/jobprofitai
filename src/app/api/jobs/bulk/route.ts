@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccount } from "@/lib/account";
-import { JOB_TYPE_OPTIONS } from "@/lib/jobTypes";
+import { getJobTypes, isAssignableJobType } from "@/lib/jobTypesServer";
 
 /**
  * PATCH /api/jobs/bulk  { jobIds: string[], statusOverride?, category? }
@@ -12,11 +12,9 @@ import { JOB_TYPE_OPTIONS } from "@/lib/jobTypes";
  * status), and a contractor coming back from a busy month with a dozen
  * finished jobs should not have to open a dozen pages.
  *
- * Categories are validated against JOB_TYPE_OPTIONS rather than a list
- * written out here, so the API and the dropdown cannot drift apart and offer
- * a value the other rejects.
+ * Job types are validated against each company's own list (built-in types
+ * plus its additions, minus hidden ones), the same list the dropdown shows.
  */
-const KNOWN_CATEGORIES = new Set(JOB_TYPE_OPTIONS.map((o) => o.value).filter(Boolean));
 
 const MAX_JOBS_PER_REQUEST = 500;
 
@@ -53,7 +51,18 @@ export async function PATCH(req: NextRequest) {
     if ("category" in body) {
       if (body.category === null || body.category === "") {
         data.category = null;
-      } else if (typeof body.category === "string" && KNOWN_CATEGORIES.has(body.category)) {
+      } else if (typeof body.category === "string" && body.category.length <= 60) {
+        // Every company the selected jobs belong to must offer this type.
+        const connections = await prisma.job.findMany({
+          where: { id: { in: jobIds }, connection: { userId: account.ownerId, disconnectedAt: null } },
+          select: { connectionId: true },
+          distinct: ["connectionId"],
+        });
+        for (const c of connections) {
+          if (!isAssignableJobType(await getJobTypes(c.connectionId), body.category)) {
+            return NextResponse.json({ error: "Invalid job type" }, { status: 400 });
+          }
+        }
         data.category = body.category;
       } else {
         return NextResponse.json({ error: "Invalid job type" }, { status: 400 });

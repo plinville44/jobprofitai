@@ -1,14 +1,17 @@
-import { formatCurrency } from "@/lib/format";
+import { confidenceLabel, formatCurrency, formatDate, formatPct } from "@/lib/format";
+import { getSampleCompany, SAMPLE_TARGET_PCT } from "@/lib/sampleCompany";
+import { coreCategoryName, GAIN_KINDS, type FeedItem } from "@/lib/opportunities";
+import { computeBriefHeadline, snapshotFromFeed } from "@/lib/briefHeadline";
 
 /**
  * Product proof for the marketing site.
  *
  * This is NOT a screenshot and NOT a mockup of something that doesn't exist.
- * It renders the same structures the real Profit Dashboard renders - the KPI
- * row, the "Needs Your Attention" table with its severity and confidence
- * columns, and a Profit Insight card - using the same layout, columns,
- * wording and severity language as src/app/dashboard/page.tsx and
- * src/app/dashboard/intelligence/page.tsx.
+ * It renders the same structures the real app renders - the KPI row, the
+ * "Needs Your Attention" table, the Profit Opportunity Feed, the Estimate
+ * Check and tracked changes - using the same layout, columns and wording.
+ * The feed, estimate and tracking previews are computed by the real engine
+ * from an invented company (src/lib/sampleCompany.ts).
  *
  * The numbers are illustrative, and every instance is explicitly labelled
  * "Example" in the UI. That labelling isn't decoration: presenting invented
@@ -160,7 +163,7 @@ export function DashboardPreview() {
 
 // The same example company as the previews above and below: Harborview is
 // $100,000 billed and $82,800 spent (17.2%, 14% over its $72,600 estimate),
-// Oakfield sits 6.2 points under the 28% target, and Maple St. finished at
+// Oakfield sits 6.2 points under the 28% target, and Laurel Ave finished at
 // 31.4%. Used on /demo so a visitor can see a whole job list, not just the
 // attention table.
 const EXAMPLE_JOBS = [
@@ -169,7 +172,7 @@ const EXAMPLE_JOBS = [
   { job: "Oakfield Warehouse Fit-Out", status: "Active", revenue: 206_000, costs: 161_100, note: "Below target" },
   { job: "Riverside HVAC Retrofit", status: "Active", revenue: 88_500, costs: 67_700, note: "Labor running high" },
   { job: "Pine Ridge Addition", status: "Active", revenue: 142_000, costs: 98_700, note: "On target" },
-  { job: "Maple St. Kitchen Remodel", status: "Completed", revenue: 54_000, costs: 37_040, note: "On target" },
+  { job: "Laurel Ave Bath Remodel", status: "Completed", revenue: 54_000, costs: 37_040, note: "On target" },
   { job: "Elm Ct. Siding", status: "Completed", revenue: 31_500, costs: 21_900, note: "On target" },
 ];
 
@@ -278,6 +281,238 @@ export function InsightPreview() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Profit Opportunity Feed, Estimate Check and change tracking
+// ---------------------------------------------------------------------------
+// Rendered from src/lib/sampleCompany.ts, which runs an invented company
+// through the real engine. Every figure and sentence below is what the
+// product itself produces for that data.
+
+function OpportunityTiles() {
+  const { feed } = getSampleCompany();
+  const s = feed.summary;
+  const tiles = [
+    { label: "Profit your pricing left behind", sub: "Finished jobs, last 12 months", value: s.pricingGap, tone: "text-red-600" },
+    { label: "At risk on open jobs", sub: "Over estimate or short of target", value: s.openJobRisk, tone: "text-red-600" },
+    { label: "Estimates priced too low", sub: "Pending in QuickBooks", value: s.estimatesShortfall, tone: "text-amber-600" },
+    { label: "Finished work not billed", sub: "Cash, not profit", value: s.unbilledWork, tone: "text-amber-600" },
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      {tiles.map((t) => (
+        <div key={t.label} className="rounded-lg border border-jp-line px-3.5 py-3">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-jp-muted">{t.label}</div>
+          <div className={`mt-1 text-lg font-bold tabular-nums ${t.tone}`}>{formatCurrency(t.value)}</div>
+          <div className="text-[11px] text-jp-muted">{t.sub}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function OpportunityCard({ item, showWorking = false }: { item: FeedItem; showWorking?: boolean }) {
+  const label =
+    item.kind === "estimate_below_target"
+      ? "Estimate"
+      : item.kind === "customer_pricing"
+        ? "Customer"
+        : item.section === "act_now"
+          ? "Open job"
+          : "Pricing";
+  return (
+    <div className="rounded-lg border border-jp-line p-4 sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-jp-blue">{label}</p>
+          <h3 className="mt-1 text-[15px] font-semibold leading-snug text-jp-ink">{item.title}</h3>
+        </div>
+        {item.impact != null && (
+          <div className="text-right">
+            <p className="text-lg font-bold tabular-nums text-red-600">
+              {GAIN_KINDS.has(item.kind) ? "+" : ""}
+              {formatCurrency(item.impact)}
+            </p>
+            <p className="text-[11px] text-jp-muted">{item.impactLabel}</p>
+          </div>
+        )}
+      </div>
+      <p className="mt-2 text-sm leading-relaxed text-jp-slate">{item.finding}</p>
+      {showWorking && item.cause && (
+        <p className="mt-2 text-sm leading-relaxed text-jp-slate">
+          <span className="font-semibold text-jp-ink">Why: </span>
+          {item.cause}
+        </p>
+      )}
+      <p className="mt-2 rounded-md bg-jp-surface-2/70 px-3 py-2 text-sm leading-relaxed text-jp-ink">
+        <span className="font-semibold">What to do: </span>
+        {item.action}
+      </p>
+      <p className="mt-2 text-xs text-jp-muted">
+        {confidenceLabel(item.confidence)}. {item.confidenceReason}
+      </p>
+    </div>
+  );
+}
+
+/** The Profit Opportunity Feed: the headline figures and the top opportunities. */
+export function OpportunityFeedPreview({ items = 3 }: { items?: number }) {
+  const { feed } = getSampleCompany();
+  const pick = [
+    feed.items.find((i) => i.kind === "estimate_below_target"),
+    feed.items.find((i) => i.kind === "job_type_pricing"),
+    feed.items.find((i) => i.kind === "customer_pricing"),
+    feed.items.find((i) => i.kind === "open_job_over_estimate"),
+  ].filter((i): i is FeedItem => Boolean(i));
+  return (
+    <AppFrame label="Profit Opportunities">
+      <div className="p-4 sm:p-6">
+        <OpportunityTiles />
+        <div className="mt-5 space-y-4">
+          {pick.slice(0, items).map((item) => (
+            <OpportunityCard key={item.id} item={item} showWorking={item.kind === "job_type_pricing"} />
+          ))}
+        </div>
+      </div>
+    </AppFrame>
+  );
+}
+
+/** One job type's pricing opportunity, with the part-by-part breakdown behind it. */
+export function PricingBreakdownPreview() {
+  const { feed } = getSampleCompany();
+  const item = feed.items.find((i) => i.kind === "job_type_pricing");
+  if (!item) return null;
+  return (
+    <AppFrame label="Profit Opportunities">
+      <div className="p-4 sm:p-6">
+        <OpportunityCard item={item} showWorking />
+        {item.breakdown && (
+          <div className="mt-4 overflow-x-auto rounded-lg border border-jp-line">
+            <table className="w-full min-w-[420px] text-left text-sm">
+              <thead className="bg-jp-surface text-[11px] uppercase tracking-wide text-jp-muted">
+                <tr>
+                  <th scope="col" className="px-4 py-2.5 font-semibold">Part of the job</th>
+                  <th scope="col" className="px-4 py-2.5 text-right font-semibold">Customers paid</th>
+                  <th scope="col" className="px-4 py-2.5 text-right font-semibold">It cost</th>
+                  <th scope="col" className="px-4 py-2.5 text-right font-semibold">Margin</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-jp-line">
+                {item.breakdown.map((b) => (
+                  <tr key={b.category}>
+                    <td className="px-4 py-2.5 capitalize text-jp-ink">{coreCategoryName(b.category)}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums text-jp-ink">{formatCurrency(b.charged)}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums text-jp-ink">{formatCurrency(b.cost)}</td>
+                    <td className={`px-4 py-2.5 text-right font-semibold tabular-nums ${b.marginPct < 0.15 ? "text-red-600" : "text-green-700"}`}>
+                      {formatPct(b.marginPct)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="mt-3 text-xs leading-relaxed text-jp-muted">
+          What customers paid for each part comes from how your QuickBooks estimates split the price, applied to what you
+          actually invoiced. What it cost comes from the bills, expenses and timesheets tagged to each job.
+        </p>
+      </div>
+    </AppFrame>
+  );
+}
+
+/** The Estimate Check on a pending estimate. */
+export function EstimateCheckPreview() {
+  const { estimates } = getSampleCompany();
+  const e = estimates.find((x) => x.check.status === "below_target") ?? estimates[0];
+  const c = e.check;
+  return (
+    <AppFrame label="Estimate Check">
+      <div className="p-4 sm:p-6">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs text-jp-muted">
+              {e.typeLabel} · <span className="font-semibold text-amber-700">{e.notEmailed ? "Not emailed from QuickBooks yet" : "Emailed"}</span>
+            </p>
+            <h3 className="mt-1 text-base font-semibold text-jp-ink">
+              Estimate {e.docNumber} for {e.customerName}
+            </h3>
+            <p className="mt-0.5 text-sm text-jp-slate">Quoted {formatCurrency(e.amount)} before tax</p>
+          </div>
+          <div className="text-right">
+            <p className="text-lg font-bold tabular-nums text-red-600">{formatCurrency(c.shortfall)} light</p>
+            <p className="text-[11px] text-jp-muted">price at target {formatCurrency(c.priceAtTarget)}</p>
+          </div>
+        </div>
+        <p className="mt-3 text-sm leading-relaxed text-jp-slate">{c.summary}</p>
+        <div className="mt-3 overflow-x-auto rounded-lg border border-jp-line">
+          <table className="w-full min-w-[520px] text-left text-sm">
+            <thead className="bg-jp-surface text-[11px] uppercase tracking-wide text-jp-muted">
+              <tr>
+                <th scope="col" className="px-4 py-2.5 font-semibold">Part of the job</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-semibold">You&rsquo;re charging</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Past jobs spent per $1</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Price at target</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-jp-line">
+              {c.parts.map((p) => (
+                <tr key={p.category}>
+                  <td className="px-4 py-2.5 capitalize text-jp-ink">{coreCategoryName(p.category)}</td>
+                  <td className="px-4 py-2.5 text-right tabular-nums text-jp-ink">{formatCurrency(p.charged)}</td>
+                  <td className="px-4 py-2.5 text-right tabular-nums text-jp-ink">${p.costRatio.toFixed(2)}</td>
+                  <td
+                    className={`px-4 py-2.5 text-right font-semibold tabular-nums ${p.priceAtTarget > p.charged * 1.01 ? "text-red-600" : "text-jp-ink"}`}
+                  >
+                    {formatCurrency(p.priceAtTarget)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-3 text-xs text-jp-muted">
+          {confidenceLabel(c.confidence)}. {c.confidenceReason} Target {SAMPLE_TARGET_PCT}%.
+        </p>
+      </div>
+    </AppFrame>
+  );
+}
+
+/** A pricing change being tracked: before and after. */
+export function TrackedChangePreview() {
+  const { tracked } = getSampleCompany();
+  const o = tracked.outcome;
+  return (
+    <AppFrame label="Changes you're tracking">
+      <div className="p-4 sm:p-6">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-jp-muted">
+          {tracked.subjectLabel} · since {formatDate(tracked.startedAt)}
+        </p>
+        <h3 className="mt-1 text-base font-semibold text-jp-ink">{tracked.action}</h3>
+        <div className="mt-4 grid grid-cols-3 gap-3">
+          <div className="rounded-lg border border-jp-line px-3.5 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-jp-muted">Before</div>
+            <div className="mt-1 text-lg font-bold tabular-nums text-jp-ink">{formatPct(tracked.baselineMarginPct)}</div>
+            <div className="text-[11px] text-jp-muted">{tracked.baselineJobs} finished jobs</div>
+          </div>
+          <div className="rounded-lg border border-jp-line px-3.5 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-jp-muted">Since</div>
+            <div className="mt-1 text-lg font-bold tabular-nums text-green-700">{formatPct(o.afterMarginPct)}</div>
+            <div className="text-[11px] text-jp-muted">{o.afterJobs} finished jobs</div>
+          </div>
+          <div className="rounded-lg border border-jp-line px-3.5 py-3">
+            <div className="text-[11px] uppercase tracking-wide text-jp-muted">Gross profit</div>
+            <div className="mt-1 text-lg font-bold tabular-nums text-green-700">+{formatCurrency(o.extraProfit)}</div>
+            <div className="text-[11px] text-jp-muted">vs. the old margin</div>
+          </div>
+        </div>
+        <p className="mt-3 text-sm leading-relaxed text-jp-slate">{o.message}</p>
+      </div>
+    </AppFrame>
+  );
+}
+
 /** The Weekly Profit Brief, as it arrives in an inbox. */
 /**
  * The Weekly Profit Brief as it actually arrives: the deterministic "What
@@ -291,6 +526,9 @@ export function InsightPreview() {
  * each of the last three months" that no part of the brief computes.
  */
 export function WeeklyBriefPreview() {
+  const { feed } = getSampleCompany();
+  // As if last week's brief had no open-job risk on file.
+  const headline = computeBriefHeadline(snapshotFromFeed(feed), { opportunities: { openRiskByJob: {} } }, "Example Builders");
   return (
     <AppFrame label="Weekly Profit Brief. Monday, 8:00am">
       <div className="p-4 sm:p-6">
@@ -298,9 +536,18 @@ export function WeeklyBriefPreview() {
           <p className="text-xs text-jp-muted">
             <span className="font-medium text-jp-ink">JobProfitAI</span> &lt;noreply@jobprofitai.com&gt;
           </p>
-          <p className="mt-1 text-sm font-semibold text-jp-ink">
-            Weekly Profit Brief, week of Mar 10
-          </p>
+          <p className="mt-1 text-sm font-semibold text-jp-ink">{headline.subject ?? "Example Builders: Weekly Profit Brief"}</p>
+        </div>
+        <div className="mt-4 rounded-lg border border-jp-line bg-jp-surface px-4 py-3">
+          <p className="text-[15px] font-semibold leading-snug text-jp-ink">{headline.headline}</p>
+          <ul className="mt-2 space-y-1 text-sm text-jp-slate">
+            {headline.snapshot.top.map((t) => (
+              <li key={t.title}>
+                <span className="font-medium text-jp-ink">{t.title}</span>
+                {t.impact != null ? ` (${formatCurrency(t.impact)} ${t.impactLabel})` : ""}
+              </li>
+            ))}
+          </ul>
         </div>
         <div className="mt-4 space-y-3 text-sm leading-relaxed text-jp-slate">
           <div>
@@ -312,9 +559,9 @@ export function WeeklyBriefPreview() {
                 Harborview Roof Replacement: {formatCurrency(6_800)} in new costs. Margin 24.0% to
                 17.2%. Now 14% over its estimate.
               </li>
-              <li>Maple St. Kitchen Remodel: Marked completed. Finished at 31.4% margin.</li>
+              <li>Laurel Ave Bath Remodel: Marked completed. Finished at 31.4% margin.</li>
               <li>
-                Oak Ave Bath: New job, {formatCurrency(18_200)} billed and {formatCurrency(4_650)} in
+                Spruce Ct. Bath: New job, {formatCurrency(18_200)} billed and {formatCurrency(4_650)} in
                 costs so far.
               </li>
             </ul>

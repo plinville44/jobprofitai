@@ -1,5 +1,15 @@
 import { describe, it, expect } from "vitest";
-import { JOB_TYPE_OPTIONS, jobTypeLabel, suggestJobType } from "../jobTypes";
+import {
+  JOB_TYPE_OPTIONS,
+  cleanJobTypeLabel,
+  customJobTypeKey,
+  jobTypeLabel,
+  labelForJobType,
+  resolveJobTypes,
+  selectableJobTypes,
+  suggestJobType,
+  suggestJobTypeFromEstimateLines,
+} from "../jobTypes";
 
 describe("suggestJobType", () => {
   it("recognises the obvious ones from a job name", () => {
@@ -75,5 +85,48 @@ describe("jobTypeLabel", () => {
 
   it("falls back to the raw value rather than hiding an unknown one", () => {
     expect(jobTypeLabel("excavation")).toBe("excavation");
+  });
+});
+
+describe("a company's own job types", () => {
+  const types = resolveJobTypes([
+    { key: "remodel", label: "Remodels", hidden: false, sortOrder: 0 },
+    { key: "hvac", label: "HVAC", hidden: true, sortOrder: 0 },
+    { key: "c_kitchen_remodel", label: "Kitchen remodel", hidden: false, sortOrder: 1 },
+    { key: "c_deck", label: "Decks", hidden: false, sortOrder: 0 },
+  ]);
+
+  it("keeps the built-in list, applies renames and hides, then adds the company's own", () => {
+    expect(types.find((t) => t.value === "remodel")?.label).toBe("Remodels");
+    expect(types.find((t) => t.value === "hvac")?.hidden).toBe(true);
+    expect(types.filter((t) => !t.builtIn).map((t) => t.value)).toEqual(["c_deck", "c_kitchen_remodel"]);
+    expect(selectableJobTypes(types).some((t) => t.value === "hvac")).toBe(false);
+    expect(labelForJobType(types, "hvac")).toBe("HVAC");
+    expect(labelForJobType(types, "gone_key")).toBe("gone_key");
+  });
+
+  it("prefers the company's own, more specific type", () => {
+    expect(suggestJobType("Smith Kitchen", types)?.value).toBe("c_kitchen_remodel");
+    expect(suggestJobType("Oak St deck build", types)?.value).toBe("c_deck");
+    expect(suggestJobType("Jones bathroom", types)?.label).toBe("Remodels");
+    // Hidden types are never suggested.
+    expect(suggestJobType("Furnace swap", types)).toBeNull();
+  });
+
+  it("reads the products on an estimate when one type dominates", () => {
+    const lines = [
+      { name: "Architectural shingles", amount: 9_000 },
+      { name: "Gutters", amount: 1_500 },
+      { name: "Electrical", amount: 500 },
+    ];
+    expect(suggestJobTypeFromEstimateLines(lines, types)).toMatchObject({ value: "roofing", source: "estimate" });
+    expect(suggestJobTypeFromEstimateLines([{ name: "Shingles", amount: 1_000 }, { name: "Plumbing rough-in", amount: 1_000 }], types)).toBeNull();
+  });
+
+  it("makes stable, unique keys and tidy labels", () => {
+    expect(customJobTypeKey("Kitchen Remodel!", [])).toBe("c_kitchen_remodel");
+    expect(customJobTypeKey("Kitchen remodel", ["c_kitchen_remodel"])).toBe("c_kitchen_remodel_2");
+    expect(cleanJobTypeLabel("  Deck   and  patio ")).toBe("Deck and patio");
+    expect(cleanJobTypeLabel("   ")).toBeNull();
   });
 });

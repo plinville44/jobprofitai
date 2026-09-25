@@ -4,7 +4,6 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { NO_VALUE, formatCurrency, formatPct, formatDate } from "@/lib/format";
-import { JOB_TYPE_OPTIONS } from "@/lib/jobTypes";
 import { DataQualityBadge } from "@/components/dashboard/Badges";
 
 export interface JobRow {
@@ -34,7 +33,7 @@ export interface JobRow {
  * pages. Job type is offered in the same bar because it is the other field
  * people fill in a batch, usually right after their first sync.
  */
-export default function JobsTable({ jobs }: { jobs: JobRow[] }) {
+export default function JobsTable({ jobs, jobTypes }: { jobs: JobRow[]; jobTypes: { value: string; label: string }[] }) {
   const router = useRouter();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -131,13 +130,13 @@ export default function JobsTable({ jobs }: { jobs: JobRow[] }) {
                 const value = e.target.value;
                 e.target.value = "";
                 if (!value) return;
-                const label = JOB_TYPE_OPTIONS.find((o) => o.value === value)?.label ?? value;
+                const label = jobTypes.find((o) => o.value === value)?.label ?? value;
                 apply({ category: value }, (c) => `Set ${c} ${c === 1 ? "job" : "jobs"} to ${label}.`);
               }}
               className="rounded-md border border-gray-300 px-2 py-1.5 text-sm"
             >
               <option value="">Choose...</option>
-              {JOB_TYPE_OPTIONS.filter((o) => o.value).map((o) => (
+              {jobTypes.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>

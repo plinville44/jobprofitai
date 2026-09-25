@@ -12,8 +12,10 @@ import {
   ValueCard,
 } from "@/components/marketing/ui";
 import {
-  DashboardPreview,
-  InsightPreview,
+  EstimateCheckPreview,
+  OpportunityFeedPreview,
+  PricingBreakdownPreview,
+  TrackedChangePreview,
   WeeklyBriefPreview,
 } from "@/components/marketing/ProductPreview";
 import PricingCards from "@/components/marketing/PricingCards";
@@ -21,23 +23,22 @@ import PricingCards from "@/components/marketing/PricingCards";
 export const metadata: Metadata = {
   title: "JobProfitAI: Profit Intelligence for QuickBooks",
   description:
-    "Know which jobs are making you money, and which ones are costing you. JobProfitAI turns your QuickBooks data into job profitability, margin insights, profit alerts and clear next actions for contractors.",
+    "QuickBooks shows how your jobs did. JobProfitAI shows contractors what to change to make more money, and what each change is worth: underpriced job types, thin labor pricing, and estimates to fix before you send them.",
   alternates: { canonical: "/" },
   openGraph: {
     title: "JobProfitAI: Profit Intelligence for QuickBooks",
-    description:
-      "Know which jobs are making you money, and which ones are costing you.",
+    description: "QuickBooks shows how your jobs did. JobProfitAI shows what to change, and what it's worth.",
     url: "/",
   },
 };
 
 const QUESTIONS = [
-  "Which jobs are actually profitable?",
-  "Which jobs are below the margin we expected?",
-  "Where did costs run over?",
-  "Are margins improving or getting worse?",
-  "What needs attention right now?",
-  "What should I change on future jobs?",
+  "Which kind of work actually pays, and which doesn't?",
+  "Is this estimate priced high enough to hit my margin?",
+  "Is it labor, materials or subs where my price runs thin?",
+  "Which customers and job sizes cost me money?",
+  "What is each fix worth, in dollars?",
+  "Did the price change I made actually work?",
 ];
 
 const FAQ_ITEMS = [
@@ -55,14 +56,26 @@ const FAQ_ITEMS = [
     q: "QuickBooks already shows project profitability. What does this add?",
     a: (
       <>
-        QuickBooks Online Plus shows income and cost for a project when you go and open it.
-        JobProfitAI works across every job and comes to you: it compares each job to the margin you
-        want, flags the ones drifting, emails you when a job goes over its estimate or gets ahead of
-        its billing, builds the WIP (over and under billing) report your bank or bonding company
-        asks for, and sends a weekly brief of what changed. It also shows what&rsquo;s missing from
-        your books before you trust a number, and any job can be checked against QuickBooks&rsquo;
-        own figures in one click. QuickBooks Online Advanced has project tools that cover some of
-        this; JobProfitAI is built for contractors on Plus who want it without moving to Advanced.
+        QuickBooks shows what each job made. JobProfitAI works across all your jobs and turns that
+        into what to change: which job types, customers and job sizes are priced below your target
+        and by how much, whether labor, materials or subs is the thin part of your price, and
+        whether a pending estimate is priced high enough before it goes out. Each one comes with a
+        dollar figure, the jobs behind it and what to do, and when you make a change, JobProfitAI
+        measures whether it worked. It also builds the WIP (over and under billing) report, emails
+        you when a job goes over its estimate, and shows what&rsquo;s missing from your books before
+        you trust a number.
+      </>
+    ),
+  },
+  {
+    q: "How are the dollar figures worked out?",
+    a: (
+      <>
+        From your QuickBooks data and the target margin you set, and every opportunity shows its
+        working. For finished jobs, the figure is the price that would have hit your target on the
+        same costs, minus what the jobs actually sold for, over the last 12 months. For a pending
+        estimate, it&rsquo;s what your own similar finished jobs actually cost for every dollar
+        charged, applied to that estimate. AI writes the advisor notes; it never produces a number.
       </>
     ),
   },
@@ -91,7 +104,8 @@ const FAQ_ITEMS = [
         instead, it won&rsquo;t find your jobs yet. Classes are on the roadmap, not in the product.
         Beyond that, you will get more out of it if costs are consistently tagged to jobs, and the
         built-in Data Health page tells you exactly where that&rsquo;s incomplete rather than
-        quietly guessing.
+        quietly guessing. If your QuickBooks estimates put labor, materials and subs on separate
+        lines, JobProfitAI can also tell you which part of your price is thin.
       </>
     ),
   },
@@ -170,12 +184,13 @@ export default function HomePage() {
         <div className="mx-auto max-w-3xl text-center">
           <Eyebrow>Profit Intelligence for QuickBooks</Eyebrow>
           <h1 className="text-4xl font-bold leading-[1.12] tracking-tight text-jp-ink sm:text-5xl lg:text-[3.4rem]">
-            Know which jobs are making you money, and which ones are costing you.
+            QuickBooks shows how your jobs did. JobProfitAI shows what to change, and what it&rsquo;s worth.
           </h1>
           <p className="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-jp-slate">
-            JobProfitAI turns your QuickBooks data into clear job profitability, margin insights,
-            profit alerts, and actionable recommendations, so you can catch profit leaks before
-            they become expensive.
+            It reads your QuickBooks jobs and estimates, compares every finished job with the ones
+            like it, and hands you a ranked list of dollar opportunities: the job type you&rsquo;re
+            underpricing, the part of your price that&rsquo;s too thin, the estimate to fix before it
+            goes out.
           </p>
 
           <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
@@ -191,10 +206,10 @@ export default function HomePage() {
 
           <ul className="mx-auto mt-9 flex max-w-2xl flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-jp-slate">
             {[
-              "Connect QuickBooks",
-              "Understand profitability",
-              "Receive actionable insights",
-              "No complicated spreadsheets",
+              "A dollar figure on every recommendation",
+              "Pending estimates checked against your past jobs",
+              "Learns from your own finished jobs",
+              "Shows whether the change worked",
             ].map((item) => (
               <li key={item} className="flex items-center gap-2">
                 <span className="h-1.5 w-1.5 rounded-full bg-jp-green" aria-hidden="true" />
@@ -204,19 +219,63 @@ export default function HomePage() {
           </ul>
         </div>
 
-        <div className="mx-auto mt-14 max-w-5xl">
-          <DashboardPreview />
+        <div className="mx-auto mt-14 max-w-4xl">
+          <OpportunityFeedPreview />
+        </div>
+      </Section>
+
+      {/* ── QuickBooks vs. the profit layer ──────────────────────────── */}
+      <Section tone="surface">
+        <SectionHeading
+          eyebrow="Works with QuickBooks"
+          title="QuickBooks is your system of record. JobProfitAI is the profit layer on top of it."
+          intro="Nothing to re-enter and nothing to switch. JobProfitAI only reads QuickBooks, and you keep working there exactly as you do now."
+          align="center"
+        />
+        <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-2">
+          <Card className="p-7">
+            <p className="text-sm font-semibold uppercase tracking-wide text-jp-muted">QuickBooks tells you</p>
+            <ul className="mt-4 space-y-3 text-[15px] text-jp-slate">
+              {[
+                "What each job billed and what it spent",
+                "Profit and loss by project",
+                "Budget against actual, where you've set a budget up",
+              ].map((item) => (
+                <li key={item} className="flex gap-2.5">
+                  <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-400" aria-hidden="true" />
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </Card>
+          <Card className="border-jp-blue/30 p-7">
+            <p className="text-sm font-semibold uppercase tracking-wide text-jp-blue">JobProfitAI tells you</p>
+            <ul className="mt-4 space-y-3 text-[15px] text-jp-ink">
+              {[
+                "What to change on your pricing, ranked by what it's worth in dollars",
+                "Which job types, customers and job sizes don't hit your margin, and by how much",
+                "Whether labor, materials, subs or equipment is the thin part of your price",
+                "Whether a pending estimate is priced high enough, before you send it",
+                "Whether the change you made is working, on the jobs that follow it",
+              ].map((item) => (
+                <li key={item} className="flex gap-2.5">
+                  <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-jp-green" aria-hidden="true" />
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </Card>
         </div>
       </Section>
 
       {/* ── Problem ──────────────────────────────────────────────────── */}
-      <Section tone="surface">
+      <Section>
         <div className="grid gap-12 lg:grid-cols-2 lg:gap-16">
           <div>
             <SectionHeading
               eyebrow="The problem"
-              title="QuickBooks records what happened. It doesn't tell you what it means."
-              intro="Your accounting system is a faithful record of money in and money out. But at the end of a month, you're still the one left answering the questions that actually decide whether the business makes money."
+              title="Knowing a job lost money doesn't tell you what to charge for the next one."
+              intro="Your books are a faithful record of money in and money out. But the questions that decide whether next year is more profitable are still yours to answer, usually with a spreadsheet you never get round to building."
             />
           </div>
           <div>
@@ -243,75 +302,80 @@ export default function HomePage() {
               ))}
             </ul>
             <p className="mt-7 text-lg font-semibold leading-relaxed text-jp-ink">
-              JobProfitAI turns accounting data into profit intelligence.
+              JobProfitAI answers them from your own jobs, with a dollar figure on each.
             </p>
           </div>
         </div>
       </Section>
 
       {/* ── Core value ───────────────────────────────────────────────── */}
-      <Section>
+      <Section tone="surface">
         <SectionHeading
           eyebrow="What you get"
-          title="Profit intelligence, not another dashboard to check"
-          intro="Revenue and costs come straight from your QuickBooks company. Three things QuickBooks has no field for are set here instead: a job type, your internal cost estimate, and whether a job is finished. No spreadsheets to maintain."
+          title="Not another report. A list of what to change, and what it's worth."
+          intro="Revenue, costs and estimates come straight from your QuickBooks company. The one thing QuickBooks can't tell us, what kind of job each one is, we suggest from the job names and estimates for you to confirm."
           align="center"
         />
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           <ValueCard
-            title="Job Profitability"
-            body="See revenue, costs, gross profit, and margin by job, with the cost breakdown behind every number."
+            title="Profit Opportunity Feed"
+            body="A ranked list of what to change, each with a dollar value, the jobs behind it, how sure we are, and exactly what to do."
           />
           <ValueCard
-            title="Margin Leak Detection"
-            body="Quickly identify jobs where costs or profitability are moving in the wrong direction, with the dollar impact attached."
+            title="Estimate Check"
+            body="Every pending QuickBooks estimate, checked against what your own similar jobs actually cost. Catch a thin price before the customer sees it."
           />
           <ValueCard
-            title="Profit Intelligence"
-            body="Turn financial results into understandable observations and next actions, each traceable back to the jobs behind it."
+            title="Pricing by part of the job"
+            body="See whether labor, materials, subs or equipment is where your price runs thin, and how much to add to it."
+          />
+          <ValueCard
+            title="Your job types"
+            body="Compare kitchens with kitchens and roofs with roofs. Use ours, rename them, or add your own, each with its own target margin."
+          />
+          <ValueCard
+            title="Results you can see"
+            body="Tell JobProfitAI you're making a change and it measures it: the margin before, the margin on the jobs that follow, and the dollars it made."
           />
           <ValueCard
             title="Weekly Profit Brief"
-            body="Automatically receive the most important profitability insights rather than constantly checking reports."
-          />
-          <ValueCard
-            title="Historical Trends"
-            body="Understand how margins and profitability are changing over time, by month or by quarter."
-          />
-          <ValueCard
-            title="Data Health"
-            body="See exactly what's missing before you trust a number. Untagged costs, jobs with no estimate on file, time entries with no rate. Instead of numbers that quietly guess."
+            body="Leads with the money: new margin risk on open jobs, estimates to fix, and your biggest opportunity. Then what changed."
           />
         </div>
+        <p className="mx-auto mt-10 max-w-3xl text-center text-[15px] leading-relaxed text-jp-slate">
+          Built on the basics, done properly: profit by job with labor at real pay rates, the WIP
+          report, email alerts when a job goes over its estimate, and a Data Health page that shows
+          what&rsquo;s missing from your books before you trust a number.
+        </p>
       </Section>
 
       {/* ── How it works ─────────────────────────────────────────────── */}
-      <Section tone="surface">
+      <Section>
         <SectionHeading
           eyebrow="How it works"
-          title="Connect in about two minutes, then fill in what QuickBooks can't tell us"
+          title="Connect in about two minutes. See what to change the same day."
           align="center"
         />
         <div className="grid gap-10 sm:grid-cols-2 lg:grid-cols-4">
           <StepCard
             number={1}
             title="Connect QuickBooks"
-            body="Securely connect your QuickBooks Online account through Intuit's own login. You never give JobProfitAI your QuickBooks password."
+            body="Through Intuit's own login. JobProfitAI only reads your books; you never give it your QuickBooks password."
           />
           <StepCard
             number={2}
-            title="JobProfitAI analyzes the numbers"
-            body="Your jobs, revenue, costs and accounting history are turned into understandable profitability intelligence. Job by job."
+            title="Set your target and job types"
+            body="Tell us the margin you aim for. We suggest a job type for each job from its name and estimate, and you confirm them in one go."
           />
           <StepCard
             number={3}
-            title="Add a job type and a cost estimate"
-            body="QuickBooks has no field for either, so they're entered here. We suggest the job type from the job name. This is what powers budget variance, forecasting and cross-job comparison."
+            title="See what to change"
+            body="Your opportunities, ranked by dollars: underpriced work, thin parts of your price, customers and job sizes that don't pay, open jobs going wrong."
           />
           <StepCard
             number={4}
-            title="Know where profit is being made and lost"
-            body="See what deserves your attention right now, and what actions may improve profitability on the work ahead."
+            title="Check estimates, track results"
+            body="Check each pending estimate before it goes out, and track the changes you make to see what they're worth on the next jobs."
           />
         </div>
         <div className="mt-12 text-center">
@@ -322,32 +386,32 @@ export default function HomePage() {
       </Section>
 
       {/* ── Intelligence / action ────────────────────────────────────── */}
-      <Section>
+      <Section tone="surface">
         <div className="grid items-center gap-12 lg:grid-cols-2 lg:gap-16">
           <div>
             <SectionHeading
-              eyebrow="Not just another report"
+              eyebrow="Specific enough to act on"
               title={
                 <>
-                  Know what happened. Understand why.
-                  <br className="hidden sm:block" /> Know what to do next.
+                  Not &ldquo;margins are down.&rdquo;
+                  <br className="hidden sm:block" /> Which part of which price, and by how much.
                 </>
               }
-              intro="A report tells you a job came in 14% over. That's the easy part. The value is in knowing it's a pattern across your roofing work, what it has cost you so far, and what to change before you quote the next one."
+              intro="A report tells you kitchens came in at 22%. JobProfitAI tells you it's the labor: customers paid for it and it cost nearly as much again. Then it tells you how much to add to the labor on your next kitchen estimate, and what that's worth over a year."
             />
             <ul className="space-y-4">
               {[
                 {
-                  t: "Every finding is traceable",
-                  b: "Each insight names the specific jobs behind it, so you can check the reasoning rather than take it on faith.",
+                  t: "Every figure shows its working",
+                  b: "Each opportunity says how the dollar figure was worked out and names the jobs behind it, so you can check the reasoning rather than take it on faith.",
                 },
                 {
                   t: "Numbers come from your data, not the AI",
-                  b: "Every dollar amount, percentage and confidence level on a Profit Insight is calculated by the application and shown as calculated. The AI writes the explanation around them.",
+                  b: "Every dollar amount, percentage and confidence level is calculated from your QuickBooks data and your target. AI writes advisor notes around them and never changes one.",
                 },
                 {
-                  t: "Gaps are stated, not filled in",
-                  b: "When a job has no estimate on file, JobProfitAI says so instead of inventing a baseline to compare against.",
+                  t: "It says how sure it is, and why",
+                  b: "A pattern across eight jobs is stated more firmly than one across three, in plain words. Gaps in your data are stated, not filled in.",
                 },
               ].map((item) => (
                 <li key={item.t} className="flex gap-3">
@@ -360,25 +424,66 @@ export default function HomePage() {
               ))}
             </ul>
           </div>
-          <InsightPreview />
+          <PricingBreakdownPreview />
+        </div>
+      </Section>
+
+      {/* ── Estimate Check ───────────────────────────────────────────── */}
+      <Section>
+        <div className="grid items-center gap-12 lg:grid-cols-2 lg:gap-16">
+          <EstimateCheckPreview />
+          <div className="lg:order-first">
+            <SectionHeading
+              eyebrow="Estimate Check"
+              title="Check the price before the customer sees it"
+              intro="Every pending estimate in QuickBooks is checked against what your own finished jobs of the same type actually cost for each dollar you charged. If the price won't reach your target margin, you see it, part by part, with the price that would."
+            />
+            <ul className="space-y-3 text-[15px] text-jp-slate">
+              {[
+                "Picks up new estimates on the next sync, and says which QuickBooks hasn't emailed yet",
+                "Checks labor, materials and subs separately when your estimate splits them",
+                "Uses your finished jobs, not an industry average",
+                "Read-only: you change the estimate in QuickBooks as you always do",
+              ].map((item) => (
+                <li key={item} className="flex gap-2.5">
+                  <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-jp-green" aria-hidden="true" />
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </Section>
+
+      {/* ── Results tracking ─────────────────────────────────────────── */}
+      <Section tone="surface">
+        <div className="grid items-center gap-12 lg:grid-cols-2 lg:gap-16">
+          <div>
+            <SectionHeading
+              eyebrow="Results"
+              title="Know whether the change paid off"
+              intro="When you act on an opportunity, press one button. JobProfitAI records where you started, then compares the jobs you set up in QuickBooks from that day on as they finish. Before, after, and the gross profit the change made, measured on your own jobs."
+            />
+          </div>
+          <TrackedChangePreview />
         </div>
       </Section>
 
       {/* ── Weekly brief ─────────────────────────────────────────────── */}
-      <Section tone="surface">
+      <Section>
         <div className="grid items-center gap-12 lg:grid-cols-2 lg:gap-16">
           <WeeklyBriefPreview />
           <div className="lg:order-first">
             <SectionHeading
               eyebrow="Weekly Profit Brief"
-              title="Your most important profit insights, delivered automatically"
-              intro="You shouldn't have to remember to go looking for problems. Once a week, at a day and time you choose, JobProfitAI emails what changed since the last brief: new costs and billing on each job, jobs that just went over their estimate, margins that moved. A short written summary follows, leading with the job that most needs a look."
+              title="The money first, every week, without logging in"
+              intro="Once a week, at a day and time you choose, JobProfitAI emails the headline: new margin risk on your open jobs since last week, estimates priced below target, and your biggest opportunities. Then what changed on each job, and a short written summary."
             />
             <ul className="space-y-3 text-[15px] text-jp-slate">
               {[
+                "When there's $500 or more of new risk, or an estimate to fix, the subject line says so",
                 "Sent on the day and hour you pick, in your timezone",
                 "Goes to up to 10 people: you, your PM, your bookkeeper",
-                "Leads with the most consequential thing, not an even summary of everything",
                 "If your data is too incomplete to say anything reliable, it tells you that instead of guessing",
               ].map((item) => (
                 <li key={item} className="flex gap-2.5">
@@ -392,8 +497,8 @@ export default function HomePage() {
       </Section>
 
       {/* ── Accountants ──────────────────────────────────────────────── */}
-      <Section>
-        <Card className="border-jp-line bg-jp-surface-2/50 p-8 sm:p-10">
+      <Section tone="surface">
+        <Card className="border-jp-line bg-white p-8 sm:p-10">
           <div className="grid items-center gap-8 lg:grid-cols-[1.5fr_1fr]">
             <div>
               <Eyebrow>For accountants &amp; bookkeepers</Eyebrow>
@@ -401,9 +506,9 @@ export default function HomePage() {
                 Help your contractor clients understand their profitability.
               </h2>
               <p className="mt-4 max-w-2xl text-[15px] leading-relaxed text-jp-slate">
-                You already have their QuickBooks data. JobProfitAI turns it into the job-level
-                profitability conversation your contractor clients keep asking you for, without
-                building a spreadsheet for each one. Firms working with several contractors can join
+                You already have their QuickBooks data. JobProfitAI turns it into the pricing
+                conversation your contractor clients keep asking you for: what to charge, where the
+                money leaks, and what each fix is worth, without building a spreadsheet for each one. Firms working with several contractors can join
                 the JobProfitAI Partner Program and earn recurring commission.
               </p>
               <p className="mt-3 text-sm leading-relaxed text-jp-muted">
@@ -424,11 +529,11 @@ export default function HomePage() {
       </Section>
 
       {/* ── Pricing preview ──────────────────────────────────────────── */}
-      <Section tone="surface" id="pricing">
+      <Section id="pricing">
         <SectionHeading
           eyebrow="Pricing"
-          title="Two plans. Both include the intelligence."
-          intro="Find one costly margin problem and JobProfitAI can pay for itself. Every plan includes the insights and recommendations. The higher tier adds scale and deeper analysis on top; it doesn't unlock the core promise."
+          title="Two plans. Both find the money."
+          intro="Every plan includes the Profit Opportunity Feed, the Estimate Check and results tracking. Pro adds forecasts for jobs in progress, benchmarking against similar jobs, and more companies and logins. Fix one underpriced job type and it can pay for itself."
           align="center"
         />
         <PricingCards compact />
@@ -440,7 +545,7 @@ export default function HomePage() {
       </Section>
 
       {/* ── FAQ ──────────────────────────────────────────────────────── */}
-      <Section>
+      <Section tone="surface">
         <SectionHeading eyebrow="Questions" title="Frequently asked questions" align="center" />
         <div className="mx-auto max-w-3xl">
           <Faq items={FAQ_ITEMS} />

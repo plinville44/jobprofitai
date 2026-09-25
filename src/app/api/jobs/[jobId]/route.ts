@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccount } from "@/lib/account";
-import { JOB_TYPE_OPTIONS } from "@/lib/jobTypes";
+import { getJobTypes, isAssignableJobType } from "@/lib/jobTypesServer";
 
 // The fields a contractor sets in JobProfitAI because QuickBooks has no
 // place for them (or its API doesn't expose it): job type, estimated cost,
@@ -11,7 +11,6 @@ import { JOB_TYPE_OPTIONS } from "@/lib/jobTypes";
 //
 // Every field is optional and nullable: leaving one unset just means the
 // feature that needs it says what's missing instead of guessing.
-const KNOWN_CATEGORIES = new Set(JOB_TYPE_OPTIONS.map((o) => o.value).filter(Boolean));
 
 /** A positive dollar amount, null to clear, or an error message. */
 function money(value: unknown, label: string): { ok: true; value: number | null } | { ok: false; error: string } {
@@ -47,7 +46,12 @@ export async function PATCH(
     const body = await req.json().catch(() => ({}));
     const data: {
       category?: string | null;
+      suggestedCategory?: null;
+      suggestionSource?: null;
+      suggestionReason?: null;
+      suggestedAt?: null;
       estimatedCost?: number | null;
+      estimatedCostSource?: string;
       manualContractValue?: number | null;
       percentCompleteOverride?: number | null;
       statusOverride?: string | null;
@@ -56,8 +60,13 @@ export async function PATCH(
     if ("category" in body) {
       if (body.category === null || body.category === "") {
         data.category = null;
-      } else if (typeof body.category === "string" && KNOWN_CATEGORIES.has(body.category)) {
+      } else if (
+        typeof body.category === "string" &&
+        // The company's own types; a job may keep a type that's since been hidden.
+        isAssignableJobType(await getJobTypes(job.connectionId), body.category, job.category)
+      ) {
         data.category = body.category;
+        if (body.category !== job.category) Object.assign(data, { suggestedCategory: null, suggestionSource: null, suggestionReason: null, suggestedAt: null });
       } else {
         return NextResponse.json({ error: "Invalid job type" }, { status: 400 });
       }
@@ -69,6 +78,10 @@ export async function PATCH(
       const r = money(body.estimatedCost, "Estimated cost");
       if (!r.ok) return NextResponse.json({ error: r.error }, { status: 400 });
       data.estimatedCost = r.value;
+      // Typed by the contractor now, unless it's the same figure that was
+      // filled in from the target margin (the form resends every field).
+      const before = job.estimatedCost == null ? null : Number(job.estimatedCost);
+      if (r.value !== before) data.estimatedCostSource = "manual";
     }
 
     if ("manualContractValue" in body) {

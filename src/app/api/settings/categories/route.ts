@@ -5,8 +5,9 @@ import { COST_CATEGORIES } from "@/lib/qboNormalize";
 
 /**
  * GET  /api/settings/categories?connectionId=...
- *      Every QuickBooks account or item that job costs were posted to, with
- *      the category it currently lands in and how much money that is.
+ *      Every QuickBooks account or item that job costs were posted to, and
+ *      every product or service on a synced estimate, with the category it
+ *      currently lands in and how much money that is on each side.
  * POST /api/settings/categories { connectionId, sourceName, category | null }
  *      Maps one account or item to a category (null = back to automatic).
  *
@@ -45,9 +46,32 @@ export async function GET(req: NextRequest) {
       prior.count += g._count._all;
     }
   }
+  // Products and services on estimates: what customers are quoted for
+  // each part of the job. Same names, same mappings, so one choice here
+  // sorts both the cost and the price side.
+  const estimates = await prisma.jobEstimate.findMany({ where: { connectionId: connection.id }, select: { lines: true } });
+  const onEstimates = new Map<string, { category: string; amount: number }>();
+  for (const e of estimates) {
+    if (!Array.isArray(e.lines)) continue;
+    for (const l of e.lines as { n?: unknown; c?: unknown; a?: unknown }[]) {
+      if (typeof l?.n !== "string" || !l.n || typeof l.a !== "number" || typeof l.c !== "string") continue;
+      const prior = onEstimates.get(l.n) ?? { category: l.c, amount: 0 };
+      prior.amount += l.a;
+      onEstimates.set(l.n, prior);
+    }
+  }
+  for (const [name, est] of onEstimates) {
+    if (!bySource.has(name)) bySource.set(name, { sourceName: name, category: est.category, amount: 0, count: 0 });
+  }
+
   const rows = [...bySource.values()]
-    .map((r) => ({ ...r, amount: Math.round(r.amount * 100) / 100, mapped: mapped.get(r.sourceName) ?? null }))
-    .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
+    .map((r) => ({
+      ...r,
+      amount: Math.round(r.amount * 100) / 100,
+      estimateAmount: Math.round((onEstimates.get(r.sourceName)?.amount ?? 0) * 100) / 100,
+      mapped: mapped.get(r.sourceName) ?? null,
+    }))
+    .sort((a, b) => Math.abs(b.amount) + Math.abs(b.estimateAmount) - (Math.abs(a.amount) + Math.abs(a.estimateAmount)));
   return NextResponse.json({ rows, categories: COST_CATEGORIES });
 }
 
@@ -79,7 +103,23 @@ export async function POST(req: NextRequest) {
       where: { job: { connectionId: connection.id }, accountName: sourceName },
       data: { category: body.category },
     });
-    return NextResponse.json({ ok: true, updated: result.count });
+    // The same product or service on stored estimates moves too.
+    const estimates = await prisma.jobEstimate.findMany({ where: { connectionId: connection.id }, select: { id: true, lines: true } });
+    let estimateLines = 0;
+    for (const e of estimates) {
+      if (!Array.isArray(e.lines)) continue;
+      let changed = false;
+      const lines = (e.lines as { n?: unknown; c?: unknown; a?: unknown }[]).map((l) => {
+        if (l?.n === sourceName && l.c !== body.category) {
+          changed = true;
+          estimateLines++;
+          return { ...l, c: body.category };
+        }
+        return l;
+      });
+      if (changed) await prisma.jobEstimate.update({ where: { id: e.id }, data: { lines: lines as object[] } });
+    }
+    return NextResponse.json({ ok: true, updated: result.count, estimateLines });
   } catch (err) {
     console.error("settings/categories failed:", err instanceof Error ? err.message : "Unknown error");
     return NextResponse.json({ error: "Couldn't save that. Please try again." }, { status: 500 });

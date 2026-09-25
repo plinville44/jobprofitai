@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { JOB_TYPE_OPTIONS, suggestJobType } from "@/lib/jobTypes";
+import { suggestJobType, type CompanyJobType } from "@/lib/jobTypes";
 
 
 export default function JobEditForm({
@@ -15,7 +15,10 @@ export default function JobEditForm({
   syncedContractValue,
   initialPercentComplete,
   syncedStatus,
+  jobTypes,
 }: {
+  /** The company's job types. Hidden ones are only listed when this job already has one. */
+  jobTypes: CompanyJobType[];
   jobId: string;
   jobName: string;
   initialCategory: string | null;
@@ -43,7 +46,8 @@ export default function JobEditForm({
   // Offered, never applied. The suggestion only shows while the field is
   // still unset, and clicking it fills the dropdown without saving, so the
   // customer confirms before a guess of ours starts feeding benchmarking.
-  const suggestion = category === "" ? suggestJobType(jobName) : null;
+  const suggestion = category === "" ? suggestJobType(jobName, jobTypes) : null;
+  const options = jobTypes.filter((t) => !t.hidden || t.value === initialCategory);
 
   async function save() {
     setBusy(true);
@@ -95,9 +99,11 @@ export default function JobEditForm({
             onChange={(e) => setCategory(e.target.value)}
             className="mt-1 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
           >
-            {JOB_TYPE_OPTIONS.map((opt) => (
+            <option value="">Not set</option>
+            {options.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
+                {opt.hidden ? " (hidden)" : ""}
               </option>
             ))}
           </select>
