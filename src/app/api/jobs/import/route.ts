@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { connectionForAccount, getAccount } from "@/lib/account";
-import { JOB_TYPE_OPTIONS } from "@/lib/jobTypes";
+import { getJobTypes } from "@/lib/jobTypesServer";
+import { selectableJobTypes } from "@/lib/jobTypes";
 
 /**
  * POST /api/jobs/import
@@ -17,12 +18,6 @@ import { JOB_TYPE_OPTIONS } from "@/lib/jobTypes";
  * Returns which rows matched and which didn't, so nothing is silently lost.
  */
 const MAX_ROWS = 2000;
-const TYPE_BY_LABEL = new Map<string, string>();
-for (const o of JOB_TYPE_OPTIONS) {
-  if (!o.value) continue;
-  TYPE_BY_LABEL.set(o.value.toLowerCase(), o.value);
-  TYPE_BY_LABEL.set(o.label.toLowerCase(), o.value);
-}
 const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
 
 export async function POST(req: NextRequest) {
@@ -37,7 +32,18 @@ export async function POST(req: NextRequest) {
     if (rows.length === 0) return NextResponse.json({ error: "The file has no rows to import." }, { status: 400 });
     if (rows.length > MAX_ROWS) return NextResponse.json({ error: `Import up to ${MAX_ROWS} rows at a time.` }, { status: 400 });
 
-    const jobs = await prisma.job.findMany({ where: { connectionId: connection.id, missingSince: null }, select: { id: true, name: true } });
+    const jobs = await prisma.job.findMany({ where: { connectionId: connection.id, missingSince: null }, select: { id: true, name: true, estimatedCost: true, category: true } });
+    // The company's own job types, by name or key. Hidden ones are known so
+    // a job can keep the one it has (the template exports it), but can't be
+    // given one newly.
+    const allTypes = await getJobTypes(connection.id);
+    const offered = selectableJobTypes(allTypes);
+    const TYPE_BY_LABEL = new Map<string, string>();
+    for (const o of allTypes) {
+      TYPE_BY_LABEL.set(o.value.toLowerCase(), o.value);
+      TYPE_BY_LABEL.set(o.label.toLowerCase(), o.value);
+    }
+    const hidden = new Set(allTypes.filter((t) => t.hidden).map((t) => t.value));
     const byName = new Map<string, string[]>();
     for (const j of jobs) byName.set(norm(j.name), [...(byName.get(norm(j.name)) ?? []), j.id]);
 
@@ -68,7 +74,12 @@ export async function POST(req: NextRequest) {
         return Math.round(n * 100) / 100;
       };
       const est = money(r.estimatedCost, "estimated cost");
-      if (est !== undefined) data.estimatedCost = est;
+      if (est !== undefined) {
+        data.estimatedCost = est;
+        // A changed figure is the contractor's own; the same figure keeps its source.
+        const prior = jobs.find((j) => j.id === ids[0])?.estimatedCost;
+        if (prior == null || Number(prior) !== est) data.estimatedCostSource = "manual";
+      }
       const cv = money(r.contractValue, "contract value");
       if (cv !== undefined) data.manualContractValue = cv;
       if (r.percentComplete != null && r.percentComplete !== "") {
@@ -78,8 +89,10 @@ export async function POST(req: NextRequest) {
       }
       if (typeof r.jobType === "string" && r.jobType.trim()) {
         const t = TYPE_BY_LABEL.get(r.jobType.trim().toLowerCase());
-        if (t) data.category = t;
-        else problems.push(`Row ${i + 2}: job type "${r.jobType}" isn't one of: ${JOB_TYPE_OPTIONS.filter((o) => o.value).map((o) => o.label).join(", ")}.`);
+        const current = jobs.find((j) => j.id === ids[0])?.category ?? null;
+        if (t && (!hidden.has(t) || t === current)) {
+          if (t !== current) data.category = t;
+        } else problems.push(`Row ${i + 2}: job type "${r.jobType}" isn't one of: ${offered.map((o) => o.label).join(", ")}.`);
       }
       if (Object.keys(data).length === 0) continue;
       await prisma.job.update({ where: { id: ids[0] }, data });

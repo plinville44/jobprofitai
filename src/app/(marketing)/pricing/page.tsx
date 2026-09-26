@@ -107,18 +107,25 @@ const FAQ_ITEMS = [
 const COMPARISON: { label: string; standard: string; pro: string }[] = [
   { label: "QuickBooks Online companies", standard: "1", pro: "Up to 3" },
   { label: "Active jobs", standard: "Up to 100", pro: "Unlimited" },
+  { label: "Team logins", standard: "3", pro: "10" },
+  { label: "Profit Opportunity Feed, ranked by dollars", standard: "Included", pro: "Included" },
+  { label: "Pricing gaps by job type, customer, size & part of the job", standard: "Included", pro: "Included" },
+  { label: "Estimate Check on pending QuickBooks estimates", standard: "Included", pro: "Included" },
+  { label: "Track pricing changes and their results", standard: "Included", pro: "Included" },
+  { label: "Your own job types, with suggestions", standard: "Included", pro: "Included" },
   { label: "Job profitability dashboard", standard: "Included", pro: "Included" },
   { label: "Revenue, cost, gross profit & margin by job", standard: "Included", pro: "Included" },
   { label: "Cost breakdown by category", standard: "Included", pro: "Included" },
   { label: "Estimate vs. actual comparison", standard: "Included", pro: "Included" },
   { label: "Margin leak & cost-overrun detection", standard: "Included", pro: "Included" },
   { label: "Historical profitability trends", standard: "Included", pro: "Included" },
-  { label: "AI profit insights & recommended actions", standard: "Included", pro: "Included" },
+  { label: "AI advisor notes on your opportunities", standard: "Included", pro: "Included" },
+  { label: "WIP report (over and under billing)", standard: "Included", pro: "Included" },
   { label: "Data Health checks", standard: "Included", pro: "Included" },
   { label: "Weekly Profit Brief", standard: "Included", pro: "Included" },
   { label: "Forecast at completion on open jobs", standard: "-", pro: "Included" },
-  { label: "Cross-job benchmarking & pattern analysis", standard: "-", pro: "Included" },
-  { label: "Company-wide profit opportunity findings", standard: "-", pro: "Included" },
+  { label: "Open jobs heading below target, in your opportunities", standard: "-", pro: "Included" },
+  { label: "Benchmarking each job against similar finished jobs", standard: "-", pro: "Included" },
   { label: "Support", standard: "Email support", pro: "Priority support" },
 ];
 
@@ -129,11 +136,12 @@ export default function PricingPage() {
         <div className="mx-auto max-w-3xl text-center">
           <Eyebrow>Pricing</Eyebrow>
           <h1 className="text-4xl font-bold leading-tight tracking-tight text-jp-ink sm:text-5xl">
-            Priced against the profit it protects.
+            Priced against the profit it finds.
           </h1>
           <p className="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-jp-slate">
-            JobProfitAI is built to help contractors uncover profitability issues worth far more
-            than the monthly subscription. Find one costly margin problem and it can pay for itself.
+            Every plan puts a dollar figure on what to change: the job type you&rsquo;re underpricing,
+            the thin part of your price, the estimate to fix before it goes out. Fix one of those and
+            it can pay for itself.
           </p>
           <p className="mt-5 text-sm text-jp-muted">
             14-day free trial &middot; No credit card required &middot; Cancel anytime

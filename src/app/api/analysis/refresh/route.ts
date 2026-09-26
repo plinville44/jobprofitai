@@ -4,7 +4,8 @@ import { getAccount } from "@/lib/account";
 import { tryMarkFirstAnalysis } from "@/lib/trial";
 import { tryAnnounceAnalysisReady } from "@/lib/email/lifecycle";
 import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
-import { getConnectionProfitData, type ProfitOpportunity } from "@/lib/profitability";
+import { type ProfitOpportunity } from "@/lib/profitability";
+import { getOpportunityData } from "@/lib/opportunityData";
 import { generateProfitInsights } from "@/lib/intelligence";
 
 /**
@@ -15,9 +16,9 @@ import { generateProfitInsights } from "@/lib/intelligence";
  * Profit Intelligence against whatever's already synced) are different
  * operations. This route never calls QuickBooks itself.
  *
- * The deterministic Profit Opportunities are recomputed live on every visit
- * to /dashboard/intelligence anyway (same as every other page - see
- * getConnectionProfitData), so there's nothing to "refresh" there. What this
+ * The deterministic Profit Opportunity Feed is recomputed live on every
+ * visit to /dashboard/opportunities anyway (see getOpportunityData), so
+ * there's nothing to "refresh" there. What this
  * route actually gates is the AI call: it only re-invokes
  * generateProfitInsights when the data has actually changed since the last
  * run (AnalysisRun.dataSnapshotAt older than the connection's last sync) -
@@ -84,21 +85,27 @@ export async function POST(req: NextRequest) {
       orderBy: { generatedAt: "desc" },
     });
 
-    // What the insights are written FROM depends on the plan, and this is
-    // where the plan boundary is actually enforced.
-    //
-    // Company-wide pattern findings are a Pro feature. Insights used to be
-    // generated from them for every plan, so a $149 account saw the Profit
-    // Opportunities section locked and, directly beneath it, AI cards that
-    // restated those same findings with their titles, dollar impacts and job
-    // lists. Now: Pro insights come from the company-wide patterns, and $149
-    // insights from that account's own job-level issues (the Needs Your
-    // Attention list), which the $149 plan does include.
-    const profitData = await getConnectionProfitData(connectionId, new Date());
+    // The advisor notes are written from the Profit Opportunity Feed: the
+    // same items, dollar figures and actions the page shows, so the AI adds
+    // explanation and never a new number. An account whose feed is empty
+    // (too few finished jobs yet) gets notes on its job-level issues instead.
+    const { feed, profitData } = await getOpportunityData(connectionId, new Date());
     const canSeePatterns = entitlements.has("profit_opportunities");
+    const feedSource: ProfitOpportunity[] = canSeePatterns
+      ? feed.items
+          .filter((i) => i.section !== "working")
+          .map((i) => ({
+            type: i.kind,
+            title: i.title,
+            description: [i.finding, i.cause, `Recommended: ${i.action}`].filter(Boolean).join(" "),
+            financialImpact: i.impactKind === "cash" ? null : i.impact,
+            confidence: i.confidence,
+            supportingJobIds: i.jobIds,
+          }))
+      : [];
     const source: ProfitOpportunity[] = selectInsightSource(
-      canSeePatterns
-        ? profitData.opportunities
+      feedSource.length > 0
+        ? feedSource
         : profitData.needsAttention.map((item) => ({
             type: item.issueCode,
             title: `${item.jobName}: ${item.issue}`,
@@ -150,7 +157,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const drafts = await generateProfitInsights(source, canSeePatterns ? "job_category" : "job");
+    const drafts = await generateProfitInsights(source, feedSource.length > 0 ? "job_category" : "job");
 
     await prisma.$transaction([
       // Insights are regenerated wholesale from the current opportunity set

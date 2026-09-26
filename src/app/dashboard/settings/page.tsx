@@ -12,6 +12,8 @@ import SignOutEverywhereButton from "./SignOutEverywhereButton";
 import UnlinkIntuitButton from "./UnlinkIntuitButton";
 import SwitchCompanyButton from "./SwitchCompanyButton";
 import TeamSection from "./TeamSection";
+import JobTypesManager from "./JobTypesManager";
+import { getJobTypes } from "@/lib/jobTypesServer";
 import { needsReconnect } from "@/lib/quickbooks";
 import { ConnectToQuickBooksButton } from "@/components/IntuitButtons";
 
@@ -40,6 +42,18 @@ export default async function SettingsPage() {
   const marginTargets = connection
     ? await prisma.marginTarget.findMany({ where: { connectionId: connection.id } })
     : [];
+  const jobTypes = connection ? await getJobTypes(connection.id) : [];
+  const jobTypeCounts = new Map(
+    connection
+      ? (
+          await prisma.job.groupBy({
+            by: ["category"],
+            where: { connectionId: connection.id, missingSince: null, category: { not: null } },
+            _count: { _all: true },
+          })
+        ).map((g) => [g.category as string, g._count._all])
+      : []
+  );
 
   return (
     <main>
@@ -123,6 +137,9 @@ export default async function SettingsPage() {
             <SettingsForm
               key={connection.id}
               connectionId={connection.id}
+              jobTypes={jobTypes
+                .filter((t) => !t.hidden || marginTargets.some((m) => m.category === t.value))
+                .map((t) => ({ value: t.value, label: t.hidden ? `${t.label} (hidden)` : t.label }))}
               initial={{
                 targetMarginPct: connection.targetMarginPct == null ? null : Number(connection.targetMarginPct),
                 overheadEnabled: connection.overheadEnabled,
@@ -141,12 +158,28 @@ export default async function SettingsPage() {
             />
           </div>
 
-          <section className="mt-8 rounded-xl border border-gray-200 p-6">
+          <section id="job-types" className="mt-8 rounded-xl border border-gray-200 p-6">
+            <h2 className="text-sm font-semibold text-navy">Job types</h2>
+            <p className="mt-1 text-sm text-gray-600">
+              Job type is how JobProfitAI compares like with like: your kitchen remodels against each other, not
+              against a roof. Rename the built-in types, hide the ones you don&apos;t do, and add your own. Renaming never
+              changes which jobs have a type.
+            </p>
+            <div className="mt-4">
+              <JobTypesManager
+                key={connection.id}
+                connectionId={connection.id}
+                types={jobTypes.map((t) => ({ ...t, jobs: jobTypeCounts.get(t.value) ?? 0 }))}
+              />
+            </div>
+          </section>
+
+          <section id="cost-categories" className="mt-8 rounded-xl border border-gray-200 p-6">
             <h2 className="text-sm font-semibold text-navy">Cost categories</h2>
             <p className="mt-1 text-sm text-gray-600">
               Costs are sorted into Labor, Materials, Subcontractors and so on from the QuickBooks account or product
-              each one was posted to. If one of yours lands in the wrong place, change it here. The change applies from
-              the next sync.
+              each one was posted to, and the lines on your estimates are sorted by their product or service the same
+              way. If one lands in the wrong place, change it here; it applies to everything already synced.
             </p>
             <div className="mt-4">
               <CategoryMappingForm key={connection.id} connectionId={connection.id} />

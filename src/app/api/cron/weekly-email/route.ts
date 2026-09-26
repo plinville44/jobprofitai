@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { generateWeeklyDigestForConnection } from "@/lib/digest";
-import { runSyncForConnection, SyncAlreadyRunningError, SYNC_VERSION } from "@/lib/quickbooksSync";
+import { runSyncForConnection, SyncAlreadyRunningError, COST_SYNC_VERSION } from "@/lib/quickbooksSync";
 import { authorizeCron } from "@/lib/cronAuth";
 import { sendEmail } from "@/lib/email/client";
 import { renderBriefEmail } from "@/lib/email/briefEmail";
@@ -174,14 +174,18 @@ async function sendOne(
     // still on an older sync version must finish its upgrade sync first:
     // mid-upgrade its costs can read double.
     const fresh = connection.lastSyncedAt && Date.now() - connection.lastSyncedAt.getTime() < FRESH_SYNC_MS;
-    const needsUpgrade = connection.syncVersion < SYNC_VERSION;
+    // Only an upgrade that changes how costs are stored is worth waiting for.
+    const mustWaitForUpgrade = connection.syncVersion < COST_SYNC_VERSION;
     // Nor right after a failed sync: the nightly job retries those, and
     // retrying here every 15 minutes would only repeat the failure.
     const failedRecently =
       connection.lastSyncStatus === "error" &&
       connection.lastSyncAttemptAt != null &&
       Date.now() - connection.lastSyncAttemptAt.getTime() < 3_600_000;
-    if ((!fresh || needsUpgrade) && !failedRecently && Date.now() - runStartedAt < SKIP_SYNC_AFTER_MS) {
+    // A pending estimate-details upgrade (version 3) is left to the nightly
+    // sync when the data is already fresh; only stale data or a cost upgrade
+    // is worth a sync here.
+    if ((!fresh || mustWaitForUpgrade) && !failedRecently && Date.now() - runStartedAt < SKIP_SYNC_AFTER_MS) {
       try {
         await runSyncForConnection(connection.id);
       } catch (syncErr) {
@@ -198,9 +202,9 @@ async function sendOne(
         );
       }
     }
-    if (needsUpgrade) {
+    if (mustWaitForUpgrade) {
       const now = await prisma.quickBooksConnection.findUnique({ where: { id: connection.id }, select: { syncVersion: true } });
-      if ((now?.syncVersion ?? 0) < SYNC_VERSION) {
+      if ((now?.syncVersion ?? 0) < COST_SYNC_VERSION) {
         // Not this brief's fault: the attempt is given back, and the
         // nightly sync (or the next run) finishes the upgrade.
         await release(refund);
@@ -210,7 +214,7 @@ async function sendOne(
     }
 
     const companyName = connection.companyName ?? "Your company";
-    const { narrative, kind, metrics, body, weekOverWeek } = await generateWeeklyDigestForConnection(
+    const { narrative, kind, metrics, body, weekOverWeek, headline } = await generateWeeklyDigestForConnection(
       connection.id,
       weekStarting,
       companyName
@@ -234,6 +238,7 @@ async function sendOne(
         body,
         weekOverWeek,
         metrics,
+        headline,
         recipient,
         ownerEmail: owner.email,
       });

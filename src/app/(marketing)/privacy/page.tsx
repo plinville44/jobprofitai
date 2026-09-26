@@ -137,7 +137,11 @@ export default function PrivacyPage() {
               see it. You can turn off labor from timesheets in Settings;
             </li>
             <li>invoice, sales receipt, credit memo and refund totals, sales tax amounts, dates and payment status;</li>
-            <li>estimate totals and status from QuickBooks estimates; and</li>
+            <li>
+              estimates: the number, date, expiry date, status, whether QuickBooks has emailed it,
+              the customer or project it names, and each line&rsquo;s product or service name,
+              amount and cost category (not line descriptions); and
+            </li>
             <li>your company name and basic company information.</li>
           </LegalList>
           <p>
@@ -274,8 +278,9 @@ export default function PrivacyPage() {
           Profit insights and the written summary in the Weekly Profit Brief are generated using
           Anthropic’s Claude API. To produce them, we send Anthropic the calculated profitability
           information for your jobs, which includes job names, the customer names attached to
-          them, job types and calculated figures. We never send your QuickBooks credentials or
-          access tokens.
+          them, job types and calculated figures. When you ask for suggested job types, we send
+          the names of the jobs that don&rsquo;t have one, their customer names, and the names of
+          your job types. We never send your QuickBooks credentials or access tokens.
         </p>
         <p>
           Under Anthropic’s commercial terms, data sent through its API is not used to train its

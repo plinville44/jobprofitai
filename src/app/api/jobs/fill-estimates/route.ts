@@ -46,7 +46,9 @@ export async function POST(req: NextRequest) {
       const target = (j.category ? byType.get(j.category) : undefined) ?? companyTarget;
       if (target == null || target >= 100) continue;
       const estimatedCost = Math.round(contract * (1 - target / 100) * 100) / 100;
-      await prisma.job.update({ where: { id: j.id }, data: { estimatedCost } });
+      // Marked, so the Profit Opportunity Feed never reads "costs ran over
+      // estimate" off a figure that was only ever the target margin.
+      await prisma.job.update({ where: { id: j.id }, data: { estimatedCost, estimatedCostSource: "target_margin" } });
       updated++;
     }
     return NextResponse.json({ ok: true, updated, skippedNoContract });

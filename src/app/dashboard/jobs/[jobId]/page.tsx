@@ -10,6 +10,7 @@ import EstimateVsActualChart from "@/components/charts/EstimateVsActualChart";
 import ProfitLeakageChart from "@/components/charts/ProfitLeakageChart";
 import MarginTrendChart from "@/components/charts/MarginTrendChart";
 import JobEditForm from "@/components/dashboard/JobEditForm";
+import { getJobTypes } from "@/lib/jobTypesServer";
 import QuickBooksCheck from "@/components/dashboard/QuickBooksCheck";
 
 export default async function JobDetailPage({
@@ -78,6 +79,7 @@ export default async function JobDetailPage({
         syncedContractValue={data.syncedContractValue}
         initialPercentComplete={data.percentCompleteOverride}
         syncedStatus={data.syncedStatus}
+        jobTypes={await getJobTypes(data.connectionId)}
       />
 
       {!f.profitabilityAvailable && (

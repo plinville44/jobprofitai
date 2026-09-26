@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccount } from "@/lib/account";
-import { JOB_TYPE_OPTIONS } from "@/lib/jobTypes";
-
-const JOB_TYPES = new Set(JOB_TYPE_OPTIONS.map((o) => o.value).filter(Boolean));
+import { getJobTypes } from "@/lib/jobTypesServer";
 
 const OVERHEAD_METHODS = new Set(["pct_of_revenue", "pct_of_direct_cost"]);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -46,8 +44,10 @@ export async function POST(req: NextRequest) {
     let targetMarginPct: number | null = null;
     if (body.targetMarginPct !== null && body.targetMarginPct !== "" && body.targetMarginPct !== undefined) {
       const n = Number(body.targetMarginPct);
-      if (!Number.isFinite(n) || n < 0 || n > 100) {
-        errors.push("Target margin must be a number between 0 and 100.");
+      // Above 90% no job can reach it, and every price-to-target figure
+      // would be meaningless (see MAX_TARGET_PCT in src/lib/opportunities.ts).
+      if (!Number.isFinite(n) || n < 0 || n > 90) {
+        errors.push("Target margin must be a number between 0 and 90.");
       } else {
         targetMarginPct = n;
       }
@@ -127,6 +127,9 @@ export async function POST(req: NextRequest) {
     // Per-job-type target margins: { roofing: 22, remodel: "" }. Blank removes.
     const marginTargets: { category: string; targetPct: number | null }[] = [];
     if (body.marginTargets && typeof body.marginTargets === "object") {
+      // The company's own types, hidden ones included (a hidden type's jobs
+      // still use its target).
+      const JOB_TYPES = new Set((await getJobTypes(connection.id)).map((t) => t.value));
       for (const [category, raw] of Object.entries(body.marginTargets as Record<string, unknown>)) {
         if (!JOB_TYPES.has(category)) continue;
         if (raw === null || raw === "" || raw === undefined) {
@@ -134,7 +137,7 @@ export async function POST(req: NextRequest) {
           continue;
         }
         const n = Number(raw);
-        if (!Number.isFinite(n) || n < 0 || n > 100) errors.push("Job type targets must be between 0 and 100.");
+        if (!Number.isFinite(n) || n < 0 || n > 90) errors.push("Job type targets must be between 0 and 90.");
         else marginTargets.push({ category, targetPct: n });
       }
     }

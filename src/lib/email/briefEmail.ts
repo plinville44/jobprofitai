@@ -3,6 +3,7 @@ import { COMPANY_LEGAL_NAME, COMPANY_MAILING_ADDRESS } from "@/lib/company";
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { ConnectionMetrics } from "@/lib/profitability";
 import { jobChangeSentence, type WeekOverWeekReport } from "@/lib/weekOverWeek";
+import type { BriefHeadline } from "@/lib/briefHeadline";
 import { SUPPORT_EMAIL } from "./client";
 import { appUrl } from "./templates";
 
@@ -69,6 +70,8 @@ export interface BriefEmailInput {
   body: string;
   weekOverWeek: WeekOverWeekReport;
   metrics: ConnectionMetrics;
+  /** The Profit Opportunity headline, when it could be worked out. */
+  headline?: BriefHeadline | null;
   recipient: string;
   ownerEmail: string | null;
 }
@@ -76,10 +79,47 @@ export interface BriefEmailInput {
 export function renderBriefEmail(input: BriefEmailInput): { subject: string; html: string; text: string; headers: Record<string, string> } {
   const { metrics, weekOverWeek: wow } = input;
   const week = formatDate(input.weekStarting);
+  // The money headline only goes on a brief whose data supports it.
+  const hl = input.kind === "narrative" ? input.headline ?? null : null;
   const subject =
-    input.kind === "narrative"
+    hl?.subject ??
+    (input.kind === "narrative"
       ? `${input.companyName}: Weekly Profit Brief, week of ${week}`
-      : `${input.companyName}: Data Health notice, week of ${week}`;
+      : `${input.companyName}: Data Health notice, week of ${week}`);
+
+  // The money, first: the headline and the biggest opportunities, from the
+  // same calculation as the Profit Opportunities page.
+  const hlTiles = hl
+    ? [
+        { label: "At risk on open jobs", value: hl.snapshot.openJobRisk },
+        { label: "Estimates priced too low", value: hl.snapshot.estimatesShortfall },
+        { label: "Pricing gap, last 12 months", value: hl.snapshot.pricingGap },
+      ]
+    : [];
+  const headlineHtml = hl
+    ? `<div style="margin:0 0 20px;padding:16px 18px;border:1px solid ${BORDER};border-radius:10px;background:#f8fafc;">
+      <div style="font-size:17px;line-height:1.4;font-weight:700;color:${NAVY};">${esc(hl.headline)}</div>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:12px 0 4px;"><tr>${hlTiles
+        .map(
+          (t) =>
+            `<td style="vertical-align:top;padding-right:10px;"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:${MUTED};">${esc(t.label)}</div><div style="margin-top:2px;font-size:17px;font-weight:700;color:${t.value > 0 ? RED : NAVY};">${esc(formatCurrency(t.value))}</div></td>`
+        )
+        .join("")}</tr></table>
+      ${
+        hl.snapshot.top.length
+          ? `<ul style="margin:10px 0 0;padding-left:18px;">${hl.snapshot.top
+              .map(
+                (t) =>
+                  `<li style="margin:0 0 6px;font-size:14px;line-height:1.5;color:${TEXT};"><a href="${esc(appUrl(t.href))}" style="color:${NAVY};font-weight:600;text-decoration:none;">${esc(t.title)}</a>${
+                    t.impact != null ? ` <span style="color:${MUTED};">(${esc(formatCurrency(t.impact))} ${esc(t.impactLabel)})</span>` : ""
+                  }</li>`
+              )
+              .join("")}</ul>`
+          : ""
+      }
+      <a href="${appUrl("/dashboard/opportunities")}" style="display:inline-block;margin-top:6px;font-size:14px;font-weight:600;color:${NAVY};">See what to change, and what it's worth</a>
+    </div>`
+    : "";
 
   const inBrief = new Set(metrics.briefJobIds);
   const briefJobs = metrics.jobs.filter((j) => inBrief.has(j.jobId));
@@ -166,7 +206,7 @@ export function renderBriefEmail(input: BriefEmailInput): { subject: string; htm
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(subject)}</title></head>
 <body style="margin:0;padding:0;background:${BG};">
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${esc(
-    changes[0] ? `${changes[0].jobName}: ${jobChangeSentence(changes[0])}` : `Your jobs at ${input.companyName} this week.`
+    hl ? hl.headline : changes[0] ? `${changes[0].jobName}: ${jobChangeSentence(changes[0])}` : `Your jobs at ${input.companyName} this week.`
   )}</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${BG};padding:28px 12px;"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border:1px solid ${BORDER};border-radius:12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
@@ -176,6 +216,7 @@ export function renderBriefEmail(input: BriefEmailInput): { subject: string; htm
   <tr><td style="padding:18px 28px 4px;">
     <div style="font-size:13px;color:${MUTED};">${esc(input.kind === "narrative" ? "Weekly Profit Brief" : "Data Health notice")} &middot; week of ${esc(week)}</div>
     <h1 style="margin:4px 0 18px;font-size:22px;line-height:1.3;color:${NAVY};">${esc(input.companyName)}</h1>
+    ${headlineHtml}
     ${tilesHtml}
     <h2 style="margin:0 0 10px;font-size:15px;text-transform:uppercase;letter-spacing:.04em;color:${MUTED};">What changed ${esc(since)}</h2>
     ${changesHtml}
@@ -208,6 +249,15 @@ export function renderBriefEmail(input: BriefEmailInput): { subject: string; htm
   const text = [
     `${input.companyName}: ${input.kind === "narrative" ? "Weekly Profit Brief" : "Data Health notice"}, week of ${week}`,
     "",
+    ...(hl
+      ? [
+          hl.headline,
+          hlTiles.map((t) => `${t.label}: ${formatCurrency(t.value)}`).join(" | "),
+          ...hl.snapshot.top.map((t) => `- ${t.title}${t.impact != null ? ` (${formatCurrency(t.impact)} ${t.impactLabel})` : ""}`),
+          `What to change, and what it's worth: ${appUrl("/dashboard/opportunities")}`,
+          "",
+        ]
+      : []),
     tiles.map((t) => `${t.label}: ${t.value}`).join(" | "),
     "",
     `WHAT CHANGED ${since.toUpperCase()}`.trim(),

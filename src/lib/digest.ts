@@ -10,6 +10,8 @@ import {
   type WeekOverWeekReport,
 } from "./weekOverWeek";
 import { cleanDigestText, withoutOpenJobUnderspend } from "./digestText";
+import { getOpportunityData } from "./opportunityData";
+import { computeBriefHeadline, snapshotFromFeed, type BriefHeadline } from "./briefHeadline";
 
 const SYSTEM_PROMPT = `You write the narrative part of a weekly job-cost email for a contractor who runs their business on QuickBooks Online.
 
@@ -184,6 +186,8 @@ export async function generateWeeklyDigestForConnection(
   /** The written part alone (AI summary or Data Health notice), for the HTML email. */
   body: string;
   weekOverWeek: WeekOverWeekReport;
+  /** The money line the brief leads with; null if the feed couldn't be worked out this week. */
+  headline: BriefHeadline | null;
 }> {
   const metrics = await computeConnectionMetrics(connectionId, weekStarting);
 
@@ -200,10 +204,25 @@ export async function generateWeeklyDigestForConnection(
   const weekOverWeek = computeWeekOverWeek(prior, metrics);
   const changesSection = renderWeekOverWeek(weekOverWeek);
 
-  // Stored with the snapshot. Next week's comparison only reads `jobs`, so
-  // this is for the record: what the brief said changed, alongside the
-  // figures it was computed from.
-  const stored = { ...metrics, weekOverWeek: weekOverWeekForModel(weekOverWeek) };
+  // The headline: the Profit Opportunity Feed in one line, and what's new in
+  // it since the last brief. A failure here never stops the brief.
+  let headline: BriefHeadline | null = null;
+  try {
+    const { feed } = await getOpportunityData(connectionId, new Date());
+    headline = computeBriefHeadline(snapshotFromFeed(feed), prior?.metrics ?? null, companyName);
+  } catch (err) {
+    console.error(`digest: opportunity headline failed for ${connectionId}:`, err instanceof Error ? err.message : "Unknown error");
+  }
+
+  // Stored with the snapshot. Next week's comparison reads `jobs` and
+  // `opportunities`; the rest is for the record: what the brief said
+  // changed, alongside the figures it was computed from.
+  const stored = {
+    ...metrics,
+    weekOverWeek: weekOverWeekForModel(weekOverWeek),
+    ...(headline ? { opportunities: headline.snapshot } : {}),
+  };
+  const lead = headline ? `${headline.headline}\n\n` : "";
 
   // The changes section goes on both kinds of brief. It is arithmetic on
   // stored numbers, so it stays trustworthy even in a week when the data is
@@ -214,9 +233,11 @@ export async function generateWeeklyDigestForConnection(
   // brief for jobs that are.
   if (TOO_LOW_FOR_NARRATIVE.has(metrics.briefDataHealth.overallConfidence)) {
     const body = buildDataHealthDigestBody(metrics.briefDataHealth, companyName);
-    return { narrative: `${changesSection}\n\n${body}`, kind: "data_health", metrics: stored, body, weekOverWeek };
+    // No money headline on a week the data can't support one: the snapshot
+    // is still stored for next week's comparison, but not shown.
+    return { narrative: `${changesSection}\n\n${body}`, kind: "data_health", metrics: stored, body, weekOverWeek, headline: null };
   }
 
   const body = await generateWeeklyDigest(metrics, companyName, weekOverWeek);
-  return { narrative: `${changesSection}\n\n${body}`, kind: "narrative", metrics: stored, body, weekOverWeek };
+  return { narrative: `${lead}${changesSection}\n\n${body}`, kind: "narrative", metrics: stored, body, weekOverWeek, headline };
 }

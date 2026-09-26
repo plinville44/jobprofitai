@@ -288,10 +288,11 @@ export default function SecurityPage() {
 
             <Item title="Artificial intelligence">
               <p>
-                Profit insights and the written summary in the Weekly Profit Brief are produced by
-                Anthropic&rsquo;s Claude API. What is sent is the calculated profitability data for
-                your jobs: job names, the customer names attached to them, job types and computed
-                figures. The model writes explanatory prose only; the &ldquo;What changed&rdquo;
+                Advisor notes on your profit opportunities, the written summary in the Weekly Profit
+                Brief, and job type suggestions you ask for are produced by Anthropic&rsquo;s Claude
+                API. What is sent is the calculated profitability data for your jobs: job names, the
+                customer names attached to them, job types and computed figures (for job type
+                suggestions, just job and customer names and your job type names). The model writes explanatory prose only; the &ldquo;What changed&rdquo;
                 section of the brief is calculated, not written by it.
                 Every dollar amount, percentage and confidence level in a finding is calculated by
                 the application and stored separately from the text, and each finding names the jobs

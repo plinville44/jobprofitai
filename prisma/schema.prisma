@@ -158,6 +158,10 @@ model QuickBooksConnection {
   // Mid-week profit alerts (a job going over its estimate, or finishing
   // below its target). On by default; one switch in Settings.
   alertsEnabled     Boolean   @default(true)
+  // When AI job-type suggestions last started for this company. Claimed
+  // atomically before any model call, so repeated or simultaneous presses
+  // can't multiply the cost.
+  aiSuggestAt       DateTime?
   // Set the first time alerts are evaluated for this company. That first
   // pass records what is already true without emailing it, so connecting a
   // company doesn't produce a flood of "alerts" about old news.
@@ -211,6 +215,8 @@ model QuickBooksConnection {
   marginTargets     MarginTarget[]
   estimates         JobEstimate[]
   categoryMappings  CategoryMapping[]
+  jobTypes          JobType[]
+  profitActions     ProfitAction[]
   syncRuns          SyncRun[]
   analysisRuns      AnalysisRun[]
   profitInsights    ProfitInsight[]
@@ -381,6 +387,13 @@ model Job {
   // at once, so one short or glitchy customer list can't wipe the
   // contractor's own entries. Cleared if the job comes back.
   missingSince      DateTime?
+  // A suggested job type waiting for the contractor to accept or change.
+  // Never applied on its own. "rule" = matched a word in the job's name,
+  // estimate or costs; "ai" = suggested by AI from the job and customer name.
+  suggestedCategory String?
+  suggestionSource  String?
+  suggestionReason  String?
+  suggestedAt       DateTime?
 
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
@@ -460,9 +473,65 @@ model JobEstimate {
   amount         Decimal  @db.Decimal(12, 2) // excludes sales tax
   status         String   // QuickBooks TxnStatus: "Accepted" | "Closed" | "Pending" | "Rejected" | ...
   txnDate        DateTime
+  // Added for the Estimate Check and estimate accuracy (2026-09-25). All
+  // optional: rows synced before then fill in on the next full sync.
+  docNumber      String?   // the estimate number the contractor sees in QuickBooks
+  customerName   String?   // the QuickBooks customer or project name on the estimate
+  emailStatus    String?   // QuickBooks EmailStatus: "NotSet" | "NeedToSend" | "EmailSent"
+  expirationDate DateTime?
+  // The estimate's lines, net of discounts and without sales tax, as
+  // [{ n: product/service name or null, c: cost category, a: amount }].
+  // Prices the customer is quoted, not costs.
+  lines          Json?
+  // A job type the contractor picked for this estimate on the Estimate
+  // Check page, used when the estimate isn't on a job that has one.
+  jobType        String?
 
   @@index([connectionId])
   @@index([connectionId, customerQboId])
+}
+
+// A company's own job types, layered over the built-in list in
+// src/lib/jobTypes.ts. A row whose key is a built-in type renames or hides
+// it; any other key is a type the company added. Rows are never deleted
+// while jobs use them: hiding keeps the label for those jobs.
+model JobType {
+  id            String   @id @default(cuid())
+  connectionId  String
+  connection    QuickBooksConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  key           String   // what Job.category stores
+  label         String
+  hidden        Boolean  @default(false)
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([connectionId, key])
+  @@index([connectionId])
+}
+
+// A pricing change the contractor said they are making, from a Profit
+// Opportunity, and the baseline it will be measured against. Jobs created
+// in QuickBooks after startedAt, and finished, are the "after".
+model ProfitAction {
+  id                 String    @id @default(cuid())
+  connectionId       String
+  connection         QuickBooksConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  kind               String    // "job_type" | "customer" | "small_jobs" | "cost_category"
+  subjectKey         String    // job type key, customer name, size threshold in dollars, or "all"
+  costCategory       String?   // "labor" | "materials" | ... for a cost_category action
+  title              String    @db.Text
+  action             String    @db.Text
+  baselineMarginPct  Decimal   @db.Decimal(7, 4) // fraction, e.g. 0.1920
+  baselineJobs       Int
+  baselineRevenue    Decimal   @db.Decimal(14, 2)
+  targetMarginPct    Decimal?  @db.Decimal(5, 2)
+  startedAt          DateTime  @default(now())
+  stoppedAt          DateTime?
+  createdByUserId    String?
+  createdAt          DateTime  @default(now())
+
+  @@index([connectionId])
 }
 
 // The contractor's own mapping of a QuickBooks account or item to a cost

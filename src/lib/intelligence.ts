@@ -1,4 +1,5 @@
 import { AI_MODEL, anthropic } from "./ai";
+import { cleanDigestText } from "./digestText";
 import type { ProfitOpportunity } from "./profitability";
 
 // Same grounding discipline as digest.ts: Claude only ever writes prose
@@ -96,9 +97,10 @@ export async function generateProfitInsights(
   return opportunities.map((o, i) => ({
     dimension,
     finding: o.title,
-    evidence: drafts[i].evidence,
+    // Same house style as the brief: no dashes, whatever the model wrote.
+    evidence: cleanDigestText(String(drafts[i].evidence ?? "")),
     financialImpact: o.financialImpact,
-    recommendedAction: drafts[i].recommendedAction,
+    recommendedAction: cleanDigestText(String(drafts[i].recommendedAction ?? "")),
     confidence: o.confidence,
     sourceJobIds: o.supportingJobIds,
   }));

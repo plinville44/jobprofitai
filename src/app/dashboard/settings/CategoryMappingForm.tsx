@@ -7,6 +7,8 @@ interface Row {
   sourceName: string;
   category: string;
   amount: number;
+  /** Quoted to customers for this product or service on synced estimates. */
+  estimateAmount?: number;
   count: number;
   mapped: string | null;
 }
@@ -48,12 +50,14 @@ export default function CategoryMappingForm({ connectionId }: { connectionId: st
     setStatus(
       data.pendingSync
         ? `${sourceName} is back on automatic; it updates at the next sync.`
-        : `${sourceName}: ${data.updated} cost ${data.updated === 1 ? "line" : "lines"} moved to ${categoryLabel(category)}.`
+        : `${sourceName}: ${data.updated} cost ${data.updated === 1 ? "line" : "lines"}${
+            data.estimateLines ? ` and ${data.estimateLines} estimate ${data.estimateLines === 1 ? "line" : "lines"}` : ""
+          } moved to ${categoryLabel(category)}.`
     );
   }
 
   if (rows == null) return <p className="text-sm text-gray-500">Loading accounts…</p>;
-  if (rows.length === 0) return <p className="text-sm text-gray-500">No job costs synced yet.</p>;
+  if (rows.length === 0) return <p className="text-sm text-gray-500">No job costs or estimates synced yet.</p>;
   const shown = showAll ? rows : rows.slice(0, 15);
 
   return (
@@ -64,6 +68,7 @@ export default function CategoryMappingForm({ connectionId }: { connectionId: st
             <tr>
               <th className="py-2 font-medium">QuickBooks account or item</th>
               <th className="py-2 text-right font-medium">Job costs</th>
+              <th className="py-2 text-right font-medium">On estimates</th>
               <th className="py-2 pl-4 font-medium">Category</th>
             </tr>
           </thead>
@@ -72,6 +77,7 @@ export default function CategoryMappingForm({ connectionId }: { connectionId: st
               <tr key={r.sourceName}>
                 <td className="py-2 text-gray-700">{r.sourceName}</td>
                 <td className="py-2 text-right text-gray-600">{formatCurrency(r.amount)}</td>
+                <td className="py-2 text-right text-gray-600">{r.estimateAmount ? formatCurrency(r.estimateAmount) : "-"}</td>
                 <td className="py-2 pl-4">
                   <select
                     value={r.mapped ?? ""}

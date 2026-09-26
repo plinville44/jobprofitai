@@ -10,19 +10,20 @@ import {
 } from "@/components/marketing/ui";
 import {
   DashboardPreview,
-  InsightPreview,
+  EstimateCheckPreview,
+  OpportunityFeedPreview,
+  TrackedChangePreview,
   WeeklyBriefPreview,
 } from "@/components/marketing/ProductPreview";
 
 export const metadata: Metadata = {
   title: "How It Works",
   description:
-    "How JobProfitAI works: connect QuickBooks Online, organize your job financials, see which jobs make and lose money, catch margin leaks early, and get a Weekly Profit Brief.",
+    "How JobProfitAI works: connect QuickBooks Online, see what to change on your pricing and what it's worth, check estimates before you send them, track the result, and get a Weekly Profit Brief.",
   alternates: { canonical: "/how-it-works" },
   openGraph: {
     title: "How JobProfitAI Works",
-    description:
-      "From connecting QuickBooks to knowing which jobs are actually profitable, in six steps.",
+    description: "From connecting QuickBooks to knowing what to change, and what it's worth, in eight steps.",
     url: "/how-it-works",
   },
 };
@@ -66,11 +67,12 @@ export default function HowItWorksPage() {
         <div className="mx-auto max-w-3xl text-center">
           <Eyebrow>How it works</Eyebrow>
           <h1 className="text-4xl font-bold leading-tight tracking-tight text-jp-ink sm:text-5xl">
-            From QuickBooks data to better profit decisions.
+            From QuickBooks data to what to change, and what it&rsquo;s worth.
           </h1>
           <p className="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-jp-slate">
-            QuickBooks is where your accounting data lives. JobProfitAI is the intelligence layer on
-            top of it. Here&rsquo;s exactly what happens, start to finish.
+            QuickBooks is where your accounting data lives and shows how each job did. JobProfitAI is
+            the profit layer on top of it: it finds what to change, puts a dollar figure on it, and
+            measures whether the change worked. Here&rsquo;s exactly what happens, start to finish.
           </p>
         </div>
       </Section>
@@ -143,9 +145,17 @@ export default function HowItWorksPage() {
               defensibly, and flags that it made that judgment rather than hiding it.
             </p>
             <p>
-              Optionally, you set a company-wide target margin (or one per type of work) and an
-              overhead allocation method. Both are yours to configure; neither is guessed at. If a
-              QuickBooks account lands in the wrong cost category, you can move it in Settings.
+              The lines on your QuickBooks estimates are sorted the same way, by their product or
+              service, so JobProfitAI knows how each price was split between labor, materials, subs
+              and equipment. If an account or product lands in the wrong category, you move it in
+              Settings.
+            </p>
+            <p>
+              You set a target margin, company-wide or per job type, and confirm a job type for each
+              job. QuickBooks has no field for job type, so JobProfitAI suggests one from each
+              job&rsquo;s name and estimate (and, if you ask, from AI reading the job and customer
+              names), and nothing is applied until you accept it. Use the built-in types, rename
+              them, or add your own, such as Kitchen remodel or Service call.
             </p>
           </Step>
 
@@ -199,35 +209,63 @@ export default function HowItWorksPage() {
             </p>
           </Step>
 
-          <Step number={5} title="Get recommendations" aside={<InsightPreview />}>
+          <Step number={5} title="See what to change, ranked by dollars" aside={<OpportunityFeedPreview items={2} />}>
             <p>
-              Profit Intelligence takes the patterns found across your jobs and turns them into
-              plain-English findings: what was observed, the evidence behind it, the financial
-              impact, and a concrete action worth considering.
+              The Profit Opportunity Feed compares every job you finished in the last 12 months with
+              the ones like it, by job type, customer, job size and part of the job, and lists what
+              to change, biggest first. Each opportunity says what the numbers show, why, what to do,
+              how sure it is, and which jobs it comes from.
             </p>
             <p>
-              An important detail about how this is built: the dollar amounts, percentages,
-              confidence levels and the list of jobs behind each finding are all calculated by the
-              application, and those are the values stored and displayed. The AI writes the
-              explanation and the recommendation around them. Every finding names the jobs it came
-              from, so you can check any of it against the job pages rather than taking it on
-              faith. That&rsquo;s deliberate. Profit decisions shouldn&rsquo;t rest on a number a
-              language model produced.
+              The dollar figure is worked out in the open: the price that would have hit your target
+              margin on the same costs, minus what the jobs actually sold for. When your estimates
+              split the price, it goes further and names the thin part: for example, that customers
+              paid for labor on your kitchens and it cost nearly as much again, and how much to add
+              to the labor on the next one.
+            </p>
+            <p>
+              Every number is calculated by the application from your data. AI writes advisor notes
+              around the opportunities, and never produces or changes a figure. Profit decisions
+              shouldn&rsquo;t rest on a number a language model came up with.
+            </p>
+          </Step>
+
+          <Step number={6} title="Check estimates before they go out" aside={<EstimateCheckPreview />}>
+            <p>
+              Every pending estimate in QuickBooks is checked against what your finished jobs of the
+              same type actually cost for each dollar you charged, over the last two years. When the
+              estimate splits labor, materials and subs, each part is checked at its own rate. If the
+              price won&rsquo;t reach your target, you see by how much and the price that would, and
+              whether QuickBooks has emailed the estimate yet.
+            </p>
+            <p>
+              It needs at least three finished jobs of the type, and it only reads QuickBooks: you
+              change the estimate there, and the check updates on the next sync.
+            </p>
+          </Step>
+
+          <Step number={7} title="Track the change and see the result" aside={<TrackedChangePreview />}>
+            <p>
+              When you act on a pricing opportunity, press &ldquo;I&rsquo;m making this
+              change.&rdquo; JobProfitAI records the margin you started from, then compares the jobs
+              you create in QuickBooks from that day on, as they finish. You see the margin before,
+              the margin since, and the extra gross profit, on your own jobs.
             </p>
           </Step>
 
           <Step
-            number={6}
+            number={8}
             title="Get your Weekly Profit Brief"
             aside={<WeeklyBriefPreview />}
           >
             <p>
               Once a week, on the day and hour you choose in your own timezone, JobProfitAI syncs
-              the latest data and emails a short brief. It opens with what changed since the last
-              one: new costs and billing on each job, margins that moved, jobs that just went over
-              their estimate, and jobs you marked completed. That part is calculated, not written
-              by AI. A short written summary follows, leading with the job that most needs your
-              attention.
+              the latest data and emails a short brief. It leads with the money: new margin risk on
+              your open jobs since the last brief, estimates priced below target, and your biggest
+              opportunities; when there&rsquo;s $500 or more of new risk, or an estimate to fix, the
+              subject line says so. Then what changed on each job:
+              new costs and billing, margins that moved, jobs that went over their estimate. Those
+              parts are calculated, not written by AI. A short written summary follows.
             </p>
             <p>
               It goes to up to 10 people: you, your project manager, your bookkeeper. Each can
