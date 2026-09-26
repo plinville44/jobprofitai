@@ -193,6 +193,7 @@ export async function getOpportunityData(connectionId: string, now: Date = new D
       notEmailed: e.notEmailed,
       typeLabel: e.typeLabel,
       historyJobs: e.check.historyJobs,
+      method: e.check.method,
     }));
 
   const feed = computeOpportunityFeed({
@@ -203,6 +204,10 @@ export async function getOpportunityData(connectionId: string, now: Date = new D
     targetFilledEstimates,
     typeLabel,
     estimateFlags,
+    estimateCounts: {
+      pending: estimates.length,
+      checked: estimates.filter((e) => e.check.status === "below_target" || e.check.status === "on_target").length,
+    },
     jobsAreCustomers: connection.jobSource === "customers",
     idleOpenJobs: profitData.dataHealth.idleOpenJobs.length,
   });

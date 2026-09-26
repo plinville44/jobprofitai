@@ -7,6 +7,7 @@ import {
   computeEstimateCheck,
   computeOpportunityFeed,
   contractEstimates,
+  estimatesDetail,
   coreActuals,
   niceCeil,
   pricedMixForJob,
@@ -297,6 +298,47 @@ describe("open jobs and cash", () => {
   });
 });
 
+describe("estimates in the feed", () => {
+  const flag = (method: "by_part" | "whole_job") => ({
+    estimateId: "e1",
+    label: "Estimate 1007 for Elena Ruiz",
+    shortfall: 825,
+    predictedMarginPct: 0.345,
+    targetMarginPct: 40,
+    confidence: "medium" as const,
+    confidenceReason: "Based on 3 finished jobs of this type.",
+    notEmailed: true,
+    typeLabel: "Remodel",
+    historyJobs: 3,
+    method,
+  });
+
+  it("only promises a part-by-part price when the check was part by part", () => {
+    const whole = feed([], { estimateFlags: [flag("whole_job")] }).items.find((i) => i.kind === "estimate_below_target")!;
+    expect(whole.action).not.toContain("part by part");
+    expect(whole.cause).toContain("your remodel jobs as a group come in below target");
+    const parts = feed([], { estimateFlags: [flag("by_part")] }).items.find((i) => i.kind === "estimate_below_target")!;
+    expect(parts.action).toContain("part by part");
+    expect(parts.cause).toBeNull();
+  });
+
+  it("tells no pending estimates apart from none below target", () => {
+    const s = (flagged: number, pending: number, checked: number) =>
+      estimatesDetail({ estimatesFlagged: flagged, estimatesPending: pending, estimatesChecked: checked });
+    expect(s(0, 0, 0)).toBe("No pending estimates in QuickBooks to check.");
+    expect(s(0, 1, 0)).toBe("1 pending estimate, not checked yet.");
+    expect(s(0, 3, 0)).toBe("3 pending estimates, not checked yet.");
+    expect(s(0, 1, 1)).toBe("Your pending estimate is at or above target.");
+    expect(s(0, 4, 4)).toBe("All 4 pending estimates are at or above target.");
+    expect(s(0, 3, 1)).toBe("The 1 checked is at or above target. 2 not checked yet.");
+    expect(s(0, 5, 3)).toBe("The 3 checked are at or above target. 2 not checked yet.");
+    expect(s(2, 2, 2)).toBe("2 pending estimates.");
+    expect(s(1, 3, 2)).toBe("1 pending estimate. 1 not checked yet.");
+    const out = feed([], { estimateFlags: [flag("whole_job")], estimateCounts: { pending: 3, checked: 2 } });
+    expect([out.summary.estimatesPending, out.summary.estimatesChecked, out.summary.estimatesFlagged]).toEqual([3, 2, 1]);
+  });
+});
+
 describe("computeEstimateCheck", () => {
   const history = () =>
     [1, 2, 3].map(() => ({
@@ -420,7 +462,47 @@ describe("review fixes", () => {
       now: NOW,
     });
     expect(r.method).toBe("whole_job");
-    expect(r.confidenceReason).toContain("doesn't price subcontracted work separately");
+    expect(r.methodNote).toContain("doesn't price subcontracted work separately");
+    expect(r.methodNote).toContain("any price comes out at the same margin");
+    // Enough split history already: no "once 3 jobs have split estimates" line.
+    expect(r.methodNote).not.toContain("Once 3 finished jobs");
+    expect(r.confidenceReason).not.toContain("whole price");
+  });
+
+  it("says plainly what a whole-price check can't tell you", () => {
+    // The past jobs' estimates weren't split, so every price gets the same
+    // margin: $9,000 and $6,000 both come out at 20%.
+    const plain = [1, 2, 3].map(() => ({ f: job({ revenue: 10_000, costs: 8_000 }), mix: null }));
+    const split = [
+      { n: "Labor", c: "labor" as const, a: 4_000 },
+      { n: "Materials", c: "materials" as const, a: 3_000 },
+      { n: "Subcontracted work", c: "subcontractor" as const, a: 2_000 },
+    ];
+    const a = computeEstimateCheck({ amount: 9_000, lines: split, targetPct: 15, history: plain, now: NOW });
+    const b = computeEstimateCheck({ amount: 6_000, lines: split, targetPct: 15, history: plain, now: NOW });
+    expect(a.method).toBe("whole_job");
+    expect(a.expectedMarginPct).toBeCloseTo(0.2);
+    expect(b.expectedMarginPct).toBeCloseTo(0.2);
+    expect(a.methodNote).toContain("your finished jobs of this type don't have estimates that split the price");
+    expect(a.methodNote).toContain("not whether this job is priced right for its size");
+    expect(a.methodNote).toContain("Once 3 finished jobs of this type have estimates");
+    // Two of three split: says how many it has and how many it takes.
+    const some = plain.map((h, i) =>
+      i < 2 ? { f: job({ revenue: 10_000, costs: 8_000, costByCategory: { labor: 4_000, materials: 4_000 } }), mix: mix({ labor: 0.5, materials: 0.5 }) } : h
+    );
+    expect(computeEstimateCheck({ amount: 9_000, lines: split, targetPct: 15, history: some, now: NOW }).methodNote).toContain(
+      "only 2 finished jobs of this type have estimates that split the price into labor, materials and subs in a way that lines up with the costs, and it takes 3"
+    );
+    // Checked part by part: no note.
+    const splitHistory = [1, 2, 3].map(() => ({
+      f: job({ revenue: 10_000, costs: 8_000, costByCategory: { labor: 5_000, materials: 3_000 } }),
+      mix: mix({ labor: 0.5, materials: 0.5 }),
+    }));
+    const byPart = computeEstimateCheck({ amount: 10_000, lines: split.slice(0, 2), targetPct: 30, history: splitHistory, now: NOW });
+    expect(byPart.method).toBe("by_part");
+    expect(byPart.methodNote).toBeNull();
+    // Not checked at all: no note.
+    expect(computeEstimateCheck({ amount: 9_000, lines: split, targetPct: 15, history: plain.slice(0, 2), now: NOW }).methodNote).toBeNull();
   });
 
   it("never calls an estimate at or above a target it misses", () => {

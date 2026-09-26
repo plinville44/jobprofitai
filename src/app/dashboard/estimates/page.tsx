@@ -83,9 +83,15 @@ export default async function EstimatesPage() {
         <p className="mt-2">
           We take your finished jobs of the same type from the last two years and work out what they cost for every
           dollar you charged. When your QuickBooks estimates break the price into labor, materials, subcontractors and
-          equipment, each part is checked at the rate that part actually ran; otherwise the whole price is checked at
-          the jobs&apos; overall rate. The price at target is what the expected cost needs to sell for to hit your target
-          margin for that job type.
+          equipment, each part is checked at the rate that part actually ran, so a thin labor price shows up even when
+          the total looks normal. Otherwise the whole price is checked at the jobs&apos; overall rate. At one rate, any
+          price comes out at the same margin, so that check tells you whether your pricing for that type of job
+          reaches your target, not whether one job is priced right for its size. The price at target is what the
+          expected cost needs to sell for to hit your target margin for that job type.
+        </p>
+        <p className="mt-2">
+          Checking each part needs at least three finished jobs of the type whose estimates had labor, materials and
+          subs on separate lines, each using its own product or service.
         </p>
         <p className="mt-2">
           It needs at least three finished jobs of the type with revenue and costs. It says what happened on your past
@@ -159,6 +165,9 @@ function EstimateCard({ e, options }: { e: CheckedEstimate; options: { value: st
       </div>
 
       <p className="mt-3 text-sm text-gray-700">{c.summary}</p>
+      {(below || ok) && c.methodNote && (
+        <p className="mt-2 max-w-3xl rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">{c.methodNote}</p>
+      )}
 
       {c.parts.length > 0 && (
         <table className="mt-3 w-full max-w-2xl text-left text-sm">
