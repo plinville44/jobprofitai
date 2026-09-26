@@ -233,10 +233,12 @@ export default function HowItWorksPage() {
           <Step number={6} title="Check estimates before they go out" aside={<EstimateCheckPreview />}>
             <p>
               Every pending estimate in QuickBooks is checked against what your finished jobs of the
-              same type actually cost for each dollar you charged, over the last two years. When the
-              estimate splits labor, materials and subs, each part is checked at its own rate. If the
-              price won&rsquo;t reach your target, you see by how much and the price that would, and
-              whether QuickBooks has emailed the estimate yet.
+              same type actually cost for each dollar you charged, over the last two years. When your
+              estimates list labor, materials and subs on separate lines, each part is checked at its
+              own rate, so a thin labor price shows up even when the total looks normal. Otherwise the
+              whole price is checked at one rate, which tells you whether that type of job is priced to
+              your target. If the price won&rsquo;t reach your target, you see by how much and the price
+              that would, and whether QuickBooks has emailed the estimate yet.
             </p>
             <p>
               It needs at least three finished jobs of the type, and it only reads QuickBooks: you

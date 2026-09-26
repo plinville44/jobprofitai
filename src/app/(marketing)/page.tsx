@@ -436,12 +436,12 @@ export default function HomePage() {
             <SectionHeading
               eyebrow="Estimate Check"
               title="Check the price before the customer sees it"
-              intro="Every pending estimate in QuickBooks is checked against what your own finished jobs of the same type actually cost for each dollar you charged. If the price won't reach your target margin, you see it, part by part, with the price that would."
+              intro="Every pending estimate in QuickBooks is checked against what your own finished jobs of the same type actually cost for each dollar you charged. If the price won't reach your target margin, you see it, with the price that would."
             />
             <ul className="space-y-3 text-[15px] text-jp-slate">
               {[
                 "Picks up new estimates on the next sync, and says which QuickBooks hasn't emailed yet",
-                "Checks labor, materials and subs separately when your estimate splits them",
+                "Checks labor, materials and subs separately when your estimates list them on separate lines",
                 "Uses your finished jobs, not an industry average",
                 "Read-only: you change the estimate in QuickBooks as you always do",
               ].map((item) => (

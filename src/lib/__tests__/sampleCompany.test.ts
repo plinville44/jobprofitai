@@ -26,6 +26,8 @@ describe("sample company shown on the website", () => {
     const e = s.estimates.find((x) => x.id === "e1043")!;
     expect(e.check.status).toBe("below_target");
     expect(e.check.method).toBe("by_part");
+    expect(e.check.methodNote).toBeNull();
+    expect([s.feed.summary.estimatesPending, s.feed.summary.estimatesChecked, s.feed.summary.estimatesFlagged]).toEqual([2, 2, 1]);
     expect(s.estimates.find((x) => x.id === "e1045")!.check.status).toBe("on_target");
     expect(s.tracked.outcome.status).toBe("measured");
     expect(s.tracked.outcome.extraProfit!).toBeGreaterThan(0);

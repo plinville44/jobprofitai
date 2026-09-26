@@ -319,6 +319,7 @@ export function getSampleCompany(): SampleCompany {
       notEmailed: e.notEmailed,
       typeLabel: e.typeLabel,
       historyJobs: e.check.historyJobs,
+      method: e.check.method,
     }));
 
   const feed = computeOpportunityFeed({
@@ -328,6 +329,10 @@ export function getSampleCompany(): SampleCompany {
     mixes,
     typeLabel: sampleTypeLabel,
     estimateFlags,
+    estimateCounts: {
+      pending: estimates.length,
+      checked: estimates.filter((e) => e.check.status === "below_target" || e.check.status === "on_target").length,
+    },
   });
 
   // The tracked change's baseline: the roofs set up before it started, as

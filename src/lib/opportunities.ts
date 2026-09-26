@@ -423,6 +423,9 @@ export interface FeedSummary {
   /** Price missing from pending estimates the check flagged. */
   estimatesShortfall: number;
   estimatesFlagged: number;
+  /** Pending estimates looked at, and how many of those could be checked. */
+  estimatesPending: number;
+  estimatesChecked: number;
   /** Work done and not billed yet. Cash, not profit. */
   unbilledWork: number;
 }
@@ -432,6 +435,32 @@ export interface SetupHint {
   message: string;
   href: string;
   linkText: string;
+}
+
+/**
+ * The line under "Estimates priced too low". "None below target" is only said
+ * about estimates that were actually checked: an estimate with no job type,
+ * or too few finished jobs to compare with, hasn't been judged either way.
+ */
+export function estimatesDetail(s: Pick<FeedSummary, "estimatesFlagged" | "estimatesPending" | "estimatesChecked">): string {
+  const unchecked = Math.max(0, s.estimatesPending - s.estimatesChecked);
+  const notChecked = unchecked > 0 ? ` ${unchecked} not checked yet.` : "";
+  if (s.estimatesFlagged > 0) {
+    return `${s.estimatesFlagged} pending ${s.estimatesFlagged === 1 ? "estimate" : "estimates"}.${notChecked}`;
+  }
+  if (s.estimatesPending === 0) return "No pending estimates in QuickBooks to check.";
+  if (s.estimatesChecked === 0) {
+    return unchecked === 1 ? "1 pending estimate, not checked yet." : `${unchecked} pending estimates, not checked yet.`;
+  }
+  const ok =
+    s.estimatesChecked === 1
+      ? unchecked > 0
+        ? "The 1 checked is at or above target."
+        : "Your pending estimate is at or above target."
+      : unchecked > 0
+        ? `The ${s.estimatesChecked} checked are at or above target.`
+        : `All ${s.estimatesChecked} pending estimates are at or above target.`;
+  return `${ok}${notChecked}`;
 }
 
 export interface OpportunityFeed {
@@ -454,6 +483,8 @@ export interface EstimateFeedEntry {
   notEmailed: boolean;
   typeLabel: string;
   historyJobs: number;
+  /** How the estimate was checked; a whole-price check speaks to the job type, not the job. */
+  method: "by_part" | "whole_job" | null;
 }
 
 export interface FeedInput {
@@ -469,6 +500,12 @@ export interface FeedInput {
   typeLabel: (key: string) => string;
   /** Flagged pending estimates, from computeEstimateCheck. */
   estimateFlags: EstimateFeedEntry[];
+  /**
+   * Pending estimates looked at, and how many of them got a check (the rest
+   * have no job type, too little history or no target). Lets the summary
+   * tell "none below target" from "nothing to check".
+   */
+  estimateCounts?: { pending: number; checked: number };
   /** Whether the company's jobs are QuickBooks customers (one customer per job): the customer lens is meaningless then. */
   jobsAreCustomers?: boolean;
   /** Open jobs idle 90+ days, for the setup hint. */
@@ -908,9 +945,18 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
       confidence: e.confidence,
       confidenceReason: e.confidenceReason,
       finding: `If it goes like your last ${plural(e.historyJobs, `${typePhrase(e.typeLabel)} job`)}, it earns ${pct(e.predictedMarginPct)} against your ${fmtTarget(e.targetMarginPct)} target.`,
-      cause: null,
-      action: "Open the Estimate Check for the price that reaches your target, part by part, then update the estimate in QuickBooks.",
-      method: "What similar finished jobs actually cost for each dollar charged, applied to this estimate's prices. The Estimate Check page shows the working.",
+      cause:
+        e.method === "whole_job"
+          ? `Checked on the whole price: your ${typePhrase(e.typeLabel)} jobs as a group come in below target, so an estimate priced the way they were does too. The fix is likely your ${typePhrase(e.typeLabel)} pricing in general, not only this estimate.`
+          : null,
+      action:
+        e.method === "by_part"
+          ? "Open the Estimate Check for the price that reaches your target, part by part, then update the estimate in QuickBooks."
+          : "Open the Estimate Check for the price that reaches your target, then update the estimate in QuickBooks.",
+      method:
+        e.method === "by_part"
+          ? "What similar finished jobs actually cost for each dollar charged for labor, materials and subs, applied to this estimate's prices for each. The Estimate Check page shows the working."
+          : "What similar finished jobs actually cost for each dollar charged, applied to this estimate's total. The Estimate Check page shows the working.",
       jobIds: [],
       href: `/dashboard/estimates#estimate-${e.estimateId}`,
       breakdown: null,
@@ -995,6 +1041,8 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
       openJobsAtRisk: openAtRisk.size,
       estimatesShortfall,
       estimatesFlagged: input.estimateFlags.length,
+      estimatesPending: input.estimateCounts?.pending ?? input.estimateFlags.length,
+      estimatesChecked: input.estimateCounts?.checked ?? input.estimateFlags.length,
       unbilledWork,
     },
     items: deduped,
@@ -1044,6 +1092,13 @@ export interface EstimateCheckResult {
   confidenceReason: string;
   /** Plain explanation of the result. */
   summary: string;
+  /**
+   * Set when the whole price was checked at one rate. At one rate every price
+   * comes out at the same margin, so the result speaks to the job type's
+   * pricing, not to whether this job is priced right for its size, and the
+   * page says so.
+   */
+  methodNote: string | null;
 }
 
 /**
@@ -1082,6 +1137,7 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
     confidence: "low",
     confidenceReason: summary,
     summary,
+    methodNote: null,
   });
   if (input.amount <= 0) return empty("no_amount", "This estimate has no amount to check.");
   if (target == null) return empty("no_target", "Set a target margin (in Settings) to check estimates against it.");
@@ -1106,7 +1162,7 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
     : [];
   let expectedCost: number;
   let method: "by_part" | "whole_job";
-  let methodNote = "";
+  let methodNote: string | null = null;
   const parts: EstimateCategoryCheck[] = [];
   if (mix && results.length > 0 && unpriced.length === 0) {
     method = "by_part";
@@ -1126,9 +1182,22 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
   } else {
     method = "whole_job";
     expectedCost = input.amount * wholeRatio;
-    if (mix && unpriced.length > 0) {
-      methodNote = ` Checked on the whole price, because this estimate doesn't price ${unpriced.map((u) => PART_NAMES[u.category]).join(" or ")} separately and your past jobs of this type spent money on it.`;
-    }
+    const tooFewSplit = withSplit.length < MIN_JOBS;
+    const why = tooFewSplit
+      ? withSplit.length === 0
+        ? "your finished jobs of this type don't have estimates that split the price into labor, materials and subs in a way that lines up with their costs"
+        : `only ${plural(withSplit.length, "finished job")} of this type ${withSplit.length === 1 ? "has an estimate" : "have estimates"} that split the price into labor, materials and subs in a way that lines up with the costs, and it takes ${MIN_JOBS}`
+      : !mix
+        ? "this estimate doesn't split the price into labor, materials and subs"
+        : unpriced.length > 0
+          ? `this estimate doesn't price ${unpriced.map((u) => PART_NAMES[u.category]).join(" or ")} separately and your past jobs of this type spent money on it`
+          : "the parts of this estimate don't line up with your past jobs of this type";
+    methodNote =
+      `Checked on the whole price, because ${why}. At one rate for the whole job, any price comes out at the same margin, ` +
+      "so this shows whether your pricing for this type of job reaches your target, not whether this job is priced right for its size." +
+      (tooFewSplit
+        ? ` Once ${MIN_JOBS} finished jobs of this type have estimates with labor, materials and subs on separate lines, each estimate is checked on its own mix.`
+        : "");
   }
 
   const expectedMarginPct = 1 - expectedCost / input.amount;
@@ -1140,7 +1209,7 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
   const mean = margins.reduce((s, m) => s + m, 0) / margins.length;
   const spread = Math.sqrt(margins.reduce((s, m) => s + (m - mean) ** 2, 0) / margins.length);
   let confidence: "high" | "medium" | "low" = history.length >= 6 ? "high" : "medium";
-  let confidenceReason = `Based on ${plural(history.length, "finished job")} of this type${method === "by_part" ? `, ${withSplit.length} with a split estimate` : ""}.${methodNote}`;
+  let confidenceReason = `Based on ${plural(history.length, "finished job")} of this type${method === "by_part" ? `, ${withSplit.length} with a split estimate` : ""}.`;
   if (spread > 0.15) {
     confidence = "low";
     confidenceReason += ` Their margins vary a lot (${pct(Math.min(...margins), 0)} to ${pct(Math.max(...margins), 0)}), so treat this as a rough guide.`;
@@ -1161,6 +1230,7 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
     shortfall: below ? shortfall : 0,
     confidence,
     confidenceReason,
+    methodNote,
     summary: below
       ? `If this job goes like your past ones, it costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}. Reaching your ${fmtTarget(target)} target takes about ${money(priceAtTarget)}, ${money(shortfall)} more than quoted.`
       : `If this job goes like your past ones, it costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}, at or above your ${fmtTarget(target)} target.`,

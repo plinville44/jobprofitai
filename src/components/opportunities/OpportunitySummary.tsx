@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { formatCurrency } from "@/lib/format";
-import type { FeedSummary } from "@/lib/opportunities";
+import { estimatesDetail, type FeedSummary } from "@/lib/opportunities";
 
 /**
  * The four headline figures. Each is computed per job, once, so they can
@@ -45,10 +45,7 @@ export default function OpportunitySummary({ summary, compact = false }: { summa
       label: "Estimates priced too low",
       sub: "Pending estimates in QuickBooks",
       value: summary.estimatesShortfall,
-      detail:
-        summary.estimatesFlagged === 0
-          ? "None of your pending estimates is below target."
-          : `${summary.estimatesFlagged} pending ${summary.estimatesFlagged === 1 ? "estimate" : "estimates"}.`,
+      detail: estimatesDetail(summary),
       tone: summary.estimatesShortfall > 0 ? "amber" : "green",
     },
     {
