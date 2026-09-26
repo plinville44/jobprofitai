@@ -33,6 +33,12 @@ export async function POST(req: NextRequest) {
     // from paying customers; this is the server-side rule behind that, so
     // a double click or a second tab can't start a second subscription.
     const entitlements = await getEntitlements(account.ownerId);
+    if (entitlements.access === "complimentary") {
+      return NextResponse.json(
+        { error: "This login has complimentary access to every feature, so there's nothing to buy." },
+        { status: 409 }
+      );
+    }
     if (entitlements.access === "active" || entitlements.access === "past_due") {
       return NextResponse.json(
         { error: "You already have a subscription. Use Manage Billing to switch plans." },

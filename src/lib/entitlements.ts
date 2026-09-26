@@ -105,7 +105,10 @@ export type AccessState =
   | "active"
   | "past_due"
   | "canceled"
-  | "none";
+  | "none"
+  // The business's own logins (the ADMIN_EMAILS allowlist): full Pro access,
+  // never billed, whatever the Stripe subscription says.
+  | "complimentary";
 
 export interface Entitlements {
   /** The plan whose features apply (or would apply, for a trial). */
@@ -142,7 +145,27 @@ export async function getEntitlements(
   userId: string,
   now: Date = new Date()
 ): Promise<Entitlements> {
-  const subscription = await prisma.subscription.findUnique({ where: { userId } });
+  const [subscription, complimentary] = await Promise.all([
+    prisma.subscription.findUnique({ where: { userId } }),
+    isComplimentaryAccount(userId),
+  ]);
+
+  // The owner's own account: Pro, permanently, and never billed. Checked
+  // before the subscription so a cancelled or lapsed test subscription on
+  // the owner's login can't lock the owner out of their own product.
+  if (complimentary) {
+    return buildEntitlements({
+      plan: "profit_intelligence_pro",
+      access: "complimentary",
+      features: PLAN_FEATURES.profit_intelligence_pro,
+      limits: limitsForStoredPlan("profit_intelligence_pro"),
+      trialEndsAt: null,
+      now,
+      paymentIssue: false,
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd: null,
+    });
+  }
 
   const storedPlan: Plan =
     subscription && (isPlanId(subscription.plan) || subscription.plan === "profit_monitor")
@@ -268,7 +291,10 @@ function buildEntitlements(input: {
     planName: planDisplayName(input.plan),
     access: input.access,
     active:
-      input.access === "trialing" || input.access === "active" || input.access === "past_due",
+      input.access === "trialing" ||
+      input.access === "active" ||
+      input.access === "past_due" ||
+      input.access === "complimentary",
     trialing,
     trialEndsAt: input.trialEndsAt,
     trialDaysRemaining: trialing && input.trialEndsAt ? daysUntil(input.now, input.trialEndsAt) : 0,
@@ -415,6 +441,18 @@ export function inactiveMessage(e: Pick<Entitlements, "access" | "paymentIssue">
     return "Your last payment didn't go through, so access is paused. Update your card on the Billing page to turn it back on.";
   }
   return "Your subscription isn't active. Choose a plan on the Billing page to continue.";
+}
+
+/**
+ * Whether an account gets complimentary access: its owner is on the
+ * ADMIN_EMAILS allowlist and has a verified email, the same rule as the admin
+ * pages. It hangs off the env allowlist rather than a database flag for the
+ * same reason admin does: nothing an ordinary write path does can grant it.
+ * Skips the lookup entirely when no allowlist is set.
+ */
+async function isComplimentaryAccount(userId: string): Promise<boolean> {
+  if (!(process.env.ADMIN_EMAILS ?? "").trim()) return false;
+  return isAdminUser(userId);
 }
 
 /** Resolves the session user and checks the admin allowlist. */
