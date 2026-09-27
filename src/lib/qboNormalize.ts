@@ -61,6 +61,12 @@ export const costEntryId = (connectionId: string, source: string, txnId: string,
 export const revenueId = (connectionId: string, source: RevenueSourceType, txnId: string) =>
   `${connectionId}:${source}:${txnId}`;
 
+/** Revenue that comes from one line of a transaction: a bank deposit line, or a journal entry income line. */
+export type LineRevenueSourceType = "Deposit" | "JournalEntry";
+
+export const lineRevenueId = (connectionId: string, source: LineRevenueSourceType, txnId: string, lineId: string) =>
+  `${connectionId}:${source}:${txnId}:${lineId}`;
+
 export const estimateRowId = (connectionId: string, estimateId: string) => `${connectionId}:${estimateId}`;
 
 // ---------------------------------------------------------------------------
@@ -300,6 +306,85 @@ export function revenueFromTxn(txn: any, sourceType: RevenueSourceType): Normali
     status: negative ? "credit" : sourceType === "Invoice" && num(txn?.Balance) > 0 ? "open" : "paid",
     txnDate: qboDate(txn?.TxnDate),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Revenue recorded without an invoice: bank deposits and journal entries
+// ---------------------------------------------------------------------------
+
+export interface NormalizedRevenueLine {
+  lineId: string;
+  customerQboId: string;
+  /** Signed: money in to an income account is positive. */
+  amount: number;
+  txnDate: Date | null;
+}
+
+// Income only, not Other Income: a late fee or interest isn't job revenue,
+// and "Check against QuickBooks" compares with the Income group.
+const INCOME_ACCOUNT_TYPES = new Set(["income"]);
+
+function isIncomeAccount(accountId: string | null, lookups: Lookups): boolean {
+  const account = accountId ? lookups.accounts.get(accountId) : undefined;
+  return INCOME_ACCOUNT_TYPES.has((account?.type ?? "").toLowerCase());
+}
+
+/**
+ * Deposit lines that record income straight from a customer: a check put
+ * in the bank against an income account with the customer named, and no
+ * invoice. QuickBooks counts these as the customer's income, so a job
+ * whose payments arrive this way would otherwise show no revenue.
+ *
+ * Lines that deposit a payment or a sales receipt (they carry a LinkedTxn)
+ * are skipped: that money is already counted on the invoice or receipt.
+ * Lines to anything but an income account (a customer deposit held as a
+ * liability, a transfer, a refund from a supplier) aren't revenue either.
+ */
+export function depositRevenueLines(txn: any, lookups: Lookups): NormalizedRevenueLine[] {
+  const out: NormalizedRevenueLine[] = [];
+  const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
+  for (const [i, line] of lines.entries()) {
+    if (Array.isArray(line?.LinkedTxn) && line.LinkedTxn.length > 0) continue;
+    const d = line?.DepositLineDetail;
+    if (!d) continue;
+    const entity = d.Entity;
+    const entityType = String(entity?.type ?? entity?.Type ?? "").toLowerCase();
+    const customerQboId = str(entity?.value ?? entity?.EntityRef?.value);
+    if (entityType !== "customer" || !customerQboId) continue;
+    if (!isIncomeAccount(str(d.AccountRef?.value), lookups)) continue;
+    const amount = num(line.Amount);
+    if (amount === 0) continue;
+    out.push({ lineId: str(line.Id) ?? String(i), customerQboId, amount: round2(amount), txnDate: qboDate(txn?.TxnDate) });
+  }
+  return out;
+}
+
+/**
+ * Journal entry lines to an income account that name a customer: a credit
+ * adds income, a debit takes it away. (Cost lines on the same entry are
+ * read by expenseLines.)
+ */
+export function journalRevenueLines(txn: any, lookups: Lookups): NormalizedRevenueLine[] {
+  const out: NormalizedRevenueLine[] = [];
+  const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
+  for (const [i, line] of lines.entries()) {
+    const d = line?.JournalEntryLineDetail;
+    if (!d) continue;
+    const entity = d.Entity;
+    if ((entity?.Type ?? "").toLowerCase() !== "customer") continue;
+    const customerQboId = str(entity?.EntityRef?.value);
+    if (!customerQboId) continue;
+    if (!isIncomeAccount(str(d.AccountRef?.value), lookups)) continue;
+    const raw = num(line.Amount);
+    if (raw === 0) continue;
+    out.push({
+      lineId: str(line.Id) ?? String(i),
+      customerQboId,
+      amount: round2((d.PostingType === "Credit" ? 1 : -1) * raw),
+      txnDate: qboDate(txn?.TxnDate),
+    });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

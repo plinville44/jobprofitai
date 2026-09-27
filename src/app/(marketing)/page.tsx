@@ -19,6 +19,7 @@ import {
   WeeklyBriefPreview,
 } from "@/components/marketing/ProductPreview";
 import PricingCards from "@/components/marketing/PricingCards";
+import { OG_IMAGE } from "@/lib/siteMeta";
 
 export const metadata: Metadata = {
   title: "JobProfitAI: Profit Intelligence for QuickBooks",
@@ -26,6 +27,7 @@ export const metadata: Metadata = {
     "QuickBooks shows how your jobs did. JobProfitAI shows contractors what to change to make more money, and what each change is worth: underpriced job types, thin labor pricing, and estimates to fix before you send them.",
   alternates: { canonical: "/" },
   openGraph: {
+    images: [OG_IMAGE],
     title: "JobProfitAI: Profit Intelligence for QuickBooks",
     description: "QuickBooks shows how your jobs did. JobProfitAI shows what to change, and what it's worth.",
     url: "/",
@@ -441,7 +443,7 @@ export default function HomePage() {
             <ul className="space-y-3 text-[15px] text-jp-slate">
               {[
                 "Picks up new estimates on the next sync, and says which QuickBooks hasn't emailed yet",
-                "Checks labor, materials and subs separately when your estimates list them on separate lines",
+                "Shows which line is thin when your estimates list labor, materials and subs separately",
                 "Uses your finished jobs, not an industry average",
                 "Read-only: you change the estimate in QuickBooks as you always do",
               ].map((item) => (

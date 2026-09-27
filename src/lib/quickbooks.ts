@@ -267,6 +267,50 @@ export async function refreshTokens(refreshToken: string): Promise<QboTokenRespo
 }
 
 /** Generic authenticated GET against the QBO Accounting API (e.g. a SQL-like "query" endpoint call). */
+/**
+ * QuickBooks was busy or briefly unavailable (a 429 or a 5xx, or the
+ * connection dropped) and still was after a few tries. Not the customer's
+ * fault and not permanent: the sync records it and reads that data again
+ * next time, rather than treating the read as done.
+ */
+export class QboTemporarilyUnavailableError extends Error {
+  constructor(detail: string) {
+    super(`QuickBooks was temporarily unavailable (${detail}). It will be read again on the next sync.`);
+    this.name = "QboTemporarilyUnavailableError";
+  }
+}
+
+const RETRY_DELAYS_MS = [1_000, 3_000];
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * An authenticated GET that tries again on a throttle (429) or a passing
+ * server error, waiting a little longer each time (and never more than 10
+ * seconds, whatever Retry-After says). Anything else comes straight back.
+ */
+async function fetchWithRetry(url: string, accessToken: string): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    let res: Response | null = null;
+    try {
+      res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
+    } catch (err) {
+      if (attempt >= RETRY_DELAYS_MS.length) {
+        throw new QboTemporarilyUnavailableError(err instanceof Error ? err.message : "network error");
+      }
+      await sleep(RETRY_DELAYS_MS[attempt]);
+      continue;
+    }
+    if (!RETRYABLE_STATUS.has(res.status)) return res;
+    if (attempt >= RETRY_DELAYS_MS.length) {
+      throw new QboTemporarilyUnavailableError(`status ${res.status}, intuit_tid: ${intuitTid(res)}`);
+    }
+    const retryAfter = Number(res.headers.get("retry-after"));
+    const wait = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 10_000) : RETRY_DELAYS_MS[attempt];
+    await sleep(wait);
+  }
+}
+
 export async function qboQuery(
   realmId: string,
   accessToken: string,
@@ -276,12 +320,7 @@ export async function qboQuery(
     query
   )}&minorversion=70`;
 
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-    },
-  });
+  const res = await fetchWithRetry(url, accessToken);
 
   if (!res.ok) {
     // A 401 here means Intuit rejected the access token outright (e.g. the
@@ -347,12 +386,7 @@ export async function qboQueryAll(
 /** Shared authenticated GET against an arbitrary Accounting API path (company-scoped). */
 async function qboGet(realmId: string, accessToken: string, pathAndQuery: string): Promise<any> {
   const url = `${apiBaseUrl()}/v3/company/${realmId}/${pathAndQuery}`;
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-    },
-  });
+  const res = await fetchWithRetry(url, accessToken);
 
   if (!res.ok) {
     if (res.status === 401) {

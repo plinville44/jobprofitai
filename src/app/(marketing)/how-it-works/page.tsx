@@ -15,6 +15,7 @@ import {
   TrackedChangePreview,
   WeeklyBriefPreview,
 } from "@/components/marketing/ProductPreview";
+import { OG_IMAGE } from "@/lib/siteMeta";
 
 export const metadata: Metadata = {
   title: "How It Works",
@@ -22,6 +23,7 @@ export const metadata: Metadata = {
     "How JobProfitAI works: connect QuickBooks Online, see what to change on your pricing and what it's worth, check estimates before you send them, track the result, and get a Weekly Profit Brief.",
   alternates: { canonical: "/how-it-works" },
   openGraph: {
+    images: [OG_IMAGE],
     title: "How JobProfitAI Works",
     description: "From connecting QuickBooks to knowing what to change, and what it's worth, in eight steps.",
     url: "/how-it-works",
@@ -233,12 +235,12 @@ export default function HowItWorksPage() {
           <Step number={6} title="Check estimates before they go out" aside={<EstimateCheckPreview />}>
             <p>
               Every pending estimate in QuickBooks is checked against what your finished jobs of the
-              same type actually cost for each dollar you charged, over the last two years. When your
-              estimates list labor, materials and subs on separate lines, each part is checked at its
-              own rate, so a thin labor price shows up even when the total looks normal. Otherwise the
-              whole price is checked at one rate, which tells you whether that type of job is priced to
-              your target. If the price won&rsquo;t reach your target, you see by how much and the price
-              that would, and whether QuickBooks has emailed the estimate yet.
+              same type actually cost for each dollar you charged, over the last two years. That tells
+              you whether your pricing for that type of job reaches your target, and if it doesn&rsquo;t,
+              by how much and the price that would. When your estimates list labor, materials and subs
+              on separate lines, each line is also set against how the cost of those jobs usually
+              splits, so you can see which line is thin. You also see whether QuickBooks has emailed
+              the estimate yet.
             </p>
             <p>
               It needs at least three finished jobs of the type, and it only reads QuickBooks: you

@@ -161,6 +161,18 @@ model QuickBooksConnection {
   // When AI job-type suggestions last started for this company. Claimed
   // atomically before any model call, so repeated or simultaneous presses
   // can't multiply the cost.
+  // When "Preview this week's brief" and "Refresh Analysis" last called the
+  // AI for this company. Each is claimed atomically before the call, so a
+  // burst of requests (a script, a stuck button) makes one call, not many.
+  // Set when Settings asks for a rebuild (a full sync under new rules). A
+  // full sync that started before it doesn't count as that rebuild.
+  rebuildRequestedAt DateTime?
+  // When full syncs started being cut short by QuickBooks being briefly
+  // unavailable. They're retried as full syncs for up to a day, then
+  // accepted, so one flaky data type can't make every sync a full one.
+  fullSyncCutShortAt DateTime?
+  aiBriefAt    DateTime?
+  aiAnalysisAt DateTime?
   aiSuggestAt       DateTime?
   // Set the first time alerts are evaluated for this company. That first
   // pass records what is already true without emailing it, so connecting a
@@ -447,8 +459,10 @@ model InvoiceSummary {
   job         Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
 
   qboInvoiceId String
-  // "Invoice" | "SalesReceipt" | "CreditMemo" | "RefundReceipt". Credit
-  // memos and refunds are stored as negative amounts.
+  // "Invoice" | "SalesReceipt" | "CreditMemo" | "RefundReceipt" | "Deposit"
+  // | "JournalEntry". Credit memos and refunds are stored as negative
+  // amounts. Deposit and JournalEntry rows are one per line (income
+  // recorded against a customer without an invoice).
   qboSourceType String  @default("Invoice")
   // Revenue excludes sales tax: `amount` is the transaction total minus
   // taxAmount. Kept so the tax removed is visible on the job page.

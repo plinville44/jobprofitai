@@ -88,7 +88,7 @@ export async function POST(req: NextRequest) {
     if (body.category === null || body.category === "") {
       await prisma.categoryMapping.deleteMany({ where: { connectionId: connection.id, sourceName } });
       // Back to automatic: the next full sync re-reads it.
-      await prisma.quickBooksConnection.update({ where: { id: connection.id }, data: { lastFullSyncAt: null } });
+      await prisma.quickBooksConnection.update({ where: { id: connection.id }, data: { lastFullSyncAt: null, rebuildRequestedAt: new Date() } });
       return NextResponse.json({ ok: true, updated: 0, pendingSync: true });
     }
     if (!(COST_CATEGORIES as string[]).includes(body.category)) {

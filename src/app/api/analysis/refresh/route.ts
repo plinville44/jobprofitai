@@ -157,6 +157,16 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // One AI write-up a minute per company, even with force. Claimed before
+    // the call, so simultaneous requests make one call, not many.
+    const claim = await prisma.quickBooksConnection.updateMany({
+      where: { id: connectionId, OR: [{ aiAnalysisAt: null }, { aiAnalysisAt: { lt: new Date(Date.now() - 60_000) } }] },
+      data: { aiAnalysisAt: new Date() },
+    });
+    if (claim.count === 0) {
+      return NextResponse.json({ error: "The analysis was just refreshed. Give it a minute and try again." }, { status: 429 });
+    }
+
     const drafts = await generateProfitInsights(source, feedSource.length > 0 ? "job_category" : "job");
 
     await prisma.$transaction([

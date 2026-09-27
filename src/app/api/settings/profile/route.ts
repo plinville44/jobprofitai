@@ -167,7 +167,7 @@ export async function POST(req: NextRequest) {
         ...(alertsEnabled !== undefined ? { alertsEnabled } : {}),
         // Forces a full sync next time: an incremental one only reads what
         // changed in QuickBooks, and this changes how everything is read.
-        ...(rebuild ? { lastFullSyncAt: null } : {}),
+        ...(rebuild ? { lastFullSyncAt: null, rebuildRequestedAt: new Date() } : {}),
       },
     });
 

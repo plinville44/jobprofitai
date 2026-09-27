@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { OG_IMAGE } from "@/lib/siteMeta";
 
 /**
  * Root metadata. Individual pages override `title` via the template below
@@ -28,6 +29,7 @@ export const metadata: Metadata = {
   ],
   authors: [{ name: "PWL Solutions LLC" }],
   openGraph: {
+    images: [OG_IMAGE],
     type: "website",
     siteName: "JobProfitAI",
     title: "JobProfitAI: Profit Intelligence for QuickBooks",
@@ -37,6 +39,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
+    images: [OG_IMAGE.url],
     title: "JobProfitAI: Profit Intelligence for QuickBooks",
     description:
       "Know which jobs are making you money, and which ones are costing you.",

@@ -31,14 +31,21 @@ export default function OpportunitySummary({ summary, compact = false }: { summa
       detail:
         summary.jobsJudged === 0
           ? "No finished jobs with revenue and costs in the last 12 months yet."
-          : `${summary.jobsBelowTarget} of ${summary.jobsJudged} finished jobs came in below target.`,
-      tone: summary.pricingGap > 0 ? "red" : "green",
+          : summary.pricingGap < 1 && summary.jobsBelowTarget > 0
+            ? `${summary.jobsBelowTarget} of ${summary.jobsJudged} finished jobs came in below target, but each kind of work averages at or above it.`
+            : `${summary.jobsBelowTarget} of ${summary.jobsJudged} finished jobs came in below target.`,
+      tone: summary.pricingGap >= 1 ? "red" : "green",
     },
     {
       label: "At risk on open jobs",
       sub: "Short of target, or over estimate",
       value: summary.openJobRisk,
-      detail: summary.openJobsAtRisk === 0 ? "No open job is heading below target." : `${summary.openJobsAtRisk} open ${summary.openJobsAtRisk === 1 ? "job" : "jobs"}.`,
+      detail:
+        summary.openJobsAtRisk > 0
+          ? `${summary.openJobsAtRisk} open ${summary.openJobsAtRisk === 1 ? "job" : "jobs"}.`
+          : summary.openJobsChecked === 0
+            ? "No open job has a cost estimate or a firm forecast to check yet."
+            : `None of the ${summary.openJobsChecked} open ${summary.openJobsChecked === 1 ? "job" : "jobs"} checked is heading below target.`,
       tone: summary.openJobRisk > 0 ? "red" : "green",
     },
     {
@@ -52,7 +59,12 @@ export default function OpportunitySummary({ summary, compact = false }: { summa
       label: "Finished work not billed",
       sub: "Cash, not profit",
       value: summary.unbilledWork,
-      detail: summary.unbilledWork > 0 ? "Money already spent on jobs and not yet asked for." : "Billing is keeping up with the work.",
+      detail:
+        summary.unbilledWork > 0
+          ? "Money already spent on jobs and not yet asked for."
+          : summary.billingChecked === 0
+            ? "No open job has a contract value and a cost estimate or percent complete to measure billing against."
+            : "Billing is keeping up with the work.",
       tone: summary.unbilledWork > 0 ? "amber" : "green",
     },
   ] as const;

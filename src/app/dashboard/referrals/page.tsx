@@ -97,7 +97,7 @@ export default async function ReferralsPage() {
         <h1 className="text-2xl font-bold text-navy">Refer a contractor, get a free month</h1>
         <p className="mt-1 max-w-2xl text-sm text-gray-600">
           Share your link. When someone you refer becomes a paying customer and stays subscribed for{" "}
-          {REFERRAL_QUALIFY_DAYS} days, you earn a free month of your current plan as an account
+          {REFERRAL_QUALIFY_DAYS} days, into their second paid month, you earn a free month of your current plan as an account
           credit, currently {money(rewardAmount)}. Credits stack and come off future invoices
           automatically.
         </p>

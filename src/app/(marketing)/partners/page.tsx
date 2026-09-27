@@ -16,6 +16,7 @@ import {
   PLANS,
   TRIAL_DAYS,
 } from "@/lib/plans";
+import { OG_IMAGE } from "@/lib/siteMeta";
 
 export const metadata: Metadata = {
   title: "Partner Program for Accountants & Bookkeepers",
@@ -23,6 +24,7 @@ export const metadata: Metadata = {
     "Earn 20% to 30% recurring commission for 12 months on every contractor client you refer to JobProfitAI. Built for accountants, bookkeepers, fractional CFOs and QuickBooks ProAdvisors.",
   alternates: { canonical: "/partners" },
   openGraph: {
+    images: [OG_IMAGE],
     title: "JobProfitAI Partner Program",
     description:
       "Recurring commission for accountants and bookkeepers serving contractor clients.",

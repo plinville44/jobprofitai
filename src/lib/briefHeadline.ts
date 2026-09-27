@@ -19,6 +19,13 @@ export interface BriefOpportunitySnapshot {
   estimatesShortfall: number;
   estimatesFlagged: number;
   unbilledWork: number;
+  /**
+   * What could be checked. Optional because snapshots stored before these
+   * were added don't have them; read as "unknown", never as zero.
+   */
+  jobsJudged?: number;
+  openJobsChecked?: number;
+  billingChecked?: number;
   /** Risk on each open job, to find what's new next week. */
   openRiskByJob: Record<string, number>;
   /** The biggest few items, for the email. */
@@ -52,6 +59,9 @@ export function snapshotFromFeed(feed: OpportunityFeed): BriefOpportunitySnapsho
     estimatesShortfall: round(s.estimatesShortfall),
     estimatesFlagged: s.estimatesFlagged,
     unbilledWork: round(s.unbilledWork),
+    jobsJudged: s.jobsJudged,
+    openJobsChecked: s.openJobsChecked,
+    billingChecked: s.billingChecked,
     openRiskByJob,
     top,
   };
@@ -119,18 +129,42 @@ export function computeBriefHeadline(snapshot: BriefOpportunitySnapshot, priorMe
       subject: null,
     };
   }
-  if (snapshot.pricingGap > 0) {
+  if (snapshot.pricingGap >= 1) {
     return {
       snapshot,
       newRisk,
-      headline: `Priced at your target margins, the jobs you finished in the last 12 months would have made ${formatCurrency(snapshot.pricingGap)} more.`,
+      headline: `Bringing the kinds of work that ran below target up to your target margins would have added ${formatCurrency(snapshot.pricingGap)} on the jobs you finished in the last 12 months.`,
       subject: null,
     };
   }
-  return {
-    snapshot,
-    newRisk,
-    headline: "No open job is over its estimate or heading below target, and nothing finished in the last 12 months is below target.",
-    subject: null,
-  };
+  return { snapshot, newRisk, headline: allClearHeadline(snapshot), subject: null };
+}
+
+/**
+ * Nothing to flag. Says what was actually checked, so "nothing found"
+ * can't be read as "all fine" when there was nothing to look at: a company
+ * with no finished jobs and no cost estimates would otherwise be told its
+ * jobs are all on target.
+ */
+function allClearHeadline(s: BriefOpportunitySnapshot): string {
+  const judged = s.jobsJudged;
+  const open = s.openJobsChecked;
+  if (judged == null || open == null) {
+    return "Nothing on your open jobs or your recent pricing needs attention this week.";
+  }
+  if (judged === 0 && open === 0) {
+    return "There wasn't enough in QuickBooks to check against your target this week: no jobs finished in the last 12 months with revenue and costs, and no open job with a cost estimate or a firm forecast.";
+  }
+  const openPart =
+    open === 0
+      ? "no open job has a cost estimate or a firm forecast to check yet"
+      : open === 1
+        ? "the 1 open job we could check isn't heading below target"
+        : `none of the ${open} open jobs we could check is heading below target`;
+  const finishedPart =
+    judged === 0
+      ? "no jobs finished in the last 12 months have revenue and costs to judge yet"
+      : `your ${plural(judged, "job")} finished in the last 12 months ${judged === 1 ? "is" : "average"} at or above your target`;
+  const sentence = `${finishedPart[0].toUpperCase()}${finishedPart.slice(1)}, and ${openPart}.`;
+  return sentence;
 }

@@ -50,9 +50,13 @@ export async function generateWeeklyDigest(
 ): Promise<string> {
   const inBrief = new Set(metrics.briefJobIds);
   const dh = metrics.briefDataHealth;
-  const message = await anthropic.messages.create({
+  // A reply cut off at the token limit would go out mid-sentence in a paid
+  // email. On a busy week it gets one retry with twice the room; if that is
+  // cut off too, this throws and the brief is retried later rather than
+  // sent broken.
+  const ask = (maxTokens: number) => anthropic.messages.create({
     model: AI_MODEL,
-    max_tokens: 1200,
+    max_tokens: maxTokens,
     system: SYSTEM_PROMPT,
     messages: [
       {
@@ -83,6 +87,11 @@ ${JSON.stringify(
       },
     ],
   });
+  let message = await ask(1200);
+  if (message.stop_reason === "max_tokens") message = await ask(2400);
+  if (message.stop_reason === "max_tokens") {
+    throw new Error("The brief's write-up came back cut off at the length limit twice; not sending a partial brief.");
+  }
 
   const textBlock = message.content.find((b) => b.type === "text");
   if (!textBlock || textBlock.type !== "text") {

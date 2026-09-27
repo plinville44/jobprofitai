@@ -597,6 +597,18 @@ describe("computeForecastAtCompletion", () => {
     expect(manual.forecastCostAtCompletion).toBe(12000);
   });
 
+  it("uses billing as the contract once it passes the estimate (change orders billed without a new estimate)", () => {
+    const r = computeForecastAtCompletion(
+      openJob({ percentCompleteOverride: 90 }),
+      makeFinancials({ estimatedRevenue: 50000, revenue: 65000, costs: 48000, lastFinancialActivity: recent }),
+      NOW
+    );
+    expect(r.available).toBe(true);
+    expect(r.contractValue).toBe(65000);
+    // 48,000 / 0.9 = 53,333 of cost on a 65,000 contract, not a 50,000 one.
+    expect(r.forecastMarginPct).toBeCloseTo(1 - 48000 / 0.9 / 65000);
+  });
+
   it("sees an overrun coming before the money is spent (the case the old forecast missed)", () => {
     // 40% billed, 80% of a $70,000 budget already spent. The old forecast
     // said "on budget, 30% margin, high confidence".
@@ -728,10 +740,32 @@ describe("open-job attention items", () => {
   it("flags an open job forecast to finish below target, with the shortfall", () => {
     const f = makeFinancials({ status: "open", estimatedRevenue: 100000, targetMarginPct: 25 });
     const items = computeNeedsAttentionForJob(f, {
-      forecast: { available: true, forecastMarginPct: 0.1, forecastProfit: 10000, confidence: "medium" },
+      forecast: { available: true, forecastMarginPct: 0.1, forecastProfit: 10000, confidence: "medium", contractValue: 100000 },
     });
     const item = items.find((i) => i.issueCode === "forecast_below_target");
     expect(item?.financialImpact).toBeCloseTo(15000);
+  });
+
+  it("doesn't warn on a weak forecast, or on one sitting on the target", () => {
+    const f = makeFinancials({ status: "open", estimatedRevenue: 100000, targetMarginPct: 25 });
+    const has = (forecast: ForecastResult) =>
+      computeNeedsAttentionForJob(f, { forecast }).some((i) => i.issueCode === "forecast_below_target");
+    // A small share of the contract billed: low confidence.
+    expect(has({ available: true, forecastMarginPct: -2, forecastProfit: -200000, confidence: "low", progressSource: "billing", contractValue: 100000 })).toBe(false);
+    // Within a point of the target (an estimate filled in from it).
+    expect(has({ available: true, forecastMarginPct: 0.2499, forecastProfit: 24990, confidence: "high", progressSource: "manual", contractValue: 100000 })).toBe(false);
+    // From billing while the costs say the work is ahead of the bills: under-billed, not over budget.
+    const behind = makeFinancials({
+      status: "open",
+      estimatedRevenue: 100000,
+      targetMarginPct: 25,
+      wip: { percentComplete: 0.6, percentCompleteSource: "cost", earnedRevenue: 60000, overUnderBilling: -20000, costPastEstimate: false },
+    });
+    expect(
+      computeNeedsAttentionForJob(behind, {
+        forecast: { available: true, forecastMarginPct: 0.1, forecastProfit: 10000, confidence: "medium", progressSource: "billing", contractValue: 100000 },
+      }).some((i) => i.issueCode === "forecast_below_target")
+    ).toBe(false);
   });
 
   it("asks for an estimate on open jobs only", () => {

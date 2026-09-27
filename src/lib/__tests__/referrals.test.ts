@@ -55,6 +55,8 @@ async function makeUser(id: string, plan = "profit_intelligence", status = "acti
       status,
       plan,
       stripeCustomerId: status === "active" ? `cus_${id}` : null,
+      // Past a first renewal by default: the period ends 20 days from NOW.
+      currentPeriodEnd: new Date(NOW.getTime() + 20 * DAY),
     },
   });
 }
@@ -182,6 +184,24 @@ describe("reward qualification", () => {
     expect(results[0].creditApplied).toBe(true);
     expect(creditCalls[0].customerId).toBe("cus_alice");
     expect(creditCalls[0].amountCents).toBe(14_900);
+  });
+
+  it("waits while the referred account is set to cancel, or hasn't renewed yet", async () => {
+    await setUpConvertedReferral("profit_intelligence_pro", 31);
+    // A second account bought at $149 and cancelled at once must not earn a $299 credit.
+    await fake.client.subscription.update({ where: { userId: "bob" }, data: { cancelAtPeriodEnd: true } });
+    expect(await qualifyDueReferrals(NOW)).toHaveLength(0);
+    const referral = await fake.client.referral.findFirst({ where: { referredUserId: "bob" } });
+    expect(referral?.status).toBe("paid");
+    // Not set to cancel, but its first renewal hasn't come round yet.
+    await fake.client.subscription.update({
+      where: { userId: "bob" },
+      data: { cancelAtPeriodEnd: false, currentPeriodEnd: new Date(NOW.getTime() - 31 * DAY + 30 * DAY) },
+    });
+    expect(await qualifyDueReferrals(NOW)).toHaveLength(0);
+    // Once the renewal is paid, it qualifies.
+    await fake.client.subscription.update({ where: { userId: "bob" }, data: { currentPeriodEnd: new Date(NOW.getTime() + 29 * DAY) } });
+    expect(await qualifyDueReferrals(NOW)).toHaveLength(1);
   });
 
   it("sizes the reward from the referrer's own plan", async () => {
