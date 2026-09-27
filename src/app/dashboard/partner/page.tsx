@@ -58,8 +58,10 @@ export default async function PartnerPage() {
           <h2 className="text-base font-semibold text-navy">Apply</h2>
           <p className="mt-1 text-sm text-gray-600">
             Free to join. Once you have {PARTNER_FREE_ACCOUNT_THRESHOLD} clients paying at the same
-            time, your firm also earns a complimentary {PLANS.profit_intelligence_pro.name} account,
-            which we set up with you.
+            time, your firm also earns a complimentary {PLANS.profit_intelligence_pro.name} account
+            for up to {PLANS.profit_intelligence_pro.limits.maxConnections} companies, which we set up
+            with you. It isn&apos;t the {PLANS.firm.name} plan, which is billed as normal. Companies on a{" "}
+            {PLANS.firm.name} account are paid for by the firm, so they don&apos;t earn commission.
           </p>
           <div className="mt-5">
             <PartnerApplicationForm />

@@ -295,7 +295,7 @@ export const PARTNER_TIERS: PartnerTier[] = [
 /** Commission applies to the first 12 successfully paid subscription months per referred client. */
 export const PARTNER_COMMISSION_MONTHS = 12;
 
-/** Active paying clients at which a partner earns a complimentary firm account. */
+/** Active paying clients at which a partner earns a complimentary Pro account for its own use (not the Firm plan). */
 export const PARTNER_FREE_ACCOUNT_THRESHOLD = 3;
 
 /**

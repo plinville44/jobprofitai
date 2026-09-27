@@ -478,9 +478,12 @@ export default function TermsPage() {
             decline partner applications at our discretion, and we may suspend a partner or
             withhold commissions connected with fraud, self-referral, misleading promotion or a
             breach of these Terms. Partners may not describe JobProfitAI inaccurately, offer
-            discounts we have not authorized, or make claims on our behalf. Any complimentary
-            account offered to partners is provided at our discretion and set up with you
-            directly.
+            discounts we have not authorized, or make claims on our behalf. Commission is
+            paid only on subscriptions a referred customer pays for; QuickBooks companies on a{" "}
+            {firm.name} account are paid for by that account and earn no commission for it. Any
+            complimentary account offered to partners is provided at our discretion, set up with
+            you directly, and limited to the plan we tell you (currently {pro.name}, for up to{" "}
+            {pro.limits.maxConnections} companies); it does not include the {firm.name} plan.
           </p>
         </LegalSub>
         <LegalSub title="Both programs">

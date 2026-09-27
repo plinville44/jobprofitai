@@ -115,16 +115,37 @@ const FAQ_ITEMS = [
     ),
   },
   {
+    q: "Can I pay for my clients instead of referring them?",
+    a: (
+      <>
+        Yes, with the {PLANS.firm.name} plan: {PLANS.firm.priceLabel} per client company a month,{" "}
+        {PLANS.firm.perCompany!.minCompanies} minimum. You connect each client&rsquo;s QuickBooks
+        company to your own account, see them all on one portfolio page, and can give each client
+        a view-only login to their own company. You&rsquo;re the customer, so there&rsquo;s no
+        commission on companies on your {PLANS.firm.name} account: it would only be paying you
+        back part of your own bill. You can mix the two. A client you refer pays for themselves
+        and earns you commission; a client on your {PLANS.firm.name} account is billed to you. Each
+        QuickBooks company is one or the other.{" "}
+        <Link href="/pricing#firm" className="font-medium text-jp-blue hover:underline">
+          About the {PLANS.firm.name} plan
+        </Link>
+        .
+      </>
+    ),
+  },
+  {
     q: "Is there a cost to join?",
     a: (
       <>
         No, applying is free. Once you have {PARTNER_FREE_ACCOUNT_THRESHOLD} clients paying at the
         same time, your firm earns its own {PLANS.profit_intelligence_pro.name} account at no
-        charge, which we set up with you by hand. That is a real account with its own QuickBooks
-        connections, for your own books or for a client who doesn&rsquo;t use JobProfitAI
-        themselves. A QuickBooks company can only be connected to one JobProfitAI account at a
-        time, so connecting one a client has already connected moves it to your account and out
-        of theirs.
+        charge, which we set up with you by hand. That is a real account for up to{" "}
+        {PLANS.profit_intelligence_pro.limits.maxConnections} QuickBooks companies, for your own
+        books or for a client who doesn&rsquo;t use JobProfitAI themselves. It isn&rsquo;t the{" "}
+        {PLANS.firm.name} plan: to run more clients from one login, {PLANS.firm.name} is billed as
+        normal. A QuickBooks company can only be connected to one JobProfitAI account at a time,
+        so connecting one a client has already connected moves it to your account and out of
+        theirs.
       </>
     ),
   },

@@ -256,7 +256,8 @@ export async function flagPaidCommissionsForReview(
 
 /**
  * At roughly 3 active paying clients a partner earns a complimentary
- * JobProfitAI account for their own firm. Recorded here; the actual
+ * JobProfitAI account for their own firm: Profit Intelligence Pro, up to 3
+ * companies, not the Firm plan (which is billed as normal). Recorded here; the actual
  * entitlement is granted by an admin so it's a deliberate act with a record,
  * not an automatic subscription change triggered by a webhook.
  */
