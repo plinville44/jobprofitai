@@ -113,6 +113,13 @@ export default async function BillingPage(props: {
       ? entitlements.plan
       : null;
   const isPaid = entitlements.access === "active" || entitlements.access === "past_due";
+  // The owner's own login: every feature, never billed. A Stripe
+  // subscription left on it (a test one, say) is shown for what it is.
+  const complimentary = entitlements.access === "complimentary";
+  const leftoverSubscription =
+    complimentary && subscription?.stripeSubscriptionId && ["active", "past_due", "trialing"].includes(subscription.status)
+      ? subscription
+      : null;
 
   return (
     <div className="space-y-6">
@@ -147,7 +154,28 @@ export default async function BillingPage(props: {
       ) : null}
 
       {/* ── Trial state ──────────────────────────────────────────── */}
-      {trial.onTrial ? (
+      {complimentary ? (
+        <Panel tone="positive" title="Complimentary access">
+          <p className="text-sm text-green-900">
+            This login is on the JobProfitAI owner list, so it has every {PLANS.profit_intelligence_pro.name} feature
+            at no charge, permanently. Nothing is billed, and it doesn&rsquo;t depend on a subscription.
+          </p>
+          {leftoverSubscription ? (
+            <div className="mt-3 border-t border-green-200 pt-3 text-sm text-green-900">
+              <p>
+                {leftoverSubscription.cancelAtPeriodEnd && leftoverSubscription.currentPeriodEnd
+                  ? `You still have a Stripe subscription on file. It's set to end ${formatDateTime(leftoverSubscription.currentPeriodEnd, timeZone)} and won't charge you again. Your access doesn't change when it ends.`
+                  : "You still have a Stripe subscription on file, and it's still billing you. You don't need it for access: cancel it in Manage Billing."}
+              </p>
+              <div className="mt-3">
+                <ManageBillingButton />
+              </div>
+            </div>
+          ) : null}
+        </Panel>
+      ) : null}
+
+      {!complimentary && trial.onTrial ? (
         <Panel tone={trial.daysRemaining <= 3 ? "warning" : "default"}>
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -190,7 +218,7 @@ export default async function BillingPage(props: {
         </Panel>
       ) : null}
 
-      {trial.expired && !isPaid ? (
+      {trial.expired && !isPaid && !complimentary ? (
         <Panel tone="critical">
           <p className="text-lg font-semibold text-red-900">Your JobProfitAI trial has ended.</p>
           <p className="mt-1 text-sm text-red-800">
@@ -232,7 +260,9 @@ export default async function BillingPage(props: {
           <Row
             label="Plan"
             value={
-              entitlements.trialing
+              complimentary
+                ? `${PLANS.profit_intelligence_pro.name}, complimentary`
+                : entitlements.trialing
                 ? "Free trial (full access)"
                 : currentPlan
                   ? PLANS[currentPlan].name
@@ -242,7 +272,9 @@ export default async function BillingPage(props: {
           <Row
             label="Monthly price"
             value={
-              entitlements.trialing
+              complimentary
+                ? "$0, never billed"
+                : entitlements.trialing
                 ? "$0 during trial"
                 : isPaid && currentPlan
                   ? `${PLANS[currentPlan].priceLabel}/month`
@@ -251,7 +283,11 @@ export default async function BillingPage(props: {
           />
           <Row
             label="Status"
-            value={STATUS_LABELS[subscription?.status ?? ""] ?? subscription?.status ?? NO_VALUE}
+            value={
+              complimentary
+                ? "Complimentary (owner login)"
+                : STATUS_LABELS[subscription?.status ?? ""] ?? subscription?.status ?? NO_VALUE
+            }
           />
           {entitlements.currentPeriodEnd ? (
             <Row
@@ -296,68 +332,70 @@ export default async function BillingPage(props: {
       </Panel>
 
       {/* ── Choose / change plan ─────────────────────────────────── */}
-      <Panel title={isPaid ? "Change your plan" : "Choose your plan"}>
-        {!stripeReady ? (
-          <p className="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            Billing isn&rsquo;t fully configured in this environment yet. Please contact{" "}
-            <a href="mailto:support@jobprofitai.com" className="font-medium underline">
-              support@jobprofitai.com
-            </a>
-            .
-          </p>
-        ) : isPaid ? (
-          <p className="text-sm text-gray-600">
-            Switch plans from{" "}
-            <span className="font-medium text-navy">Manage Billing</span> above. Stripe
-            prorates the change automatically, in either direction.
-          </p>
-        ) : (
-          <>
-            <div className="grid gap-5 lg:grid-cols-2">
-              {PLAN_LIST.map((plan) => (
-                <div
-                  key={plan.id}
-                  className={`rounded-xl border p-5 ${
-                    plan.mostPopular ? "border-brand" : "border-gray-200"
-                  }`}
-                >
-                  <div className="flex items-baseline justify-between">
-                    <h3 className="font-semibold text-navy">{plan.name}</h3>
-                    {plan.mostPopular ? (
-                      <span className="rounded-full bg-brand-light px-2.5 py-0.5 text-xs font-semibold text-brand">
-                        Most Popular
-                      </span>
-                    ) : null}
-                  </div>
-                  <p className="mt-2 text-3xl font-bold text-navy">
-                    {plan.priceLabel}
-                    <span className="text-base font-normal text-gray-500">/month</span>
-                  </p>
-                  <p className="mt-2 text-sm text-gray-600">{plan.bestFor}</p>
-                  <CheckoutButton
-                    plan={plan.id}
-                    label={`Choose ${plan.name}`}
-                    variant={plan.mostPopular ? "primary" : "secondary"}
-                    className="mt-5"
-                  />
-                </div>
-              ))}
-            </div>
-            <p className="mt-4 text-xs text-gray-500">
-              Plans renew automatically every month at the price shown until you cancel. Cancel
-              anytime from Manage Billing on this page; cancellation takes effect at the end of the
-              month you have already paid for. See our{" "}
-              <Link href="/terms" className="font-medium text-brand hover:underline">
-                Terms of Service
-              </Link>
-              .{" "}
-              <Link href="/pricing" className="font-medium text-brand hover:underline">
-                Compare plans in detail
-              </Link>
+      {complimentary ? null : (
+        <Panel title={isPaid ? "Change your plan" : "Choose your plan"}>
+          {!stripeReady ? (
+            <p className="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              Billing isn&rsquo;t fully configured in this environment yet. Please contact{" "}
+              <a href="mailto:support@jobprofitai.com" className="font-medium underline">
+                support@jobprofitai.com
+              </a>
+              .
             </p>
-          </>
-        )}
-      </Panel>
+          ) : isPaid ? (
+            <p className="text-sm text-gray-600">
+              Switch plans from{" "}
+              <span className="font-medium text-navy">Manage Billing</span> above. Stripe
+              prorates the change automatically, in either direction.
+            </p>
+          ) : (
+            <>
+              <div className="grid gap-5 lg:grid-cols-2">
+                {PLAN_LIST.map((plan) => (
+                  <div
+                    key={plan.id}
+                    className={`rounded-xl border p-5 ${
+                      plan.mostPopular ? "border-brand" : "border-gray-200"
+                    }`}
+                  >
+                    <div className="flex items-baseline justify-between">
+                      <h3 className="font-semibold text-navy">{plan.name}</h3>
+                      {plan.mostPopular ? (
+                        <span className="rounded-full bg-brand-light px-2.5 py-0.5 text-xs font-semibold text-brand">
+                          Most Popular
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="mt-2 text-3xl font-bold text-navy">
+                      {plan.priceLabel}
+                      <span className="text-base font-normal text-gray-500">/month</span>
+                    </p>
+                    <p className="mt-2 text-sm text-gray-600">{plan.bestFor}</p>
+                    <CheckoutButton
+                      plan={plan.id}
+                      label={`Choose ${plan.name}`}
+                      variant={plan.mostPopular ? "primary" : "secondary"}
+                      className="mt-5"
+                    />
+                  </div>
+                ))}
+              </div>
+              <p className="mt-4 text-xs text-gray-500">
+                Plans renew automatically every month at the price shown until you cancel. Cancel
+                anytime from Manage Billing on this page; cancellation takes effect at the end of the
+                month you have already paid for. See our{" "}
+                <Link href="/terms" className="font-medium text-brand hover:underline">
+                  Terms of Service
+                </Link>
+                .{" "}
+                <Link href="/pricing" className="font-medium text-brand hover:underline">
+                  Compare plans in detail
+                </Link>
+              </p>
+            </>
+          )}
+        </Panel>
+      )}
 
       {/* ── Referrals ────────────────────────────────────────────── */}
       <Panel title="Referral credits">

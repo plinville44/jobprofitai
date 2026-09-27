@@ -25,7 +25,8 @@ export default async function TrialBanner({ userId }: { userId: string }) {
   ]);
   const timeZone = connection?.emailTimezone ?? DEFAULT_TIME_ZONE;
 
-  // Paid and healthy - no banner at all.
+  // Paid and healthy, or the owner's own complimentary login: no banner.
+  if (entitlements.access === "complimentary") return null;
   if (entitlements.access === "active" && !entitlements.cancelAtPeriodEnd) return null;
 
   // Two different payment problems. past_due: Stripe is still retrying and

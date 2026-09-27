@@ -207,6 +207,61 @@ describe("plan limits", () => {
   });
 });
 
+describe("complimentary access for the owner's own login", () => {
+  const withAllowlist = async (fn: () => Promise<void>) => {
+    process.env.ADMIN_EMAILS = "owner@example.com";
+    try {
+      await fn();
+    } finally {
+      delete process.env.ADMIN_EMAILS;
+    }
+  };
+
+  it("gives an allowlisted, verified owner Pro for good, even with a cancelled subscription", async () => {
+    await withAllowlist(async () => {
+      await fake.client.user.create({ data: { id: "u1", email: "owner@example.com", emailVerifiedAt: NOW } });
+      await fake.client.subscription.create({
+        data: { userId: "u1", plan: "profit_intelligence", status: "canceled", cancelAtPeriodEnd: true, currentPeriodEnd: NOW },
+      });
+      const ent = await getEntitlements("u1", NOW);
+      expect(ent.access).toBe("complimentary");
+      expect(ent.active).toBe(true);
+      expect(ent.plan).toBe("profit_intelligence_pro");
+      expect(ent.has("forecast_at_completion")).toBe(true);
+      expect(ent.has("profit_opportunities")).toBe(true);
+      expect(ent.limits.maxConnections).toBe(3);
+      expect(ent.cancelAtPeriodEnd).toBe(false);
+      expect(ent.currentPeriodEnd).toBeNull();
+      expect(ent.paymentIssue).toBe(false);
+    });
+  });
+
+  it("needs no subscription at all", async () => {
+    await withAllowlist(async () => {
+      await fake.client.user.create({ data: { id: "u1", email: "owner@example.com", emailVerifiedAt: NOW } });
+      expect((await getEntitlements("u1", NOW)).access).toBe("complimentary");
+    });
+  });
+
+  it("isn't given to an unverified email on the list, or to anyone off it", async () => {
+    await withAllowlist(async () => {
+      await fake.client.user.create({ data: { id: "u1", email: "owner@example.com" } });
+      await fake.client.user.create({ data: { id: "u2", email: "someone@example.com", emailVerifiedAt: NOW } });
+      await fake.client.subscription.create({ data: { userId: "u2", plan: "profit_intelligence", status: "canceled" } });
+      expect((await getEntitlements("u1", NOW)).access).toBe("none");
+      const other = await getEntitlements("u2", NOW);
+      expect(other.access).toBe("canceled");
+      expect(other.active).toBe(false);
+    });
+  });
+
+  it("is off when no allowlist is set", async () => {
+    delete process.env.ADMIN_EMAILS;
+    await fake.client.user.create({ data: { id: "u1", email: "owner@example.com", emailVerifiedAt: NOW } });
+    expect((await getEntitlements("u1", NOW)).access).toBe("none");
+  });
+});
+
 describe("admin allowlist", () => {
   it("grants nobody admin when ADMIN_EMAILS is unset", () => {
     delete process.env.ADMIN_EMAILS;
