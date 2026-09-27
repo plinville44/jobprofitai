@@ -288,7 +288,7 @@ export async function qualifyDueReferrals(now: Date = new Date()): Promise<Quali
       const referredSubscription = referral.referredUserId
         ? await prisma.subscription.findUnique({
             where: { userId: referral.referredUserId },
-            select: { status: true },
+            select: { status: true, cancelAtPeriodEnd: true, currentPeriodEnd: true },
           })
         : null;
       const referredStatus = referredSubscription?.status;
@@ -302,6 +302,23 @@ export async function qualifyDueReferrals(now: Date = new Date()): Promise<Quali
       // on the next run. If the retries never succeed, Stripe moves the
       // subscription to unpaid or canceled and the branch below ends it then.
       if (referredStatus === "past_due") continue;
+
+      // Still "active" but already set to cancel, or not yet past its first
+      // renewal: not a qualification yet, and not a disqualification. The
+      // credit is a month of the REFERRER's plan, so a $299 customer could
+      // otherwise refer an account of their own at $149, cancel it at once,
+      // and be credited $299 when it's still "active" at day 30. Waiting for
+      // the first renewal to be paid means that costs at least as much as it
+      // earns ($298 paid for a $299 credit), so it no longer pays.
+      // Re-checked each run; if the subscription ends, the branch below
+      // disqualifies it.
+      if (referredStatus === "active") {
+        const renewed =
+          referral.firstPaidAt != null &&
+          referredSubscription?.currentPeriodEnd != null &&
+          referredSubscription.currentPeriodEnd.getTime() >= referral.firstPaidAt.getTime() + 45 * 86_400_000;
+        if (referredSubscription?.cancelAtPeriodEnd || !renewed) continue;
+      }
 
       if (referredStatus !== "active") {
         await prisma.referral.update({

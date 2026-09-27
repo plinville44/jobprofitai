@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ButtonLink, Card, Eyebrow, Section, SectionHeading } from "@/components/marketing/ui";
+import { OG_IMAGE } from "@/lib/siteMeta";
 
 export const metadata: Metadata = {
   title: "Security",
@@ -8,6 +9,7 @@ export const metadata: Metadata = {
     "How JobProfitAI protects your QuickBooks financial data: Intuit OAuth, encrypted tokens at rest, account isolation, Stripe-hosted payments, and what we do and don't store.",
   alternates: { canonical: "/security" },
   openGraph: {
+    images: [OG_IMAGE],
     title: "JobProfitAI Security",
     description:
       "How we handle your QuickBooks connection, what we store, and what we haven't done yet.",

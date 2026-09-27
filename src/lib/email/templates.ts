@@ -585,7 +585,7 @@ export function referralSignupEmail(): RenderedEmail {
     heading: "Someone joined through your link",
     body: [
       "A new contractor started a JobProfitAI trial using your referral link.",
-      `If they become a paying customer and stay subscribed for ${REFERRAL_QUALIFY_DAYS} days, you'll earn a free month of your current plan as an account credit.`,
+      `If they become a paying customer and stay subscribed for ${REFERRAL_QUALIFY_DAYS} days, into their second paid month, you'll earn a free month of your current plan as an account credit.`,
     ],
     cta: { label: "See your referrals", url: appUrl("/dashboard/referrals") },
     footnote: "We don't share who they are. That's their business, not ours to pass along.",

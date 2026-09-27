@@ -19,6 +19,8 @@ import { generateWeeklyDigestForConnection } from "@/lib/digest";
 // A sync-free brief: metrics plus one AI call.
 export const maxDuration = 120;
 
+const BRIEF_COOLDOWN_MS = 60_000;
+
 export async function POST(req: NextRequest) {
   try {
     const account = await getAccount();
@@ -42,6 +44,16 @@ export async function POST(req: NextRequest) {
     });
     if (!connection || connection.userId !== account.ownerId) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+    }
+
+    // One brief a minute per company. Each one is an AI call; without a
+    // limit, a script could run up the bill without end.
+    const claim = await prisma.quickBooksConnection.updateMany({
+      where: { id: connection.id, OR: [{ aiBriefAt: null }, { aiBriefAt: { lt: new Date(Date.now() - BRIEF_COOLDOWN_MS) } }] },
+      data: { aiBriefAt: new Date() },
+    });
+    if (claim.count === 0) {
+      return NextResponse.json({ error: "A brief was just made for this company. Give it a minute and try again." }, { status: 429 });
     }
 
     // This week in the company's own time zone, the same key the weekly

@@ -37,6 +37,7 @@
 // ============================================================================
 
 import type { ForecastResult, JobFinancials } from "./profitability";
+import { forecastIsActionable } from "./forecastRules";
 import type { CostCategory, EstimateLine } from "./qboNormalize";
 import { formatCurrency } from "./format";
 
@@ -55,6 +56,8 @@ export const MIN_MIX_COVERAGE = 0.5;
 export const MAX_TARGET_PCT = 90;
 
 const DAY = 86_400_000;
+/** Open jobs with no cost or invoice for this long are treated as idle (the same 90 days as IDLE_JOB_DAYS in profitability.ts). */
+const IDLE_OPEN_DAYS = 90;
 
 /** A part of the job as a noun phrase that reads in any sentence. */
 const PART_NAMES: Record<CoreCategory, string> = {
@@ -287,6 +290,17 @@ function finishedBasis(jobs: JobFinancials[], now: Date, windowDays: number): Ba
 /** The price a job needed to hit its own target. */
 const priceAtTarget = (j: BasisJob) => j.cost / (1 - j.target!);
 
+/**
+ * How far over their cost estimates a set of jobs ran, in dollars over
+ * dollars. A plain average of percentages lets one tiny job 150% over
+ * outweigh four large ones that came in under.
+ */
+function overrunRate(group: BasisJob[]): number {
+  const estimated = group.reduce((t, j) => t + (j.f.estimatedCost ?? 0), 0);
+  const over = group.reduce((t, j) => t + (j.f.varianceVsEstimate ?? 0), 0);
+  return estimated > 0 ? over / estimated : 0;
+}
+
 interface GroupStats {
   n: number;
   revenue: number;
@@ -428,6 +442,10 @@ export interface FeedSummary {
   estimatesChecked: number;
   /** Work done and not billed yet. Cash, not profit. */
   unbilledWork: number;
+  /** Active open jobs (activity in the last 90 days) with a target and a firm forecast or the contractor's own cost estimate. */
+  openJobsChecked: number;
+  /** Active open jobs with a contract value and a way to measure progress (the WIP figures). */
+  billingChecked: number;
 }
 
 export interface SetupHint {
@@ -512,15 +530,24 @@ export interface FeedInput {
   idleOpenJobs?: number;
 }
 
+const niceStep = (n: number) => (n < 2_000 ? 250 : n < 10_000 ? 500 : n < 50_000 ? 1_000 : n < 200_000 ? 5_000 : 25_000);
+
 /** Rounds a size threshold up to a figure a contractor would say out loud. */
 export function niceCeil(n: number): number {
   if (n <= 0) return 0;
-  const step = n < 2_000 ? 250 : n < 10_000 ? 500 : n < 50_000 ? 1_000 : n < 200_000 ? 5_000 : 25_000;
+  const step = niceStep(n);
   return Math.ceil(n / step) * step;
 }
 
+/** The same figures, rounded to the nearest step rather than up. */
+function niceRound(n: number): number {
+  if (n <= 0) return 0;
+  const step = niceStep(n);
+  return Math.max(step, Math.round(n / step) * step);
+}
+
 const METHOD_PRICED =
-  "A job that cost C needed to sell for C / (1 - target) to hit its target margin. The figure is that price minus what the jobs actually sold for, over the group as a whole. It assumes the same costs, and that customers would still have bought at the higher price.";
+  "A job that cost C needed to sell for C / (1 - target) to hit its target margin. The figure is that price minus what the jobs actually sold for, over the group as a whole, so jobs above target offset jobs below. It assumes the same costs, and that customers would still have bought at the higher price. No figure here is more than the headline, which nets each job type the same way (jobs without a type by size).";
 
 export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
   const { now, jobs, forecasts, mixes, typeLabel } = input;
@@ -531,18 +558,32 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
   const judged = basis.filter((j) => j.target != null);
   const targetSet = jobs.some((f) => targetFraction(f.targetMarginPct) != null);
 
-  // ---- Headline: each finished job once --------------------------------
-  let pricingGap = 0;
-  let jobsBelowTarget = 0;
-  const jobShortfall = new Map<string, number>();
+  // ---- Headline: the net gap, one job type at a time -------------------
+  // Prices are set per kind of work, and costs vary from job to job around
+  // them. Adding up only the jobs that came in low would count that normal
+  // spread as lost profit: a company exactly at target overall would still
+  // show a large figure. So each job type is netted (its jobs above target
+  // offset its jobs below), and only types short overall add to the total.
+  // Jobs with no type are netted by size instead (smallest, middle and
+  // largest third), since small jobs are usually priced differently from
+  // big ones; with fewer than nine of them they're netted together.
+  const jobsBelowTarget = judged.filter((j) => j.margin < j.target!).length;
+  const headlineGroups = new Map<string, BasisJob[]>();
   for (const j of judged) {
-    if (j.margin < j.target!) {
-      jobsBelowTarget++;
-      const gap = Math.max(0, priceAtTarget(j) - j.revenue);
-      pricingGap += gap;
-      jobShortfall.set(j.f.jobId, gap);
-    }
+    if (!j.f.category) continue;
+    headlineGroups.set(j.f.category, [...(headlineGroups.get(j.f.category) ?? []), j]);
   }
+  const untyped = judged.filter((j) => !j.f.category).sort((a, b) => a.revenue - b.revenue);
+  if (untyped.length >= 9) {
+    const third = Math.floor(untyped.length / 3);
+    headlineGroups.set("\u0000small", untyped.slice(0, third));
+    headlineGroups.set("\u0000middle", untyped.slice(third, untyped.length - third));
+    headlineGroups.set("\u0000large", untyped.slice(untyped.length - third));
+  } else if (untyped.length > 0) {
+    headlineGroups.set("\u0000untyped", untyped);
+  }
+  let pricingGap = 0;
+  for (const group of headlineGroups.values()) pricingGap += groupStats(group).gapToTarget;
 
   // ---- Job types ---------------------------------------------------------
   const byType = new Map<string, BasisJob[]>();
@@ -582,10 +623,10 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
       } else {
         const withEstimate = group.filter((j) => j.f.varianceVsEstimatePct != null && j.f.varianceVsEstimate != null && !input.targetFilledEstimates?.has(j.f.jobId));
         if (withEstimate.length >= MIN_JOBS) {
-          const avgOver = withEstimate.reduce((t, j) => t + j.f.varianceVsEstimatePct!, 0) / withEstimate.length;
+          const avgOver = overrunRate(withEstimate);
           const totalOver = withEstimate.reduce((t, j) => t + Math.max(0, j.f.varianceVsEstimate!), 0);
           if (avgOver > 0.05 && totalOver > 0) {
-            cause = `Costs ran an average of ${pct(avgOver, 0)} over estimate on the ${plural(withEstimate.length, "job")} with a cost estimate (${money(totalOver)} over in all), so prices were set on costs that were too low.`;
+            cause = `Costs ran ${pct(avgOver, 0)} over estimate overall on the ${plural(withEstimate.length, "job")} with a cost estimate (${money(totalOver)} over on the jobs that ran over), so prices were set on costs that were too low.`;
             action = `Add about ${upPct(avgOver)} to the cost side of your next ${phrase} estimates before you price them, and raise prices on ${phrase} jobs by about ${upPct(s.priceIncrease!)} in all to reach ${s.targetText}.`;
           }
         }
@@ -649,12 +690,15 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
   }
 
   // ---- The parts of the price, company-wide, when job types don't carry it --
-  // Only jobs below target, and only as much of each job's shortfall as the
-  // thin part accounts for, so this can never claim more than the headline.
+  // Every finished job whose estimate split the price, not just the ones
+  // that came in low: picking only the low ones would make the part look
+  // thinner than it is, and make any later "before and after" look like a
+  // gain by chance. The figure is netted across the jobs and never more
+  // than the headline.
   const typesCoverMost = basisRevenue > 0 && typedRevenue / basisRevenue >= 0.5;
-  if (!typesCoverMost) {
-    const below = judged.filter((j) => jobShortfall.has(j.f.jobId) && mixes.has(j.f.jobId));
-    const splits = usableSplits(below.map((j) => ({ f: j.f, mix: mixes.get(j.f.jobId)!, j })));
+  if (!typesCoverMost && pricingGap > 0) {
+    const withMix = judged.filter((j) => mixes.has(j.f.jobId));
+    const splits = usableSplits(withMix.map((j) => ({ f: j.f, mix: mixes.get(j.f.jobId)!, j })));
     if (splits.length >= MIN_JOBS) {
       const parts = categoryResults(splits);
       const rev = splits.reduce((s, x) => s + x.f.revenue, 0);
@@ -662,13 +706,13 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
       const weakest = parts.find((p) => p.shareOfPrice >= 0.1 && p.marginPct < target - 0.05 && !typeItemsWithCause.has(p.category));
       if (weakest) {
         const k = weakest.category;
-        let recoverable = 0;
+        let partNeeded = 0;
         for (const x of splits) {
           const actual = coreActuals(x.f)!;
-          const charged = (x.mix.shares[k] ?? 0) * x.f.revenue;
-          const partGap = Math.max(0, (actual[k] ?? 0) / (1 - x.j.target!) - charged);
-          recoverable += Math.min(jobShortfall.get(x.f.jobId) ?? 0, partGap);
+          partNeeded += (actual[k] ?? 0) / (1 - x.j.target!);
         }
+        const partGap = Math.max(0, partNeeded - weakest.charged);
+        const recoverable = Math.min(partGap, pricingGap);
         if (recoverable > 0) {
           const others = parts.filter((p) => p.category !== k);
           const uniform = splits.every((x) => Math.abs(x.j.target! - splits[0].j.target!) < 1e-9);
@@ -682,12 +726,12 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
             impactLabel: "more profit a year",
             impactKind: "profit",
             confidence: splits.length >= 6 ? "high" : "medium",
-            confidenceReason: `Based on ${plural(splits.length, "finished job")} below target whose QuickBooks estimates split the price.`,
-            finding: `On ${plural(splits.length, "finished job")} below target, customers paid ${money(weakest.charged)} for ${PART_NAMES[k]} and it cost ${money(weakest.cost)}, for a margin of ${pct(weakest.marginPct)}.`,
+            confidenceReason: `Based on ${plural(splits.length, "finished job")} whose QuickBooks estimates split the price.`,
+            finding: `On ${plural(splits.length, "finished job")} whose estimates split the price, customers paid ${money(weakest.charged)} for ${PART_NAMES[k]} and it cost ${money(weakest.cost)}, for a margin of ${pct(weakest.marginPct)}.`,
             cause: others.length ? `${othersSentence(others)}.` : null,
-            action: `Raise the ${PART_NAMES[k]} line on your estimates by about ${upPct(recoverable / weakest.charged)}.`,
+            action: `Raise the ${PART_NAMES[k]} line on your estimates by about ${upPct(recoverable / weakest.charged)}. That covers the shortfall above on the same work.`,
             method:
-              "Each job's invoiced revenue is split the way its QuickBooks estimate split the price, and set against what each part actually cost. Estimate lines and costs outside labor, materials, subs and equipment are spread across those four in proportion, so the parts add up to the whole job. The figure is how much of each job's shortfall against its target this part accounts for, added up.",
+              "Each job's invoiced revenue is split the way its QuickBooks estimate split the price, and set against what each part actually cost. Estimate lines and costs outside labor, materials, subs and equipment are spread across those four in proportion, so the parts add up to the whole job. The figure is what this part needed to sell for at your targets minus what it sold for, across all these jobs, and never more than the headline.",
             jobIds: splits.map((x) => x.f.jobId),
             href: null,
             breakdown: parts,
@@ -718,6 +762,14 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
       if (worthAnItem(s) && s.margin < b.margin - 0.05) {
         const avgCost = s.cost / s.n;
         const avgNeeded = s.needed / s.n;
+        // Tracking picks the "after" jobs by cost, since the change being
+        // measured raises the price. The baseline uses the same rule, or the
+        // two sides would be different sets of jobs.
+        // Rounded, so the key stays the same as one more small job closes
+        // and nudges the margin (the "tracked" state is matched by key).
+        const costCeiling = niceRound(Math.max(threshold * (1 - s.margin), threshold * 0.5));
+        const byCost = judged.filter((j) => j.cost <= costCeiling);
+        const baseline = byCost.length >= MIN_JOBS ? groupStats(byCost) : s;
         const { confidence, reason } = groupConfidence(s, "finished job this size", "finished jobs this size");
         items.push({
           id: "small_jobs",
@@ -738,11 +790,11 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
           breakdown: null,
           trackable: {
             kind: "small_jobs",
-            subjectKey: String(threshold),
+            subjectKey: `cost:${costCeiling}`,
             costCategory: null,
-            baselineMarginPct: s.margin,
-            baselineJobs: s.n,
-            baselineRevenue: s.revenue,
+            baselineMarginPct: baseline.margin,
+            baselineJobs: baseline.n,
+            baselineRevenue: baseline.revenue,
             targetMarginPct: s.uniformTarget != null ? s.uniformTarget * 100 : null,
           },
         });
@@ -796,7 +848,7 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
   if (!typesCoverMost) {
     const withEstimate = basis.filter((j) => j.f.varianceVsEstimatePct != null && j.f.varianceVsEstimate != null && !input.targetFilledEstimates?.has(j.f.jobId));
     if (withEstimate.length >= MIN_JOBS) {
-      const avgOver = withEstimate.reduce((t, j) => t + j.f.varianceVsEstimatePct!, 0) / withEstimate.length;
+      const avgOver = overrunRate(withEstimate);
       const over = withEstimate.filter((j) => j.f.varianceVsEstimate! > 0);
       const total = over.reduce((t, j) => t + j.f.varianceVsEstimate!, 0);
       if (avgOver > 0.1 && total > 0) {
@@ -827,21 +879,31 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
   let openJobRisk = 0;
   const openAtRisk = new Set<string>();
   let unbilledWork = 0;
+  // What could actually be checked, so an empty result isn't read as a
+  // clean bill of health.
+  let openJobsChecked = 0;
+  let billingChecked = 0;
   for (const f of jobs) {
     if (f.status !== "open") continue;
+    // An open job with nothing on it for 90 days is almost always finished
+    // and never marked so. Its "unbilled work" and "over estimate" are
+    // history, not something to act on; the idle-jobs hint covers it.
+    if (f.lastFinancialActivity == null || now.getTime() - f.lastFinancialActivity.getTime() > IDLE_OPEN_DAYS * DAY) continue;
     const target = targetFraction(f.targetMarginPct);
     const fc = forecasts.get(f.jobId);
+    const firmForecast = forecastIsActionable(f, fc);
+    const hasOwnEstimate = f.estimatedCost != null && !input.targetFilledEstimates?.has(f.jobId);
+    if (target != null && (firmForecast || hasOwnEstimate)) openJobsChecked++;
+    if (f.wip && f.estimatedRevenue != null) billingChecked++;
     let forecastFlagged = false;
     if (
       target != null &&
-      fc?.available &&
-      fc.forecastMarginPct != null &&
+      firmForecast &&
       fc.forecastCostAtCompletion != null &&
-      f.estimatedRevenue != null &&
-      f.estimatedRevenue > 0 &&
       fc.forecastMarginPct < target - 0.01
     ) {
-      const impact = f.estimatedRevenue * (target - fc.forecastMarginPct);
+      const contract = fc.contractValue;
+      const impact = contract * (target - fc.forecastMarginPct);
       forecastFlagged = true;
       openJobRisk += impact;
       openAtRisk.add(f.jobId);
@@ -859,7 +921,7 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
         impactKind: "profit",
         confidence: fc.confidence ?? "low",
         confidenceReason: fc.method ?? "Forecast from cost to date.",
-        finding: `On a ${money(f.estimatedRevenue)} contract, costs are heading for ${money(fc.forecastCostAtCompletion)}.${overEstimate}`,
+        finding: `On a ${money(contract)} contract, costs are heading for ${money(fc.forecastCostAtCompletion)}.${overEstimate}`,
         cause: null,
         action:
           "Check what's left to do against what's left in the budget, and write up anything outside the original scope as a change order before the work is done, not after.",
@@ -870,8 +932,11 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
         trackable: null,
       });
     }
+    // Over its estimate but with a firm forecast that still reaches target:
+    // worth knowing on the job page, not "at risk".
     if (
       !forecastFlagged &&
+      !firmForecast &&
       f.varianceVsEstimatePct != null &&
       f.varianceVsEstimate != null &&
       f.estimatedCost != null &&
@@ -945,17 +1010,14 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
       confidence: e.confidence,
       confidenceReason: e.confidenceReason,
       finding: `If it goes like your last ${plural(e.historyJobs, `${typePhrase(e.typeLabel)} job`)}, it earns ${pct(e.predictedMarginPct)} against your ${fmtTarget(e.targetMarginPct)} target.`,
-      cause:
-        e.method === "whole_job"
-          ? `Checked on the whole price: your ${typePhrase(e.typeLabel)} jobs as a group come in below target, so an estimate priced the way they were does too. The fix is likely your ${typePhrase(e.typeLabel)} pricing in general, not only this estimate.`
-          : null,
+      cause: `Your ${typePhrase(e.typeLabel)} jobs as a group come in below target, so an estimate priced the way they were does too. The fix is likely your ${typePhrase(e.typeLabel)} pricing in general, not only this estimate.`,
       action:
         e.method === "by_part"
-          ? "Open the Estimate Check for the price that reaches your target, part by part, then update the estimate in QuickBooks."
+          ? "Open the Estimate Check for the price that reaches your target and which line is thinnest, then update the estimate in QuickBooks."
           : "Open the Estimate Check for the price that reaches your target, then update the estimate in QuickBooks.",
       method:
         e.method === "by_part"
-          ? "What similar finished jobs actually cost for each dollar charged for labor, materials and subs, applied to this estimate's prices for each. The Estimate Check page shows the working."
+          ? "What similar finished jobs actually cost for each dollar charged, applied to this estimate's total, with the lines compared against how those jobs' costs usually split. The Estimate Check page shows the working."
           : "What similar finished jobs actually cost for each dollar charged, applied to this estimate's total. The Estimate Check page shows the working.",
       jobIds: [],
       href: `/dashboard/estimates#estimate-${e.estimateId}`,
@@ -1012,10 +1074,18 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
     });
   }
 
+  // No pricing item claims more than the headline: a customer or job-size
+  // group can cut across job types whose other jobs make up the difference.
+  // One the headline says is covered by the rest of the work is dropped.
+  const CAPPED: FeedItemKind[] = ["job_type_pricing", "category_pricing", "small_jobs", "customer_pricing"];
+  const capped = items
+    .map((i) => (CAPPED.includes(i.kind) && i.impact != null ? { ...i, impact: Math.min(i.impact, pricingGap) } : i))
+    .filter((i) => !(CAPPED.includes(i.kind) && (i.impact ?? 0) < 1));
+
   // A customer whose jobs are exactly one job type's jobs says the same
   // thing twice; the customer is the more useful way to say it.
-  const customerSets = new Set(items.filter((i) => i.kind === "customer_pricing").map((i) => [...i.jobIds].sort().join(",")));
-  const deduped = items.filter((i) => !(i.kind === "job_type_pricing" && customerSets.has([...i.jobIds].sort().join(","))));
+  const customerSets = new Set(capped.filter((i) => i.kind === "customer_pricing").map((i) => [...i.jobIds].sort().join(",")));
+  const deduped = capped.filter((i) => !(i.kind === "job_type_pricing" && customerSets.has([...i.jobIds].sort().join(","))));
 
   // Act now: estimates first (still changeable for the price of an edit),
   // then open jobs, then bills to send. Everything else by dollars.
@@ -1044,6 +1114,8 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
       estimatesPending: input.estimateCounts?.pending ?? input.estimateFlags.length,
       estimatesChecked: input.estimateCounts?.checked ?? input.estimateFlags.length,
       unbilledWork,
+      openJobsChecked,
+      billingChecked,
     },
     items: deduped,
     setup,
@@ -1067,11 +1139,13 @@ export interface EstimateCheckInput {
 
 export interface EstimateCategoryCheck {
   category: CoreCategory;
+  /** What this estimate charges for the part. */
   charged: number;
-  /** What similar jobs spent per dollar charged for this part. */
-  costRatio: number;
+  /** The part's usual share of the cost on similar finished jobs (0 to 1). */
+  costShare: number;
+  /** The job's expected cost times that share. */
   expectedCost: number;
-  /** The price for this part that reaches the target. */
+  /** What the part needs to sell for to reach the target on that cost. */
   priceAtTarget: number;
 }
 
@@ -1105,11 +1179,20 @@ export interface EstimateCheckResult {
  * What a pending estimate is likely to earn, judged by what the company's
  * own finished jobs of the same type actually cost for every dollar charged.
  *
- * Part by part when it's safe: past jobs whose split lines up with their
- * costs, and an estimate that prices every part those jobs spent real money
- * on. An estimate that prices labor thinner than usual is then caught even
- * when its total looks normal. Otherwise the whole price is costed at the
- * past jobs' overall rate, which can't miss cost the estimate didn't list.
+ * The expected cost is always the whole price at the past jobs' overall
+ * rate. QuickBooks estimates carry prices, not the size of the work, so the
+ * only thing that can be said about the total is "at your usual rates for
+ * this type of job, this lands at X%": any price comes out at the same
+ * margin, and the page says so.
+ *
+ * When past estimates split the price in a way that lines up with their
+ * costs, and this estimate prices every part those jobs spent real money
+ * on, the lines are compared too: the expected cost is split the way it
+ * usually splits between labor, materials, subs and equipment, and each
+ * line is set against what its share needs to sell for at the target. That
+ * shows which line is thin. (The earlier version costed each line at its
+ * own price, so raising a thin line raised its expected cost with it and
+ * made the estimate look worse.)
  */
 export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckResult {
   const since = input.now.getTime() - HISTORY_WINDOW_DAYS * DAY;
@@ -1160,28 +1243,27 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
   const unpriced = mix
     ? results.filter((r) => historyCost > 0 && r.cost / historyCost >= 0.05 && !(mix.shares[r.category] ?? 0))
     : [];
-  let expectedCost: number;
+  const expectedCost = input.amount * wholeRatio;
   let method: "by_part" | "whole_job";
   let methodNote: string | null = null;
   const parts: EstimateCategoryCheck[] = [];
   if (mix && results.length > 0 && unpriced.length === 0) {
     method = "by_part";
     const byCat = new Map(results.map((r) => [r.category, r]));
-    expectedCost = 0;
     for (const k of CORE_CATEGORIES) {
-      const share = mix.shares[k];
-      if (!share) continue;
-      const charged = share * input.amount;
       const r = byCat.get(k);
-      // A part past jobs never priced separately is costed at the overall rate.
-      const costRatio = r && r.charged > 0 ? r.cost / r.charged : wholeRatio;
-      const partCost = charged * costRatio;
-      expectedCost += partCost;
-      parts.push({ category: k, charged, costRatio, expectedCost: partCost, priceAtTarget: partCost / (1 - target) });
+      const costShare = r && historyCost > 0 ? r.cost / historyCost : 0;
+      const charged = (mix.shares[k] ?? 0) * input.amount;
+      if (charged <= 0 && costShare <= 0) continue;
+      const partCost = expectedCost * costShare;
+      parts.push({ category: k, charged, costShare, expectedCost: partCost, priceAtTarget: partCost / (1 - target) });
     }
+    methodNote =
+      "Checked on the whole price at the rate your past jobs of this type ran. At one rate, any price comes out at the same margin, " +
+      "so the overall result shows whether your pricing for this type of job reaches your target, not whether this job is priced right for its size. " +
+      "The lines are compared with how the cost of those jobs usually splits between labor, materials and subs; if this job's work splits differently, the line figures won't apply.";
   } else {
     method = "whole_job";
-    expectedCost = input.amount * wholeRatio;
     const tooFewSplit = withSplit.length < MIN_JOBS;
     const why = tooFewSplit
       ? withSplit.length === 0
@@ -1218,6 +1300,16 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
   // Below means below: the words never say "at or above" a target the
   // figure beside them misses, however small the dollar amount.
   const below = expectedMarginPct < target - 1e-9;
+  // The thinnest line, when the lines were compared.
+  const thin = parts
+    .map((p) => ({ p, gap: p.priceAtTarget - p.charged }))
+    .filter((x) => x.p.charged > 0 && x.gap >= 1 && x.p.charged < x.p.priceAtTarget * 0.98)
+    .sort((a, b) => b.gap - a.gap)[0];
+  const thinText = thin
+    ? below
+      ? ` The ${PART_NAMES[thin.p.category]} line is the thinnest: about ${money(thin.gap)} under what ${PART_NAMES[thin.p.category]} usually costs on these jobs at your target.`
+      : ` Its ${PART_NAMES[thin.p.category]} line is about ${money(thin.gap)} under what ${PART_NAMES[thin.p.category]} usually costs on these jobs at your target, made up by the other lines.`
+    : "";
   return {
     ...base,
     parts,
@@ -1232,8 +1324,8 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
     confidenceReason,
     methodNote,
     summary: below
-      ? `If this job goes like your past ones, it costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}. Reaching your ${fmtTarget(target)} target takes about ${money(priceAtTarget)}, ${money(shortfall)} more than quoted.`
-      : `If this job goes like your past ones, it costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}, at or above your ${fmtTarget(target)} target.`,
+      ? `If this job goes like your past ones, it costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}. Reaching your ${fmtTarget(target)} target takes about ${money(priceAtTarget)}, ${money(shortfall)} more than quoted.${thinText}`
+      : `If this job goes like your past ones, it costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}, at or above your ${fmtTarget(target)} target.${thinText}`,
   };
 }
 
@@ -1248,6 +1340,8 @@ export interface TrackedAction {
   baselineMarginPct: number;
   baselineJobs: number;
   startedAt: Date;
+  /** When the contractor stopped tracking it; jobs set up after that don't count. */
+  stoppedAt?: Date | null;
 }
 
 export interface ActionOutcome {
@@ -1273,7 +1367,12 @@ function matchesAction(a: TrackedAction, f: JobFinancials): boolean {
     case "small_jobs": {
       // Judged on cost, because the change being measured raises the price:
       // a job that used to sell for $4,000 and now sells for $4,800 is still
-      // one of the small jobs.
+      // one of the small jobs. New changes store the cost ceiling itself
+      // ("cost:2800"), the same one their baseline was measured with.
+      if (a.subjectKey.startsWith("cost:")) {
+        const ceiling = Number(a.subjectKey.slice(5));
+        return Number.isFinite(ceiling) && ceiling > 0 && f.costs > 0 && f.costs <= ceiling;
+      }
       const threshold = Number(a.subjectKey);
       const costCeiling = threshold * (1 - a.baselineMarginPct);
       return Number.isFinite(threshold) && f.costs > 0 && f.costs <= Math.max(costCeiling, threshold * 0.5);
@@ -1292,7 +1391,11 @@ function matchesAction(a: TrackedAction, f: JobFinancials): boolean {
  */
 export function computeActionOutcome(action: TrackedAction, jobs: JobFinancials[], mixes: Map<string, PricedMix>): ActionOutcome {
   const after = jobs.filter(
-    (f) => f.qboCreatedAt != null && f.qboCreatedAt.getTime() >= action.startedAt.getTime() && matchesAction(action, f)
+    (f) =>
+      f.qboCreatedAt != null &&
+      f.qboCreatedAt.getTime() >= action.startedAt.getTime() &&
+      (action.stoppedAt == null || f.qboCreatedAt.getTime() < action.stoppedAt.getTime()) &&
+      matchesAction(action, f)
   );
   const finished = after.filter((f) => f.status === "closed" && f.profitabilityAvailable && f.revenue > 0 && f.costs > 0);
   const inProgress = after.filter((f) => f.status === "open").length;

@@ -123,13 +123,29 @@ describe("estimate price split", () => {
 });
 
 describe("computeOpportunityFeed headline", () => {
-  it("prices each finished job to target once, and ignores jobs above target", () => {
+  it("nets jobs above and below target within a kind of work, but not across kinds", () => {
+    // Same kind of work: the 40% job makes up for the 20% one, so nothing is left behind.
     const below = job({ revenue: 100_000, costs: 80_000 }); // needs 114,285.71
-    const above = job({ revenue: 100_000, costs: 60_000 });
+    const above = job({ revenue: 100_000, costs: 60_000 }); // needs 85,714.29
     const out = feed([below, above]);
-    expect(out.summary.pricingGap).toBeCloseTo(80_000 / 0.7 - 100_000, 2);
+    expect(out.summary.pricingGap).toBeCloseTo(0, 2);
     expect(out.summary.jobsBelowTarget).toBe(1);
     expect(out.summary.jobsJudged).toBe(2);
+    // Different job types are priced separately: roofing's surplus doesn't cover remodeling.
+    const typed = feed([
+      job({ category: "remodel", revenue: 100_000, costs: 80_000 }),
+      job({ category: "roofing", revenue: 100_000, costs: 60_000 }),
+    ]);
+    expect(typed.summary.pricingGap).toBeCloseTo(80_000 / 0.7 - 100_000, 2);
+  });
+
+  it("doesn't count ordinary cost spread as lost profit", () => {
+    // 20 jobs of one kind, alternating 25% and 35.2% against a 30% target: 30.1% overall.
+    const jobs = Array.from({ length: 20 }, (_, i) => job({ category: "remodel", revenue: 50_000, costs: i % 2 ? 50_000 * 0.648 : 50_000 * 0.75 }));
+    const out = feed(jobs);
+    expect(out.summary.jobsBelowTarget).toBe(10);
+    expect(out.summary.pricingGap).toBe(0);
+    expect(out.items.some((i) => i.kind === "job_type_pricing")).toBe(false);
   });
 
   it("leaves out jobs finished more than a year ago, open jobs, and jobs without both revenue and costs", () => {
@@ -254,7 +270,9 @@ describe("small jobs", () => {
     expect(item.title).toBe("Jobs of $4,000 or less don't pay");
     expect(item.jobIds).toHaveLength(3);
     expect(item.impact).toBeCloseTo((3000 + 3500 + 4000) * 0.9 / 0.7 - 10_500, 2);
-    expect(item.trackable).toMatchObject({ kind: "small_jobs", subjectKey: "4000" });
+    // Tracked by cost, and the baseline is measured by the same rule.
+    expect(item.trackable).toMatchObject({ kind: "small_jobs", subjectKey: "cost:3500", baselineJobs: 3 });
+    expect(item.trackable!.baselineMarginPct).toBeCloseTo(0.1);
   });
 
   it("rounds thresholds to figures people use", () => {
@@ -269,7 +287,7 @@ describe("open jobs and cash", () => {
     const withForecast = job({ status: "open", revenue: 20_000, costs: 30_000, estimatedRevenue: 60_000 });
     const noForecast = job({ status: "open", revenue: 10_000, costs: 23_000, estimatedCost: 20_000, varianceVsEstimate: 3_000, varianceVsEstimatePct: 0.15 });
     const forecasts = new Map<string, ForecastResult>([
-      [withForecast.jobId, { available: true, forecastMarginPct: 0.2, forecastCostAtCompletion: 48_000, forecastProfit: 12_000, confidence: "medium", method: "m" }],
+      [withForecast.jobId, { available: true, forecastMarginPct: 0.2, forecastCostAtCompletion: 48_000, forecastProfit: 12_000, confidence: "medium", method: "m", contractValue: 60_000 }],
     ]);
     const out = feed([withForecast, noForecast], { forecasts });
     const fc = out.items.find((i) => i.kind === "open_job_forecast")!;
@@ -279,6 +297,25 @@ describe("open jobs and cash", () => {
     expect(out.summary.openJobRisk).toBeCloseTo(9_000);
     expect(out.summary.openJobsAtRisk).toBe(2);
     expect(out.items[0].section).toBe("act_now");
+  });
+
+  it("leaves idle open jobs out of Act now, and trusts a firm forecast over spend past estimate", () => {
+    // Nothing on it for 200 days: almost certainly finished and never marked so.
+    const idle = job({ status: "open", revenue: 30_000, costs: 30_000, estimatedRevenue: 40_000, estimatedCost: 25_000, varianceVsEstimate: 5_000, varianceVsEstimatePct: 0.2, lastFinancialActivity: daysAgo(200) });
+    // 10% over its estimate, but its forecast still clears the 30% target.
+    const fine = job({ status: "open", revenue: 90_000, costs: 66_000, estimatedRevenue: 100_000, estimatedCost: 60_000, varianceVsEstimate: 6_000, varianceVsEstimatePct: 0.1 + 1e-9 });
+    const forecasts = new Map<string, ForecastResult>([
+      [fine.jobId, { available: true, forecastMarginPct: 0.305, forecastCostAtCompletion: 69_500, forecastProfit: 30_500, confidence: "high", progressSource: "manual", contractValue: 100_000 }],
+    ]);
+    const out = feed([idle, fine], { forecasts });
+    expect(out.items.filter((i) => i.section === "act_now")).toHaveLength(0);
+    expect(out.summary.openJobRisk).toBe(0);
+    expect(out.summary.openJobsChecked).toBe(1);
+    // A low-confidence forecast (a small share billed) isn't acted on either.
+    const weak = new Map<string, ForecastResult>([
+      [fine.jobId, { available: true, forecastMarginPct: -2, forecastCostAtCompletion: 300_000, forecastProfit: -200_000, confidence: "low", progressSource: "billing", contractValue: 100_000 }],
+    ]);
+    expect(feed([fine], { forecasts: weak }).items.some((i) => i.kind === "open_job_forecast")).toBe(false);
   });
 
   it("keeps unbilled work out of profit figures", () => {
@@ -313,13 +350,13 @@ describe("estimates in the feed", () => {
     method,
   });
 
-  it("only promises a part-by-part price when the check was part by part", () => {
+  it("only mentions the lines when the lines were compared", () => {
     const whole = feed([], { estimateFlags: [flag("whole_job")] }).items.find((i) => i.kind === "estimate_below_target")!;
-    expect(whole.action).not.toContain("part by part");
-    expect(whole.cause).toContain("your remodel jobs as a group come in below target");
+    expect(whole.action).not.toContain("line");
+    expect(whole.cause).toContain("remodel jobs as a group come in below target");
     const parts = feed([], { estimateFlags: [flag("by_part")] }).items.find((i) => i.kind === "estimate_below_target")!;
-    expect(parts.action).toContain("part by part");
-    expect(parts.cause).toBeNull();
+    expect(parts.action).toContain("which line is thinnest");
+    expect(parts.cause).toContain("as a group come in below target");
   });
 
   it("tells no pending estimates apart from none below target", () => {
@@ -356,25 +393,50 @@ describe("computeEstimateCheck", () => {
     expect(r.status).toBe("below_target");
   });
 
-  it("costs each part at its own rate when both sides are split", () => {
-    // Past labor cost 1.0 per dollar charged, materials 0.6.
+  it("compares each line with how past jobs' costs split, and raising a thin line shrinks its gap", () => {
+    // Past jobs: $10,000 each, $8,000 cost, of which labor $5,000 and materials $3,000.
     const lines = [
       { n: "Labor", c: "labor" as const, a: 3_000 },
       { n: "Materials", c: "materials" as const, a: 7_000 },
     ];
     const r = computeEstimateCheck({ amount: 10_000, lines, targetPct: 30, history: history(), now: NOW });
     expect(r.method).toBe("by_part");
-    expect(r.expectedCost).toBeCloseTo(3_000 * 1.0 + 7_000 * 0.6);
-    // 1 - 7,200 / 10,000 = 28%, below 30%.
+    // The total is always the whole price at the past jobs' rate.
+    expect(r.expectedCost).toBeCloseTo(8_000);
     expect(r.status).toBe("below_target");
-    expect(r.shortfall).toBeCloseTo(7_200 / 0.7 - 10_000);
-    expect(r.parts.map((p) => [p.category, Math.round(p.costRatio * 100)])).toEqual([["labor", 100], ["materials", 60]]);
-    // Split the other way, the same total is further below: labor is where past jobs ran thin.
+    expect(r.shortfall).toBeCloseTo(8_000 / 0.7 - 10_000);
+    expect(r.parts.map((p) => [p.category, Math.round(p.costShare * 1000)])).toEqual([["labor", 625], ["materials", 375]]);
+    const labor = r.parts.find((p) => p.category === "labor")!;
+    expect(labor.priceAtTarget - labor.charged).toBeCloseTo((8_000 * 0.625) / 0.7 - 3_000);
+    expect(r.summary).toContain("The labor line is the thinnest");
+    expect(r.methodNote).toContain("any price comes out at the same margin");
+    // Following the advice closes the gap instead of widening it.
+    const gap = (l: number) => {
+      const x = computeEstimateCheck({
+        amount: l + 7_000,
+        lines: [
+          { n: "Labor", c: "labor" as const, a: l },
+          { n: "Materials", c: "materials" as const, a: 7_000 },
+        ],
+        targetPct: 30,
+        history: history(),
+        now: NOW,
+      });
+      const p = x.parts.find((q) => q.category === "labor")!;
+      return p.priceAtTarget - p.charged;
+    };
+    expect(gap(6_000)).toBeLessThan(gap(3_000));
+    expect(gap(17_500)).toBeCloseTo(0);
+    // How the price is split doesn't change the overall verdict.
     const heavyLabor = [
       { n: "Labor", c: "labor" as const, a: 7_000 },
       { n: "Materials", c: "materials" as const, a: 3_000 },
     ];
-    expect(computeEstimateCheck({ amount: 10_000, lines: heavyLabor, targetPct: 30, history: history(), now: NOW }).status).toBe("below_target");
+    expect(computeEstimateCheck({ amount: 10_000, lines: heavyLabor, targetPct: 30, history: history(), now: NOW }).expectedMarginPct).toBeCloseTo(0.2);
+    // On target overall, a thin line is still pointed out.
+    const ok = computeEstimateCheck({ amount: 10_000, lines, targetPct: 15, history: history(), now: NOW });
+    expect(ok.status).toBe("on_target");
+    expect(ok.summary).toContain("made up by the other lines");
   });
 
   it("refuses to guess without three comparable finished jobs or a target", () => {
@@ -500,7 +562,8 @@ describe("review fixes", () => {
     }));
     const byPart = computeEstimateCheck({ amount: 10_000, lines: split.slice(0, 2), targetPct: 30, history: splitHistory, now: NOW });
     expect(byPart.method).toBe("by_part");
-    expect(byPart.methodNote).toBeNull();
+    expect(byPart.methodNote).toContain("how the cost of those jobs usually splits");
+    expect(byPart.methodNote).toContain("any price comes out at the same margin");
     // Not checked at all: no note.
     expect(computeEstimateCheck({ amount: 9_000, lines: split, targetPct: 15, history: plain.slice(0, 2), now: NOW }).methodNote).toBeNull();
   });
@@ -549,6 +612,29 @@ describe("review fixes", () => {
     // When the cut would sweep in most of the jobs, there's no small-jobs finding at all.
     const crowded = [1000, 1100, 1600, 1700, 1740, 9000, 9500, 10000, 12000].map((r) => job({ revenue: r, costs: r < 5000 ? r * 0.95 : r * 0.6 }));
     expect(feed(crowded).items.some((i) => i.kind === "small_jobs")).toBe(false);
+  });
+
+  it("measures a labor price change against all the split jobs, not just the ones that came in low", () => {
+    // Six untyped jobs, all with split estimates. Labor runs thin on every one,
+    // but some jobs came in above target overall.
+    const mk = (costs: number, labor: number) =>
+      job({ revenue: 10_000, costs, costByCategory: { labor, materials: costs - labor } });
+    const jobs = [mk(8_000, 5_000), mk(8_200, 5_200), mk(7_900, 4_900), mk(6_500, 4_600), mk(6_600, 4_700), mk(6_400, 4_500)];
+    const mixes = new Map(jobs.map((j) => [j.jobId, mix({ labor: 0.5, materials: 0.5 })]));
+    const item = feed(jobs, { mixes }).items.find((i) => i.kind === "category_pricing");
+    expect(item).toBeDefined();
+    // Labor margin across all six jobs: 1 - 28,900 / 30,000.
+    expect(item!.trackable!.baselineMarginPct).toBeCloseTo(1 - 28_900 / 30_000);
+    expect(item!.trackable!.baselineJobs).toBe(6);
+    expect(item!.impact!).toBeLessThanOrEqual(feed(jobs, { mixes }).summary.pricingGap + 1e-6);
+  });
+
+  it("stops counting jobs once a tracked change is stopped", () => {
+    const a = { kind: "job_type" as const, subjectKey: "remodel", costCategory: null, baselineMarginPct: 0.2, baselineJobs: 4, startedAt: daysAgo(90), stoppedAt: daysAgo(40) };
+    const before = job({ category: "remodel", revenue: 10_000, costs: 7_000, qboCreatedAt: daysAgo(60) });
+    const after = job({ category: "remodel", revenue: 10_000, costs: 9_000, qboCreatedAt: daysAgo(20) });
+    const out = computeActionOutcome(a, [before, after], new Map());
+    expect(out.jobIds).toEqual([before.jobId]);
   });
 
   it("says why a part-of-the-price change can't be measured yet", () => {

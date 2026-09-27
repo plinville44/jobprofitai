@@ -451,7 +451,7 @@ export function EstimateCheckPreview() {
               <tr>
                 <th scope="col" className="px-4 py-2.5 font-semibold">Part of the job</th>
                 <th scope="col" className="px-4 py-2.5 text-right font-semibold">You&rsquo;re charging</th>
-                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Past jobs spent per $1</th>
+                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Usual share of cost</th>
                 <th scope="col" className="px-4 py-2.5 text-right font-semibold">Price at target</th>
               </tr>
             </thead>
@@ -460,7 +460,7 @@ export function EstimateCheckPreview() {
                 <tr key={p.category}>
                   <td className="px-4 py-2.5 capitalize text-jp-ink">{coreCategoryName(p.category)}</td>
                   <td className="px-4 py-2.5 text-right tabular-nums text-jp-ink">{formatCurrency(p.charged)}</td>
-                  <td className="px-4 py-2.5 text-right tabular-nums text-jp-ink">${p.costRatio.toFixed(2)}</td>
+                  <td className="px-4 py-2.5 text-right tabular-nums text-jp-ink">{Math.round(p.costShare * 100)}%</td>
                   <td
                     className={`px-4 py-2.5 text-right font-semibold tabular-nums ${p.priceAtTarget > p.charged * 1.01 ? "text-red-600" : "text-jp-ink"}`}
                   >

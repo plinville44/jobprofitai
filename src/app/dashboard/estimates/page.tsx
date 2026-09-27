@@ -82,16 +82,15 @@ export default async function EstimatesPage() {
         <h2 className="text-sm font-semibold text-navy">How the check works</h2>
         <p className="mt-2">
           We take your finished jobs of the same type from the last two years and work out what they cost for every
-          dollar you charged. When your QuickBooks estimates break the price into labor, materials, subcontractors and
-          equipment, each part is checked at the rate that part actually ran, so a thin labor price shows up even when
-          the total looks normal. Otherwise the whole price is checked at the jobs&apos; overall rate. At one rate, any
-          price comes out at the same margin, so that check tells you whether your pricing for that type of job
-          reaches your target, not whether one job is priced right for its size. The price at target is what the
-          expected cost needs to sell for to hit your target margin for that job type.
+          dollar you charged, and apply that to the estimate&apos;s price. At one rate, any price comes out at the same
+          margin, so the check tells you whether your pricing for that type of job reaches your target, not whether one
+          job is priced right for its size: QuickBooks estimates carry prices, not hours or quantities. The price at
+          target is what the expected cost needs to sell for to hit your target margin for that job type.
         </p>
         <p className="mt-2">
-          Checking each part needs at least three finished jobs of the type whose estimates had labor, materials and
-          subs on separate lines, each using its own product or service.
+          When your estimates list labor, materials, subcontractors and equipment on separate lines, each using its own
+          product or service, and at least three finished jobs of the type did too, each line is also set against how
+          the cost of those jobs usually splits. That shows which line is thin compared with the others.
         </p>
         <p className="mt-2">
           It needs at least three finished jobs of the type with revenue and costs. It says what happened on your past
@@ -165,6 +164,13 @@ function EstimateCard({ e, options }: { e: CheckedEstimate; options: { value: st
       </div>
 
       <p className="mt-3 text-sm text-gray-700">{c.summary}</p>
+      {c.parts.length > 0 && (
+        <p className="mt-1 max-w-2xl text-xs text-gray-500">
+          Expected cost is the job&apos;s expected cost split the way it usually splits on these jobs. Price at target is what
+          that part needs to sell for to reach your target.
+        </p>
+      )}
+
       {(below || ok) && c.methodNote && (
         <p className="mt-2 max-w-3xl rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600">{c.methodNote}</p>
       )}
@@ -175,7 +181,7 @@ function EstimateCard({ e, options }: { e: CheckedEstimate; options: { value: st
             <tr>
               <th className="py-1 font-medium">Part of the job</th>
               <th className="py-1 font-medium">You&apos;re charging</th>
-              <th className="py-1 font-medium">Past jobs spent per $1 charged</th>
+              <th className="py-1 font-medium">Usual share of the cost</th>
               <th className="py-1 font-medium">Expected cost</th>
               <th className="py-1 font-medium">Price at target</th>
             </tr>
@@ -187,7 +193,7 @@ function EstimateCard({ e, options }: { e: CheckedEstimate; options: { value: st
                 <tr key={p.category} className="border-t border-gray-100">
                   <td className="py-1.5 capitalize">{coreCategoryName(p.category)}</td>
                   <td className="py-1.5">{formatCurrency(p.charged)}</td>
-                  <td className="py-1.5">${p.costRatio.toFixed(2)}</td>
+                  <td className="py-1.5">{Math.round(p.costShare * 100)}%</td>
                   <td className="py-1.5">{formatCurrency(p.expectedCost)}</td>
                   <td className={`py-1.5 font-medium ${short ? "text-red-700" : "text-gray-700"}`}>{formatCurrency(p.priceAtTarget)}</td>
                 </tr>

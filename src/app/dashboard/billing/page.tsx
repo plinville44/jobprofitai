@@ -401,7 +401,7 @@ export default async function BillingPage(props: {
       <Panel title="Referral credits">
         <p className="text-sm text-gray-600">
           Refer someone who becomes a paying customer and, once they&rsquo;ve paid for{" "}
-          {REFERRAL_QUALIFY_DAYS} days, you earn one free month of your current plan as an account
+          {REFERRAL_QUALIFY_DAYS} days and their second month, you earn one free month of your current plan as an account
           credit. Credits stack and come off future invoices automatically.
         </p>
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">

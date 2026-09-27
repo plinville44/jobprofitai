@@ -397,6 +397,8 @@ function revenueLabel(type: string, status: string): string {
   if (type === "SalesReceipt") return "Sales receipt";
   if (type === "CreditMemo") return "Credit memo";
   if (type === "RefundReceipt") return "Refund";
+  if (type === "Deposit") return "Bank deposit";
+  if (type === "JournalEntry") return "Journal entry";
   return `Invoice (${status})`;
 }
 

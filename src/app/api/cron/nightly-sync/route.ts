@@ -27,7 +27,15 @@ const RETRY_FAILED_AFTER_MS = 2 * 3_600_000;
 /** Start of every "you need to reconnect" error the sync stores (see needsReconnect). */
 const RECONNECT_PREFIX = "Your QuickBooks connection has expired or was disconnected";
 const CONCURRENCY = 3;
-const STOP_STARTING_AFTER_MS = 200_000;
+/**
+ * No new sync starts after this, leaving about three minutes before the
+ * 300 s limit for the ones already running. A sync started later could be
+ * cut off at the limit, which ends it without a trace: it stays "in
+ * progress" and, before the rule below, wasn't tried again for a day.
+ */
+const STOP_STARTING_AFTER_MS = 110_000;
+/** A sync still "in progress" after this long was cut off; it's retried like a failed one. */
+const INTERRUPTED_AFTER_MS = 15 * 60_000;
 
 export async function GET(req: NextRequest) {
   const auth = authorizeCron(req);
@@ -54,6 +62,9 @@ export async function GET(req: NextRequest) {
             // retried after a couple of hours rather than a day, behind
             // everything that has waited longer.
             { lastSyncStatus: "error", lastSyncAttemptAt: { lt: new Date(startedAt - RETRY_FAILED_AFTER_MS) } },
+            // One that was cut off mid-sync (the function hit its time
+            // limit) is retried on the next run, not tomorrow.
+            { lastSyncStatus: "in_progress", lastSyncAttemptAt: { lt: new Date(startedAt - INTERRUPTED_AFTER_MS) } },
           ],
         },
         { OR: [{ lastSyncError: null }, { NOT: { lastSyncError: { startsWith: RECONNECT_PREFIX } } }] },

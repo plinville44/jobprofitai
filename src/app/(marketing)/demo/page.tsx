@@ -9,6 +9,7 @@ import {
   TrackedChangePreview,
   WeeklyBriefPreview,
 } from "@/components/marketing/ProductPreview";
+import { OG_IMAGE } from "@/lib/siteMeta";
 
 /**
  * /demo: the product with example data, no signup, no QuickBooks connection.
@@ -27,6 +28,7 @@ export const metadata: Metadata = {
     "Look around JobProfitAI using an example contractor's jobs: what to change and what it's worth, the Estimate Check, results tracking, margins by job and the Weekly Profit Brief. No signup needed.",
   alternates: { canonical: "/demo" },
   openGraph: {
+    images: [OG_IMAGE],
     title: "See JobProfitAI with sample data",
     description: "An example contractor's job profitability, no signup needed.",
     url: "/demo",
@@ -85,7 +87,7 @@ export default function DemoPage() {
       <Section className="!pt-0 !pb-10">
         <h2 className="text-xl font-bold text-jp-ink">3. The Estimate Check</h2>
         <p className="mt-2 max-w-3xl text-jp-slate">
-          A pending kitchen estimate, checked part by part against what their last eight kitchens
+          A pending kitchen estimate, checked line by line against what their last eight kitchens
           actually cost, before it goes to the customer.
         </p>
         <div className="mt-6">

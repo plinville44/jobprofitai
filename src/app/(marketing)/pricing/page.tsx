@@ -3,6 +3,7 @@ import Link from "next/link";
 import { ButtonLink, Eyebrow, Faq, FinalCta, Section, SectionHeading } from "@/components/marketing/ui";
 import PricingCards from "@/components/marketing/PricingCards";
 import { PLANS } from "@/lib/plans";
+import { OG_IMAGE } from "@/lib/siteMeta";
 
 export const metadata: Metadata = {
   title: "Pricing",
@@ -10,6 +11,7 @@ export const metadata: Metadata = {
     "JobProfitAI pricing: Profit Intelligence at $149/month and Profit Intelligence Pro at $299/month. 14-day free trial, no credit card required, cancel anytime.",
   alternates: { canonical: "/pricing" },
   openGraph: {
+    images: [OG_IMAGE],
     title: "JobProfitAI Pricing, $149 and $299 per month",
     description:
       "Two plans, both including AI profit insights and recommendations. 14 days free, no credit card required.",

@@ -2,6 +2,8 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import { requireFeature } from "./entitlements";
 import { effectiveJobStatus, CLOSED_JOB_WHERE, OPEN_JOB_WHERE, VISIBLE_JOB_WHERE } from "./jobStatus";
+import { forecastIsActionable } from "./forecastRules";
+export { forecastIsActionable } from "./forecastRules";
 
 // ============================================================================
 // PURE CALCULATION LAYER
@@ -460,15 +462,15 @@ export function computeNeedsAttentionForJob(
 
   // An open job heading below its target, judged on the forecast (Pro),
   // never on margin to date.
+  // A point of tolerance, the same as the feed, so a forecast sitting on
+  // the target (an estimate filled in from it, say) isn't called below it.
   const fc = opts.forecast;
   if (
     f.status === "open" &&
     f.targetMarginPct != null &&
-    fc?.available &&
-    fc.forecastMarginPct != null &&
+    forecastIsActionable(f, fc) &&
     fc.forecastProfit != null &&
-    f.estimatedRevenue != null &&
-    fc.forecastMarginPct * 100 < f.targetMarginPct
+    fc.forecastMarginPct * 100 < f.targetMarginPct - 1
   ) {
     const gapPct = f.targetMarginPct - fc.forecastMarginPct * 100;
     items.push({
@@ -476,7 +478,7 @@ export function computeNeedsAttentionForJob(
       jobName: f.jobName,
       issueCode: "forecast_below_target",
       issue: `Forecast to finish at ${(fc.forecastMarginPct * 100).toFixed(1)}% margin, ${gapPct.toFixed(1)} points below your ${f.targetMarginPct}% target`,
-      financialImpact: f.estimatedRevenue * (gapPct / 100),
+      financialImpact: fc.contractValue * (gapPct / 100),
       severity: fc.forecastMarginPct < 0 || gapPct > 10 ? "high" : gapPct > 5 ? "medium" : "low",
       confidence: fc.confidence ?? "low",
     });
@@ -570,7 +572,10 @@ export interface ForecastResult {
   progressSource?: "manual" | "billing";
   /** One plain sentence saying exactly how this forecast was worked out. */
   method?: string;
+  /** The contract the forecast was measured against: the estimate total, or billing to date when that's higher. */
+  contractValue?: number;
 }
+
 
 /**
  * Forecast at completion for an open job.
@@ -602,7 +607,9 @@ export function computeForecastAtCompletion(job: JobInput, f: JobFinancials, now
       reason: "Forecast at completion only applies to jobs still in progress. This one is marked completed.",
     };
   }
-  const contract = f.estimatedRevenue;
+  // Change orders are often billed without a new estimate; once billing
+  // passes the estimate total, the billing is the better contract figure.
+  const contract = f.estimatedRevenue == null ? null : Math.max(f.estimatedRevenue, f.revenue);
   if (contract == null || contract <= 0) {
     return {
       available: false,
@@ -675,6 +682,7 @@ export function computeForecastAtCompletion(job: JobInput, f: JobFinancials, now
     progress,
     progressSource,
     method,
+    contractValue: contract,
   };
 }
 

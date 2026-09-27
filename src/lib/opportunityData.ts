@@ -253,7 +253,9 @@ export async function getTrackedActions(connectionId: string, data: Pick<Opportu
         kind === "job_type"
           ? labelForJobType(data.jobTypes, r.subjectKey)
           : kind === "small_jobs"
-            ? `Jobs under $${Number(r.subjectKey).toLocaleString("en-US")}`
+            ? r.subjectKey.startsWith("cost:")
+              ? `Jobs costing $${Number(r.subjectKey.slice(5)).toLocaleString("en-US")} or less`
+              : `Jobs under $${Number(r.subjectKey).toLocaleString("en-US")}`
             : kind === "customer"
               ? r.subjectKey
               : "All jobs",
@@ -264,7 +266,7 @@ export async function getTrackedActions(connectionId: string, data: Pick<Opportu
       startedAt: r.startedAt,
       stoppedAt: r.stoppedAt,
       outcome: computeActionOutcome(
-        { kind, subjectKey: r.subjectKey, costCategory, baselineMarginPct, baselineJobs: r.baselineJobs, startedAt: r.startedAt },
+        { kind, subjectKey: r.subjectKey, costCategory, baselineMarginPct, baselineJobs: r.baselineJobs, startedAt: r.startedAt, stoppedAt: r.stoppedAt },
         data.jobs,
         data.mixes
       ),

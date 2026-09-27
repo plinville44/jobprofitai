@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Card, Eyebrow, Section } from "@/components/marketing/ui";
 import ContactForm from "@/components/marketing/ContactForm";
+import { OG_IMAGE } from "@/lib/siteMeta";
 
 export const metadata: Metadata = {
   title: "Contact",
@@ -10,6 +11,7 @@ export const metadata: Metadata = {
     "Get in touch with the JobProfitAI team about the product, pricing, support, billing, security, or the accountant partner program. Or email support@jobprofitai.com.",
   alternates: { canonical: "/contact" },
   openGraph: {
+    images: [OG_IMAGE],
     title: "Contact JobProfitAI",
     description: "Questions about the product, pricing, security or the partner program?",
     url: "/contact",

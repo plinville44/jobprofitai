@@ -6,10 +6,13 @@ import {
   buildJobIndex,
   contractValueFromEstimates,
   costEntryId,
+  depositRevenueLines,
   emptyLookups,
   estimateFromTxn,
   estimateRowId,
   expenseLines,
+  journalRevenueLines,
+  lineRevenueId,
   qboDate,
   resolveJob,
   revenueFromTxn,
@@ -22,6 +25,7 @@ import {
   type ItemInfo,
   type JobIndex,
   type JobSource,
+  type LineRevenueSourceType,
   type Lookups,
   type RevenueSourceType,
 } from "@/lib/qboNormalize";
@@ -57,16 +61,20 @@ import {
  *    removed from revenue; deletions honoured.
  * 3: estimate lines, numbers, email status and expiry dates, for the
  *    Estimate Check and estimate accuracy by cost category.
+ * 4: revenue from bank deposits and journal entries that name a customer
+ *    (income recorded without an invoice).
  */
-export const SYNC_VERSION = 3;
+export const SYNC_VERSION = 4;
 
 /**
  * The last version that changed how COSTS and REVENUE are stored. The weekly
  * brief waits for a company's upgrade sync only below this, because only
  * those upgrades can make figures read wrong mid-way. Version 3 only adds
- * estimate details, so a brief never waits on it.
+ * estimate details, so a brief never waits on it. Version 4 adds revenue
+ * (bank deposits and journal entries), so a brief waits for it rather than
+ * going out with some jobs upgraded and others not.
  */
-export const COST_SYNC_VERSION = 2;
+export const COST_SYNC_VERSION = 4;
 
 const FULL_SYNC_INTERVAL_DAYS = 30;
 /** Data Health tallies look at the last 12 months, not the company's whole history. */
@@ -80,7 +88,11 @@ const CDC_MAX_PER_ENTITY = 1000;
 
 const EXPENSE_TYPES: ExpenseSourceType[] = ["Purchase", "Bill", "VendorCredit", "JournalEntry"];
 const REVENUE_TYPES: RevenueSourceType[] = ["Invoice", "SalesReceipt", "CreditMemo", "RefundReceipt"];
-const CDC_ENTITIES = ["Customer", ...EXPENSE_TYPES, "TimeActivity", ...REVENUE_TYPES, "Estimate"];
+const CDC_ENTITIES = ["Customer", ...EXPENSE_TYPES, "TimeActivity", ...REVENUE_TYPES, "Deposit", "Estimate"];
+/** Source types stored as revenue rows (InvoiceSummary). JournalEntry is also a cost type. */
+const REVENUE_ROW_TYPES = new Set<string>([...REVENUE_TYPES, "Deposit", "JournalEntry"]);
+/** Source types stored as cost rows (CostEntry). */
+const COST_ROW_TYPES = new Set<string>([...EXPENSE_TYPES, "TimeActivity"]);
 
 export class SyncAlreadyRunningError extends Error {
   constructor() {
@@ -107,6 +119,12 @@ export async function runSyncForConnection(
   let mode: "full" | "incremental" =
     options.forceFull || fullSyncDue || connection.syncVersion < SYNC_VERSION ? "full" : "incremental";
 
+  // A sync cut off by the platform's time limit never reaches its own
+  // error handling, so its record is still "in progress". Close it now.
+  await prisma.syncRun.updateMany({
+    where: { connectionId: connection.id, status: "in_progress", startedAt: { lt: new Date(Date.now() - STALE_SYNC_MINUTES * 60_000) } },
+    data: { status: "error", finishedAt: new Date(), errorMessage: "Interrupted before it finished (time limit). Retried automatically." },
+  });
   const syncRun = await prisma.syncRun.create({
     data: { connectionId: connection.id, status: "in_progress", mode },
   });
@@ -163,6 +181,25 @@ export async function runSyncForConnection(
       where: { id: syncRun.id },
       data: { status: "success", finishedAt: now, entitiesUpdated: counts },
     });
+    // A full sync only counts as done when nothing on it was cut short by
+    // QuickBooks being briefly unavailable. Otherwise the next sync would
+    // be incremental, which only reads records that change, and the type
+    // that failed (time entries, say) would stay missing for up to 30 days.
+    const partialErrors = (counts.partialErrors ?? {}) as Record<string, string>;
+    const cutShort = Object.values(partialErrors).some((m) => /temporarily unavailable/i.test(String(m)));
+    let recordFull = mode === "full";
+    if (recordFull && cutShort) {
+      // Retried as a full sync for up to a day, then accepted: a data
+      // type that keeps failing mustn't make every nightly sync a full one.
+      const since = (await prisma.quickBooksConnection.findUnique({ where: { id: connection.id }, select: { fullSyncCutShortAt: true } }))
+        ?.fullSyncCutShortAt;
+      if (!since) {
+        await prisma.quickBooksConnection.update({ where: { id: connection.id }, data: { fullSyncCutShortAt: now } });
+        recordFull = false;
+      } else if (now.getTime() - since.getTime() < 86_400_000) {
+        recordFull = false;
+      }
+    }
     await prisma.quickBooksConnection.update({
       where: { id: connection.id },
       data: {
@@ -171,9 +208,19 @@ export async function runSyncForConnection(
         lastSyncError: null,
         lastSyncAttemptAt: now,
         lastSyncEntitiesUpdated: counts,
-        ...(mode === "full" ? { lastFullSyncAt: now, syncVersion: SYNC_VERSION } : {}),
       },
     });
+    if (recordFull) {
+      // Only if Settings hasn't asked for a rebuild since this sync started:
+      // it read the old settings, so that rebuild must still happen.
+      await prisma.quickBooksConnection.updateMany({
+        where: {
+          id: connection.id,
+          OR: [{ rebuildRequestedAt: null }, { rebuildRequestedAt: { lt: syncStartedAt } }],
+        },
+        data: { lastFullSyncAt: now, syncVersion: SYNC_VERSION, fullSyncCutShortAt: null },
+      });
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : "Sync failed.";
     await prisma.syncRun.update({
@@ -518,12 +565,13 @@ async function deleteRevenueRows(ids: string[]): Promise<number> {
  * type -> QuickBooks ids).
  */
 async function loadExisting(connectionId: string, onlyTxns?: Map<string, string[]>) {
-  const revenueTypes = new Set<string>(REVENUE_TYPES);
+  // A journal entry can carry both cost and income lines, so its ids are
+  // looked up on both sides.
   const costFilter = onlyTxns
-    ? [...onlyTxns].filter(([t]) => !revenueTypes.has(t)).map(([t, ids]) => ({ qboSourceType: t, qboSourceId: { in: ids } }))
+    ? [...onlyTxns].filter(([t]) => COST_ROW_TYPES.has(t)).map(([t, ids]) => ({ qboSourceType: t, qboSourceId: { in: ids } }))
     : null;
   const revenueFilter = onlyTxns
-    ? [...onlyTxns].filter(([t]) => revenueTypes.has(t)).map(([t, ids]) => ({ qboSourceType: t, qboInvoiceId: { in: ids } }))
+    ? [...onlyTxns].filter(([t]) => REVENUE_ROW_TYPES.has(t)).map(([t, ids]) => ({ qboSourceType: t, qboInvoiceId: { in: ids } }))
     : null;
   const [costRows, revenueRows] = await Promise.all([
     costFilter && costFilter.length === 0 ? Promise.resolve([]) : prisma.costEntry.findMany({
@@ -879,6 +927,28 @@ async function processRevenueTxn(p: Processor, txn: any, sourceType: RevenueSour
   });
 }
 
+/** Income recorded line by line without an invoice: bank deposits and journal entries. */
+async function processLineRevenue(p: Processor, txn: any, sourceType: LineRevenueSourceType) {
+  if (txn?.Id == null) return;
+  const txnId = String(txn.Id);
+  const lines = sourceType === "Deposit" ? depositRevenueLines(txn, p.lookups) : journalRevenueLines(txn, p.lookups);
+  for (const l of lines) {
+    if (!l.txnDate) continue;
+    const resolved = resolveJob(p.index, l.customerQboId);
+    if (!resolved) continue;
+    await p.writer.revenue({
+      id: lineRevenueId(p.ctx.connectionId, sourceType, txnId, l.lineId),
+      jobId: resolved.jobId,
+      qboSourceType: sourceType,
+      qboInvoiceId: txnId,
+      amount: l.amount,
+      taxAmount: 0,
+      status: "paid",
+      txnDate: l.txnDate,
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Estimates -> contract value
 // ---------------------------------------------------------------------------
@@ -1028,8 +1098,12 @@ async function runFullSync(ctx: SyncCtx): Promise<Record<string, any>> {
       : await runStep(type, errors, () => qboQueryAll(ctx.realmId, ctx.accessToken, query, type), null as any[] | null);
     if (rows == null) continue;
     fetched[type] = rows.length;
-    for (const txn of rows) await processExpenseTxn(p, txn, type);
+    for (const txn of rows) {
+      await processExpenseTxn(p, txn, type);
+      if (type === "JournalEntry") await processLineRevenue(p, txn, "JournalEntry");
+    }
     sweepCost.add(type);
+    if (type === "JournalEntry") sweepRevenue.add("JournalEntry");
   }
 
   if (ctx.laborFromTimeEntries) {
@@ -1054,6 +1128,14 @@ async function runFullSync(ctx: SyncCtx): Promise<Record<string, any>> {
     fetched[type] = rows.length;
     for (const txn of rows) await processRevenueTxn(p, txn, type);
     sweepRevenue.add(type);
+  }
+
+  const deposits = await runStep("Deposit", errors, () =>
+    qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM Deposit", "Deposit"), null as any[] | null);
+  if (deposits != null) {
+    fetched.Deposit = deposits.length;
+    for (const txn of deposits) await processLineRevenue(p, txn, "Deposit");
+    sweepRevenue.add("Deposit");
   }
 
   await writer.flush();
@@ -1131,7 +1213,7 @@ async function runIncrementalSync(ctx: SyncCtx, changedSince: Date): Promise<Rec
   // everything else is left exactly as it is, and a nightly sync doesn't
   // read a company's whole history to update a handful of bills.
   const changedIds = new Map<string, string[]>();
-  for (const type of [...EXPENSE_TYPES, "TimeActivity", ...REVENUE_TYPES]) {
+  for (const type of [...EXPENSE_TYPES, "TimeActivity", ...REVENUE_TYPES, "Deposit"]) {
     const ids = byEntity(type).filter((t) => t?.Id != null).map((t) => String(t.Id));
     if (ids.length) changedIds.set(type, ids);
   }
@@ -1154,7 +1236,11 @@ async function runIncrementalSync(ctx: SyncCtx, changedSince: Date): Promise<Rec
     for (const txn of rows) {
       if (txn?.Id == null) continue;
       touch(touchedCost, type, String(txn.Id));
-      if (txn.status !== "Deleted") await processExpenseTxn(p, txn, type);
+      if (type === "JournalEntry") touch(touchedRevenue, "JournalEntry", String(txn.Id));
+      if (txn.status !== "Deleted") {
+        await processExpenseTxn(p, txn, type);
+        if (type === "JournalEntry") await processLineRevenue(p, txn, "JournalEntry");
+      }
     }
   }
   const times = ctx.laborFromTimeEntries ? byEntity("TimeActivity") : [];
@@ -1172,6 +1258,13 @@ async function runIncrementalSync(ctx: SyncCtx, changedSince: Date): Promise<Rec
       touch(touchedRevenue, type, String(txn.Id));
       if (txn.status !== "Deleted") await processRevenueTxn(p, txn, type);
     }
+  }
+  const depositRows = byEntity("Deposit");
+  counts.Deposit = depositRows.length;
+  for (const txn of depositRows) {
+    if (txn?.Id == null) continue;
+    touch(touchedRevenue, "Deposit", String(txn.Id));
+    if (txn.status !== "Deleted") await processLineRevenue(p, txn, "Deposit");
   }
   await writer.flush();
 

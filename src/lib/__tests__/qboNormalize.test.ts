@@ -6,9 +6,11 @@ import {
   cleanCustomerName,
   contractValueFromEstimates,
   costEntryId,
+  depositRevenueLines,
   emptyLookups,
   estimateFromTxn,
   expenseLines,
+  journalRevenueLines,
   resolveJob,
   revenueFromTxn,
   selectJobCustomers,
@@ -317,5 +319,45 @@ describe("estimate lines", () => {
   it("stores no lines without lookups, and none for an empty estimate", () => {
     expect(estimateFromTxn(est).details.lines).toEqual([]);
     expect(estimateFromTxn({ ...est, Line: [] }, lookups).details.lines).toEqual([]);
+  });
+});
+
+describe("revenue recorded without an invoice", () => {
+  const lookups = emptyLookups();
+  lookups.accounts.set("40", { name: "Construction Income", fullName: "Construction Income", type: "Income", subType: "SalesOfProductIncome" });
+  lookups.accounts.set("25", { name: "Customer Deposits", fullName: "Customer Deposits", type: "Other Current Liability", subType: "OtherCurrentLiabilities" });
+  lookups.accounts.set("80", { name: "Job Materials", fullName: "Job Materials", type: "Cost of Goods Sold", subType: "SuppliesMaterialsCogs" });
+
+  it("counts a check deposited to income with the customer named, and nothing else", () => {
+    const deposit = {
+      Id: "900",
+      TxnDate: "2026-09-12",
+      Line: [
+        // The $8,000 check from Smith:Kitchen, straight to income: revenue.
+        { Id: "1", Amount: 8000, DepositLineDetail: { Entity: { value: "58", name: "Smith:Kitchen", type: "CUSTOMER" }, AccountRef: { value: "40" } } },
+        // A payment on an invoice: already counted on the invoice.
+        { Id: "2", Amount: 5000, LinkedTxn: [{ TxnId: "77", TxnType: "Payment" }], DepositLineDetail: { Entity: { value: "58", type: "CUSTOMER" } } },
+        // A deposit held as a liability: not income yet.
+        { Id: "3", Amount: 2000, DepositLineDetail: { Entity: { value: "58", type: "CUSTOMER" }, AccountRef: { value: "25" } } },
+        // A supplier refund: not a customer.
+        { Id: "4", Amount: 300, DepositLineDetail: { Entity: { value: "9", type: "VENDOR" }, AccountRef: { value: "80" } } },
+      ],
+    };
+    const lines = depositRevenueLines(deposit, lookups);
+    expect(lines).toEqual([{ lineId: "1", customerQboId: "58", amount: 8000, txnDate: new Date("2026-09-12T00:00:00Z") }]);
+  });
+
+  it("reads journal entry income lines by customer, credit adds and debit takes away", () => {
+    const je = {
+      Id: "610",
+      TxnDate: "2026-09-01",
+      Line: [
+        { Id: "0", Amount: 1500, JournalEntryLineDetail: { PostingType: "Credit", Entity: { Type: "Customer", EntityRef: { value: "58" } }, AccountRef: { value: "40" } } },
+        { Id: "1", Amount: 200, JournalEntryLineDetail: { PostingType: "Debit", Entity: { Type: "Customer", EntityRef: { value: "58" } }, AccountRef: { value: "40" } } },
+        // A cost line on the same entry is left to expenseLines.
+        { Id: "2", Amount: 700, JournalEntryLineDetail: { PostingType: "Debit", Entity: { Type: "Customer", EntityRef: { value: "58" } }, AccountRef: { value: "80" } } },
+      ],
+    };
+    expect(journalRevenueLines(je, lookups).map((l) => [l.lineId, l.amount])).toEqual([["0", 1500], ["1", -200]]);
   });
 });
