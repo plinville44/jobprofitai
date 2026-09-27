@@ -18,6 +18,8 @@ export const dynamic = "force-dynamic";
 export default async function TrialFeedbackPage() {
   const account = await getAccount();
   if (!account) redirect("/login");
+  // A client's view-only login has no settings or billing of its own.
+  if (account.role === "client") redirect("/dashboard");
   if (account.role !== "owner") redirect("/dashboard/billing");
 
   const trial = await getTrialState(account.ownerId);

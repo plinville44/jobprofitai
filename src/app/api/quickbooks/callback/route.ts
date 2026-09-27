@@ -73,6 +73,9 @@ async function handleConnect(payload: Record<string, unknown>, code: string, rea
   if (account.ownerId !== ownerId) {
     return NextResponse.redirect(appUrl("/dashboard?qbo_error=invalid_state"));
   }
+  if (account.role === "client") {
+    return NextResponse.redirect(appUrl("/dashboard?qbo_error=view_only"));
+  }
 
   let tokens;
   try {

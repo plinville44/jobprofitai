@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAccount } from "@/lib/account";
+import { getAccount, refuseClient } from "@/lib/account";
 import { refuseCrossSite } from "@/lib/sameOrigin";
 import { getJobTypes, isAssignableJobType } from "@/lib/jobTypesServer";
 
@@ -17,6 +17,8 @@ export async function POST(req: NextRequest) {
   try {
     const account = await getAccount();
     if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const refused = refuseClient(account);
+    if (refused) return refused;
     const body = await req.json().catch(() => ({}));
     const estimateId = typeof body?.estimateId === "string" ? body.estimateId : null;
     const jobType = body?.jobType === null || body?.jobType === "" ? null : typeof body?.jobType === "string" ? body.jobType : undefined;

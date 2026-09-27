@@ -33,7 +33,7 @@ export default async function DisconnectedPage(props: { searchParams: Promise<{ 
   let disconnected: string[] = [];
   let stillConnected = 0;
   if (account) {
-    const companies = await listCompanies(account.ownerId);
+    const companies = await listCompanies(account);
     const hashes = realmId && /^\d{1,32}$/.test(realmId) ? [hashRealmId(realmId), legacyHashRealmId(realmId)] : null;
     const targets = (hashes ? companies.filter((c) => hashes.includes(c.realmIdHash)) : companies).slice(0, 5);
     const results = await Promise.all(

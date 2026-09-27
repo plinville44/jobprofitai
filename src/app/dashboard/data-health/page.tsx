@@ -41,7 +41,7 @@ export default async function DataHealthPage() {
   }
 
   // The company picked in the company switcher (see src/lib/account.ts).
-  const { connection } = await getActiveConnection(account.ownerId);
+  const { connection } = await getActiveConnection(account);
 
   if (!connection) {
     return (
@@ -94,7 +94,7 @@ export default async function DataHealthPage() {
             <p className="mt-1 text-xs text-gray-500">and {h.idleOpenJobs.length - 50} more</p>
           ) : null}
           <div className="mt-4">
-            <CloseIdleJobsButton connectionId={connection.id} count={h.idleOpenJobs.length} />
+            {account.role === "client" ? null : <CloseIdleJobsButton connectionId={connection.id} count={h.idleOpenJobs.length} />}
           </div>
         </div>
       ) : null}

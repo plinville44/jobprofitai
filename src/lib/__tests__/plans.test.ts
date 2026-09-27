@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
+  CONTRACTOR_PLAN_IDS,
+  firmBillableCompanies,
+  planPriceText,
   PLANS,
   PLAN_IDS,
   PLAN_LIST,
@@ -16,8 +19,10 @@ import {
 } from "../plans";
 
 describe("plan catalog", () => {
-  it("sells exactly two plans, at $149 and $299", () => {
-    expect(PLAN_IDS).toEqual(["profit_intelligence", "profit_intelligence_pro"]);
+  it("sells two contractor plans, at $149 and $299, and a Firm plan", () => {
+    expect(PLAN_IDS).toEqual(["profit_intelligence", "profit_intelligence_pro", "firm"]);
+    expect(CONTRACTOR_PLAN_IDS).toEqual(["profit_intelligence", "profit_intelligence_pro"]);
+    expect(PLAN_LIST.map((p) => p.id)).toEqual(["profit_intelligence", "profit_intelligence_pro"]);
     expect(PLANS.profit_intelligence.priceCents).toBe(14_900);
     expect(PLANS.profit_intelligence_pro.priceCents).toBe(29_900);
     expect(PLANS.profit_intelligence.priceLabel).toBe("$149");
@@ -133,5 +138,28 @@ describe("partner commission tiers", () => {
     expect(at(29_900, 2500)).toBe(7_475); // $74.75 on a $299 client at 25%
     expect(at(14_900, 2000)).toBe(2_980); // $29.80 at 20%
     expect(at(29_900, 3000)).toBe(8_970); // $89.70 at 30%
+  });
+});
+
+describe("the Firm plan", () => {
+  it("is $79 a company with a four-company minimum, so it never costs less than Pro", () => {
+    expect(PLANS.firm.priceCents).toBe(7_900);
+    expect(PLANS.firm.perCompany?.minCompanies).toBe(4);
+    const smallestBill = PLANS.firm.priceCents * firmBillableCompanies(1);
+    expect(smallestBill).toBe(31_600);
+    expect(smallestBill).toBeGreaterThanOrEqual(PLANS.profit_intelligence_pro.priceCents);
+  });
+
+  it("bills the connected companies, never below the minimum", () => {
+    expect(firmBillableCompanies(0)).toBe(4);
+    expect(firmBillableCompanies(3)).toBe(4);
+    expect(firmBillableCompanies(4)).toBe(4);
+    expect(firmBillableCompanies(11)).toBe(11);
+  });
+
+  it("names its price per company", () => {
+    expect(planPriceText("firm")).toBe("$79 per company/month");
+    expect(planPriceText("profit_intelligence")).toBe("$149/month");
+    expect(priceCentsForStoredPlan("firm")).toBe(31_600);
   });
 });

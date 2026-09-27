@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { PLANS, isPlanId } from "@/lib/plans";
+import { PLANS, isPlanId, planPriceText } from "@/lib/plans";
 import { sendEmail, sendLifecycleEmail, SUPPORT_EMAIL, type SendEmailResult } from "./client";
 import * as T from "./templates";
 import { DEFAULT_TIME_ZONE } from "@/lib/format";
@@ -242,8 +242,8 @@ export async function sendSubscriptionConfirmed(
   const contact = await contactFor(userId);
   if (!contact) return { ok: false, error: "User not found" };
 
-  const def = isPlanId(plan) ? PLANS[plan] : PLANS.profit_intelligence;
-  const email = T.subscriptionConfirmedEmail(def.name, def.priceLabel);
+  const id = isPlanId(plan) ? plan : "profit_intelligence";
+  const email = T.subscriptionConfirmedEmail(PLANS[id].name, planPriceText(id));
 
   return sendLifecycleEmail({
     userId,

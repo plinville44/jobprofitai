@@ -6,10 +6,12 @@ import { sendEmail } from "@/lib/email/client";
 import { appUrl, teamInviteEmail } from "@/lib/email/templates";
 
 /**
- * POST /api/team/invite { email }
+ * POST /api/team/invite { email, clientConnectionId? }
  *
  * Owner only. Creates (or re-sends) an invitation and emails the link. The
- * raw token exists only in that email; the database holds its hash.
+ * raw token exists only in that email; the database holds its hash. With
+ * clientConnectionId it's a view-only client login for that one company
+ * (Firm plan).
  */
 export async function POST(req: NextRequest) {
   const account = await getAccount();
@@ -19,19 +21,22 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json().catch(() => ({}));
-  const result = await createInvite(account.ownerId, body?.email);
+  const clientConnectionId = typeof body?.clientConnectionId === "string" && body.clientConnectionId ? body.clientConnectionId : null;
+  const result = await createInvite(account.ownerId, body?.email, new Date(), { clientConnectionId });
   if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
 
   const [owner, companies] = await Promise.all([
     prisma.user.findUnique({ where: { id: account.ownerId }, select: { name: true, email: true } }),
-    listCompanies(account.ownerId),
+    listCompanies(account),
   ]);
+  const clientCompany = clientConnectionId ? companies.find((c) => c.id === clientConnectionId) ?? null : null;
   const email = teamInviteEmail({
     inviterName: owner?.name ?? null,
     inviterEmail: owner?.email ?? "",
-    companyName: companies.length === 1 ? companies[0].companyName : null,
+    companyName: clientCompany ? clientCompany.companyName : companies.length === 1 ? companies[0].companyName : null,
     acceptUrl: appUrl(`/invite/${result.token}`),
     expiryDays: INVITE_TTL_DAYS,
+    viewOnly: clientConnectionId != null,
   });
   const sent = await sendEmail({ to: result.email, ...email, replyTo: owner?.email });
   await recordInviteEmail(account.ownerId, result.inviteId, result.email, sent.ok).catch(() => {});

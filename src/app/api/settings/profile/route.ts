@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAccount } from "@/lib/account";
+import { getAccount, refuseClient } from "@/lib/account";
 import { getJobTypes } from "@/lib/jobTypesServer";
 
 const OVERHEAD_METHODS = new Set(["pct_of_revenue", "pct_of_direct_cost"]);
@@ -26,6 +26,8 @@ export async function POST(req: NextRequest) {
   try {
     const account = await getAccount();
     if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const refused = refuseClient(account);
+    if (refused) return refused;
 
     const body = await req.json();
     const { connectionId } = body;

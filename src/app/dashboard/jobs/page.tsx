@@ -105,7 +105,8 @@ export default async function JobsPage(props: {
   }
 
   // The company picked in the company switcher (see src/lib/account.ts).
-  const { connection } = await getActiveConnection(account.ownerId);
+  const { connection } = await getActiveConnection(account);
+  const viewOnly = account.role === "client";
 
   if (!connection) {
     return (
@@ -159,18 +160,22 @@ export default async function JobsPage(props: {
         </div>
       </div>
 
-      <JobBudgetTools
-        connectionId={connection.id}
-        hasTarget={connection.targetMarginPct != null || (await hasJobTypeTargets(connection.id))}
-      />
+      {viewOnly ? null : (
+        <>
+          <JobBudgetTools
+            connectionId={connection.id}
+            hasTarget={connection.targetMarginPct != null || (await hasJobTypeTargets(connection.id))}
+          />
 
-      <JobTypeSuggestions
-        connectionId={connection.id}
-        rows={suggestions.rows}
-        untyped={suggestions.untyped}
-        withoutSuggestion={suggestions.withoutSuggestion}
-        types={typeOptions}
-      />
+          <JobTypeSuggestions
+            connectionId={connection.id}
+            rows={suggestions.rows}
+            untyped={suggestions.untyped}
+            withoutSuggestion={suggestions.withoutSuggestion}
+            types={typeOptions}
+          />
+        </>
+      )}
 
       {jobs.length === 0 ? (
         /* "No jobs match this filter" was the same sentence whether nothing
@@ -204,7 +209,7 @@ export default async function JobsPage(props: {
           )}
         </div>
       ) : (
-        <JobsTable jobs={jobs.map(toRow)} jobTypes={typeOptions} />
+        <JobsTable jobs={jobs.map(toRow)} jobTypes={typeOptions} readOnly={viewOnly} />
       )}
     </main>
   );

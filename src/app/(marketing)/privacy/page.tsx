@@ -89,8 +89,9 @@ export default function PrivacyPage() {
             </li>
             <li>
               <span className="font-medium text-jp-ink">Team members:</span> the email addresses of
-              people you invite to your account, when they were invited and whether they accepted.
-              Someone who accepts has their own account information as above.
+              people you invite to your account, when they were invited and whether they accepted,
+              and for a view-only client login, which company it shows. Someone who accepts has their
+              own account information as above.
             </li>
             <li>
               <span className="font-medium text-jp-ink">Settings and job details:</span> target

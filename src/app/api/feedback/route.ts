@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { accountFor } from "@/lib/account";
+import { accountFor, getActiveConnection } from "@/lib/account";
 import { getSession } from "@/lib/auth";
 import { getEntitlements } from "@/lib/entitlements";
 import { sendEmail, SUPPORT_EMAIL } from "@/lib/email/client";
@@ -39,12 +39,10 @@ export async function POST(req: NextRequest) {
 
     // A team member's feedback is about the owner's account and plan.
     const account = await accountFor(session.userId);
-    const [user, connection, entitlements] = await Promise.all([
+    const [user, { connection }, entitlements] = await Promise.all([
       prisma.user.findUnique({ where: { id: session.userId } }),
-      prisma.quickBooksConnection.findFirst({
-        where: { userId: account.ownerId, disconnectedAt: null },
-        orderBy: { connectedAt: "desc" },
-      }),
+      // The company on screen (scoped to a client login's own company).
+      getActiveConnection(account),
       getEntitlements(account.ownerId),
     ]);
     if (!user) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });

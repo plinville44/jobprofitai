@@ -56,11 +56,24 @@ export default async function InvitePage(props: { params: Promise<{ token: strin
             </>
           ) : (
             <>
-              <h1 className="text-xl font-bold text-navy">Join {inviter} on JobProfitAI</h1>
-              <p className="mt-3 text-sm text-jp-slate">
-                {inviter} has invited <strong>{invite.email}</strong> to their account. You&apos;ll see their jobs,
-                profit and reports with your own login. They can remove your access at any time.
-              </p>
+              {invite.role === "client" ? (
+                <>
+                  <h1 className="text-xl font-bold text-navy">See {invite.companyName ?? "your company"} on JobProfitAI</h1>
+                  <p className="mt-3 text-sm text-jp-slate">
+                    {inviter} has set up a view-only login for <strong>{invite.email}</strong>. You&apos;ll see{" "}
+                    {invite.companyName ?? "your company"}&apos;s job profit and reports, and nothing else on their
+                    account. They manage the connection and can remove this login at any time.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <h1 className="text-xl font-bold text-navy">Join {inviter} on JobProfitAI</h1>
+                  <p className="mt-3 text-sm text-jp-slate">
+                    {inviter} has invited <strong>{invite.email}</strong> to their account. You&apos;ll see their jobs,
+                    profit and reports with your own login. They can remove your access at any time.
+                  </p>
+                </>
+              )}
               {signedIn ? (
                 <AcceptInviteForm token={token} mode="signed_in" />
               ) : existingLogin ? (

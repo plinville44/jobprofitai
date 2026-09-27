@@ -20,6 +20,10 @@ export async function GET(req: NextRequest) {
   if (!account) {
     return NextResponse.redirect(new URL("/login?next=/dashboard", process.env.APP_URL));
   }
+  // A client's view-only login can't add companies to the firm's account.
+  if (account.role === "client") {
+    return NextResponse.redirect(new URL("/dashboard?qbo_error=view_only", process.env.APP_URL));
+  }
 
   // Reconnecting a company this account already has is not connecting
   // another one, so it skips the plan's company limit. The callback keeps

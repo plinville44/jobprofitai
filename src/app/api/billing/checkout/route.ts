@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAccount } from "@/lib/account";
-import { isPlanId } from "@/lib/plans";
+import { PLANS, isPlanId } from "@/lib/plans";
+import { prisma } from "@/lib/prisma";
 import { createCheckoutSession } from "@/lib/stripe/billing";
 import { getEntitlements } from "@/lib/entitlements";
 
@@ -42,6 +43,20 @@ export async function POST(req: NextRequest) {
     if (entitlements.access === "active" || entitlements.access === "past_due") {
       return NextResponse.json(
         { error: "You already have a subscription. Use Manage Billing to switch plans." },
+        { status: 409 }
+      );
+    }
+
+    // A plan must cover the companies already connected. Without this, an
+    // account that connected dozens of companies on Firm could cancel and
+    // resubscribe to a one-company plan and keep them all.
+    const connected = await prisma.quickBooksConnection.count({ where: { userId: account.ownerId, disconnectedAt: null } });
+    const max = PLANS[plan].limits.maxConnections;
+    if (connected > max) {
+      return NextResponse.json(
+        {
+          error: `You have ${connected} QuickBooks companies connected and ${PLANS[plan].name} covers ${max}. Disconnect some in Settings first, or choose a plan that covers them all.`,
+        },
         { status: 409 }
       );
     }

@@ -2,6 +2,7 @@ import { randomBytes } from "crypto";
 import { prisma } from "./prisma";
 import { hashToken } from "./passwordReset";
 import { getEntitlements } from "./entitlements";
+import { CLIENT_LOGINS_PER_COMPANY } from "./plans";
 
 /**
  * Team logins.
@@ -22,6 +23,10 @@ import { getEntitlements } from "./entitlements";
  *   - The invite must be accepted by a login with the invited address.
  *   - An invite can be re-sent, but not more than once every few minutes,
  *     so the form cannot be used to flood someone's inbox.
+ *
+ * Client logins (Firm plan) are invitations too, with role "client" and the
+ * one company they may see. They don't use up the plan's team logins; each
+ * company can have CLIENT_LOGINS_PER_COMPANY of them.
  */
 
 export const INVITE_TTL_DAYS = 7;
@@ -38,7 +43,14 @@ export type InviteResult =
   | { ok: true; token: string; inviteId: string; email: string; expiresAt: Date }
   | { ok: false; error: string; status: number };
 
-export async function createInvite(ownerId: string, rawEmail: unknown, now = new Date()): Promise<InviteResult> {
+export async function createInvite(
+  ownerId: string,
+  rawEmail: unknown,
+  now = new Date(),
+  /** A client login: view-only, for this one company. */
+  opts: { clientConnectionId?: string | null } = {}
+): Promise<InviteResult> {
+  const clientConnectionId = opts.clientConnectionId ?? null;
   const email = typeof rawEmail === "string" ? rawEmail.trim().toLowerCase() : "";
   if (!email || email.length > 320 || !EMAIL_RE.test(email)) {
     return { ok: false, error: "Enter a valid email address.", status: 400 };
@@ -64,37 +76,78 @@ export async function createInvite(ownerId: string, rawEmail: unknown, now = new
     return { ok: false, error: "Choose a plan to add team members.", status: 402 };
   }
 
+  if (clientConnectionId) {
+    if (!entitlements.has("client_logins")) {
+      return { ok: false, error: "Client logins are part of the Firm plan.", status: 402 };
+    }
+    const company = await prisma.quickBooksConnection.findUnique({
+      where: { id: clientConnectionId },
+      select: { userId: true, disconnectedAt: true },
+    });
+    if (!company || company.userId !== ownerId || company.disconnectedAt) {
+      return { ok: false, error: "Choose one of your connected companies.", status: 404 };
+    }
+  }
+
   const existing = await prisma.teamMember.findFirst({ where: { ownerUserId: ownerId, email } });
   if (existing?.acceptedAt) {
-    return { ok: false, error: "That person is already on your team.", status: 409 };
+    return {
+      ok: false,
+      error:
+        existing.role === "client"
+          ? "That person already has a client login on your account."
+          : "That person is already on your team.",
+      status: 409,
+    };
   }
   if (existing && now.getTime() - existing.invitedAt.getTime() < RESEND_COOLDOWN_MS) {
     return { ok: false, error: "An invitation was just sent to that address. Give it a few minutes.", status: 429 };
   }
 
-  // A live pending invitation already holds a place; re-sending it doesn't
-  // take another. A new or expired one needs a free place.
-  const holdsPlace = existing != null && existing.expiresAt.getTime() > now.getTime();
+  // A live pending invitation of the same kind already holds a place;
+  // re-sending it doesn't take another. A new or expired one needs a free
+  // place.
+  const sameKind =
+    existing != null &&
+    (clientConnectionId ? existing.role === "client" && existing.connectionId === clientConnectionId : existing.role !== "client");
+  const holdsPlace = sameKind && existing!.expiresAt.getTime() > now.getTime();
   if (!holdsPlace) {
-    const used = await prisma.teamMember.count({
-      where: {
-        ownerUserId: ownerId,
-        OR: [{ acceptedAt: { not: null } }, { expiresAt: { gt: now } }],
-      },
-    });
-    const max = entitlements.limits.maxTeamMembers;
-    if (used >= max) {
-      return {
-        ok: false,
-        error: `Your plan includes ${max} team ${max === 1 ? "login" : "logins"} and they're all in use or invited. Remove one first.`,
-        status: 402,
-      };
+    const live = { OR: [{ acceptedAt: { not: null } }, { expiresAt: { gt: now } }] };
+    if (clientConnectionId) {
+      const used = await prisma.teamMember.count({
+        where: { ownerUserId: ownerId, role: "client", connectionId: clientConnectionId, ...live },
+      });
+      if (used >= CLIENT_LOGINS_PER_COMPANY) {
+        return {
+          ok: false,
+          error: `Each company can have ${CLIENT_LOGINS_PER_COMPANY} client logins and this one's are all in use or invited. Remove one first.`,
+          status: 402,
+        };
+      }
+    } else {
+      const used = await prisma.teamMember.count({
+        where: { ownerUserId: ownerId, role: { not: "client" }, ...live },
+      });
+      const max = entitlements.limits.maxTeamMembers;
+      if (used >= max) {
+        return {
+          ok: false,
+          error: `Your plan includes ${max} team ${max === 1 ? "login" : "logins"} and they're all in use or invited. Remove one first.`,
+          status: 402,
+        };
+      }
     }
   }
 
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(now.getTime() + INVITE_TTL_DAYS * 86_400_000);
-  const data = { tokenHash: hashToken(token), invitedAt: now, expiresAt };
+  const data = {
+    tokenHash: hashToken(token),
+    invitedAt: now,
+    expiresAt,
+    role: clientConnectionId ? "client" : "member",
+    connectionId: clientConnectionId,
+  };
   const invite = existing
     ? await prisma.teamMember.update({ where: { id: existing.id }, data })
     : await prisma.teamMember.create({ data: { ownerUserId: ownerId, email, ...data } });
@@ -108,6 +161,9 @@ export interface InviteView {
   email: string;
   ownerName: string | null;
   ownerEmail: string;
+  /** Client logins: view-only, for this company. */
+  role: "member" | "client";
+  companyName: string | null;
 }
 
 /** A still-usable invitation for a raw token, or null (unknown, used or expired). */
@@ -120,7 +176,25 @@ export async function findUsableInvite(token: unknown, now = new Date()): Promis
     select: { name: true, email: true },
   });
   if (!owner) return null;
-  return { id: invite.id, ownerUserId: invite.ownerUserId, email: invite.email, ownerName: owner.name, ownerEmail: owner.email };
+  const client = invite.role === "client";
+  const company = client && invite.connectionId
+    ? await prisma.quickBooksConnection.findUnique({
+        where: { id: invite.connectionId },
+        select: { companyName: true, disconnectedAt: true, userId: true },
+      })
+    : null;
+  // A client invitation for a company that's gone, or no longer on the
+  // inviting account, can't be used.
+  if (client && (!company || company.disconnectedAt || company.userId !== invite.ownerUserId)) return null;
+  return {
+    id: invite.id,
+    ownerUserId: invite.ownerUserId,
+    email: invite.email,
+    ownerName: owner.name,
+    ownerEmail: owner.email,
+    role: client ? "client" : "member",
+    companyName: company?.companyName ?? null,
+  };
 }
 
 export type AcceptResult = { ok: true; ownerUserId: string } | { ok: false; error: string; status: number };
@@ -150,6 +224,13 @@ export async function acceptInvite(token: unknown, userId: string, now = new Dat
   }
   if (user.id === invite.ownerUserId) {
     return { ok: false, error: "You can't join your own account.", status: 400 };
+  }
+  if (invite.role === "client" && !(await getEntitlements(invite.ownerUserId)).has("client_logins")) {
+    return {
+      ok: false,
+      error: "This invitation can't be used right now: the account that sent it isn't on a plan with client logins. Ask them about it.",
+      status: 409,
+    };
   }
 
   const [membership, connections, subscription, ownTeam] = await Promise.all([
@@ -211,6 +292,9 @@ export interface TeamRow {
   status: "active" | "invited" | "expired";
   invitedAt: Date;
   acceptedAt: Date | null;
+  role: "member" | "client";
+  /** Client logins: the company they see. */
+  connectionId: string | null;
 }
 
 export async function listTeam(ownerId: string, now = new Date()): Promise<TeamRow[]> {
@@ -226,6 +310,8 @@ export async function listTeam(ownerId: string, now = new Date()): Promise<TeamR
     status: r.acceptedAt ? "active" : r.expiresAt.getTime() > now.getTime() ? "invited" : "expired",
     invitedAt: r.invitedAt,
     acceptedAt: r.acceptedAt,
+    role: r.role === "client" ? "client" : "member",
+    connectionId: r.connectionId ?? null,
   }));
 }
 

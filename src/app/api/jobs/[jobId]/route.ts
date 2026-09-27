@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAccount } from "@/lib/account";
+import { canSeeConnection, getAccount, refuseClient } from "@/lib/account";
 import { getJobTypes, isAssignableJobType } from "@/lib/jobTypesServer";
 
 // The fields a contractor sets in JobProfitAI because QuickBooks has no
@@ -32,6 +32,8 @@ export async function PATCH(
   try {
     const account = await getAccount();
     if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const refused = refuseClient(account);
+    if (refused) return refused;
 
     const job = await prisma.job.findUnique({
       where: { id: jobId },
@@ -39,7 +41,7 @@ export async function PATCH(
     });
     // Same rule as bulk edits: the job's company must belong to this account
     // and still be connected.
-    if (!job || job.connection.userId !== account.ownerId || job.connection.disconnectedAt) {
+    if (!job || !canSeeConnection(account, job.connection) || job.connection.disconnectedAt) {
       return NextResponse.json({ error: "Job not found" }, { status: 404 });
     }
 

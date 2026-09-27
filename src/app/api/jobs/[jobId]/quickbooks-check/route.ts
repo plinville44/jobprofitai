@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAccount } from "@/lib/account";
+import { canSeeConnection, getAccount } from "@/lib/account";
 import { getEntitlements } from "@/lib/entitlements";
 import { qboProfitAndLossForCustomer } from "@/lib/quickbooks";
 import { withAccessToken } from "@/lib/quickbooksSync";
@@ -24,7 +24,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ job
   if (!entitlements.active) return NextResponse.json({ error: "Choose a plan to use this." }, { status: 402 });
 
   const job = await prisma.job.findUnique({ where: { id: jobId }, include: { connection: true } });
-  if (!job || job.connection.userId !== account.ownerId || job.connection.disconnectedAt) {
+  if (!job || !canSeeConnection(account, job.connection) || job.connection.disconnectedAt) {
     return NextResponse.json({ error: "Job not found" }, { status: 404 });
   }
 

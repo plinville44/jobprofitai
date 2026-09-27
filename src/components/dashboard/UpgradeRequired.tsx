@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { PLAN_LIST } from "@/lib/plans";
 import type { AccessState } from "@/lib/entitlements";
+import { getAccount } from "@/lib/account";
 
 /**
  * What a customer sees instead of a gated page once their trial has ended or
@@ -13,13 +14,29 @@ import type { AccessState } from "@/lib/entitlements";
  * settings, support and QuickBooks disconnection reachable from the nav
  * above it.
  */
-export default function UpgradeRequired({
+export default async function UpgradeRequired({
   access,
   feature = "your profit intelligence",
 }: {
   access: AccessState;
   feature?: string;
 }) {
+  // A client's view-only login can't choose a plan: the account is the
+  // bookkeeper's. Tell them who to talk to instead of showing prices.
+  const account = await getAccount();
+  if (account?.role === "client") {
+    return (
+      <div className="mx-auto max-w-2xl py-6">
+        <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center">
+          <h1 className="text-xl font-bold text-navy">This view isn&apos;t available right now</h1>
+          <p className="mt-3 text-[15px] leading-relaxed text-gray-600">
+            Your view-only access comes through your bookkeeper&apos;s JobProfitAI account, which isn&apos;t active at
+            the moment. Nothing has been deleted. Contact your bookkeeper to turn it back on.
+          </p>
+        </div>
+      </div>
+    );
+  }
   const expiredTrial = access === "trial_expired";
 
   return (

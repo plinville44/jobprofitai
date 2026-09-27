@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
-import type { AccountContext } from "@/lib/account";
+import { listCompanies, type AccountContext } from "@/lib/account";
+import { CLIENT_LOGINS_PER_COMPANY } from "@/lib/plans";
 import { getEntitlements } from "@/lib/entitlements";
 import { listTeam } from "@/lib/team";
 import TeamManager from "./TeamManager";
@@ -25,25 +26,62 @@ export default async function TeamSection({ account }: { account: AccountContext
     );
   }
 
-  const [rows, entitlements] = await Promise.all([listTeam(account.ownerId), getEntitlements(account.ownerId)]);
+  const [rows, entitlements, companies] = await Promise.all([
+    listTeam(account.ownerId),
+    getEntitlements(account.ownerId),
+    listCompanies(account),
+  ]);
+  const members = rows.filter((r) => r.role !== "client");
+  const clients = rows.filter((r) => r.role === "client");
+  const companyName = new Map(companies.map((c) => [c.id, c.companyName ?? "Unnamed company"]));
+  const view = (r: (typeof rows)[number]) => ({
+    id: r.id,
+    email: r.email,
+    name: r.name,
+    status: r.status,
+    invitedAt: r.invitedAt.toISOString(),
+    connectionId: r.connectionId,
+    companyName: r.connectionId ? companyName.get(r.connectionId) ?? null : null,
+  });
+  const canClient = entitlements.has("client_logins");
   return (
-    <section className="mt-10 rounded-xl border border-gray-200 p-6">
-      <h2 className="text-sm font-semibold text-navy">Team</h2>
-      <p className="mt-1 text-sm text-gray-600">
-        Give your office manager, project managers or bookkeeper their own login. They see the same companies and
-        reports you do. Billing, this team list and deleting the account stay with you. Your plan includes{" "}
-        {entitlements.limits.maxTeamMembers} team logins.
-      </p>
-      <TeamManager
-        rows={rows.map((r) => ({
-          id: r.id,
-          email: r.email,
-          name: r.name,
-          status: r.status,
-          invitedAt: r.invitedAt.toISOString(),
-        }))}
-        canInvite={entitlements.active}
-      />
-    </section>
+    <>
+      <section className="mt-10 rounded-xl border border-gray-200 p-6">
+        <h2 className="text-sm font-semibold text-navy">Team</h2>
+        <p className="mt-1 text-sm text-gray-600">
+          Give your office manager, project managers or bookkeeper their own login. They see the same companies and
+          reports you do. Billing, this team list and deleting the account stay with you. Your plan includes{" "}
+          {entitlements.limits.maxTeamMembers} team logins.
+        </p>
+        <TeamManager rows={members.map(view)} canInvite={entitlements.active} />
+      </section>
+
+      {canClient || clients.length > 0 ? (
+        <section className="mt-6 rounded-xl border border-gray-200 p-6" id="client-logins">
+          <h2 className="text-sm font-semibold text-navy">Client logins</h2>
+          <p className="mt-1 text-sm text-gray-600">
+            Give each contractor you keep books for a view-only login to their own company. They see its dashboard,
+            jobs, Estimate Check, Money Owed, WIP and opportunities, and nothing else on your account: not your other
+            clients, settings or billing. They can&apos;t change anything. Up to {CLIENT_LOGINS_PER_COMPANY} per
+            company, on top of your team logins.
+          </p>
+          {/* The list always shows, so a login can be removed even when no
+              company is connected. */}
+          <TeamManager
+            rows={clients.map(view)}
+            canInvite={entitlements.active && canClient && companies.length > 0}
+            companies={companies.map((c) => ({ id: c.id, name: c.companyName ?? "Unnamed company" }))}
+          />
+          {companies.length === 0 ? (
+            <p className="mt-4 text-sm text-gray-500">Connect a client&apos;s QuickBooks company to invite them.</p>
+          ) : null}
+          {!canClient ? (
+            <p className="mt-3 text-xs text-gray-500">
+              Client logins are part of the Firm plan. Existing ones can&apos;t see anything until the account is on it.
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+    </>
   );
 }

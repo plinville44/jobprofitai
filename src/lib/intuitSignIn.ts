@@ -249,6 +249,12 @@ export async function handleIntuitFlow(
     return res;
   }
 
+  // A client's view-only login can't add a company to the firm's account
+  // (the firm would be billed for it).
+  if (account.role === "client") {
+    await discardGrant(realmId!, tokens.refresh_token);
+    return NextResponse.redirect(appUrl("/dashboard?qbo_error=view_only"));
+  }
   const result = await attachCompany({ ownerId: account.ownerId, realmId: realmId!, tokens });
   if (!result.ok) {
     const target =

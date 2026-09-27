@@ -1,5 +1,5 @@
 import Stripe from "stripe";
-import { PLANS, PLAN_IDS, type PlanId } from "@/lib/plans";
+import { CONTRACTOR_PLAN_IDS, PLANS, PLAN_IDS, type PlanId } from "@/lib/plans";
 
 // Stripe client + the mapping between JobProfitAI plans and Stripe Prices.
 //
@@ -45,9 +45,18 @@ export function getStripe(): Stripe {
   return cachedStripe;
 }
 
-/** True when the environment has enough configuration to run a checkout. */
+/**
+ * True when the environment has enough configuration to run a contractor
+ * checkout. The Firm price is optional: until it's set, the Firm plan simply
+ * isn't offered (see isPlanOffered).
+ */
 export function isStripeConfigured(): boolean {
-  return Boolean(process.env.STRIPE_SECRET_KEY) && PLAN_IDS.every((id) => Boolean(priceIdForPlan(id)));
+  return Boolean(process.env.STRIPE_SECRET_KEY) && CONTRACTOR_PLAN_IDS.every((id) => Boolean(priceIdForPlan(id)));
+}
+
+/** Whether a plan can be bought in this environment right now. */
+export function isPlanOffered(plan: PlanId): boolean {
+  return Boolean(process.env.STRIPE_SECRET_KEY) && Boolean(priceIdForPlan(plan));
 }
 
 /** The configured Stripe Price ID for a plan, or null when it isn't set. */

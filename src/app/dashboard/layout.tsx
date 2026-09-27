@@ -20,7 +20,8 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const account = await getAccount();
   if (!account) redirect("/login");
 
-  const [isAdmin, partner, user, { connection: activeCompany, companies }] = await Promise.all([
+  const client = account.role === "client";
+  const [isAdmin, partner, user, { connection: activeCompany, companies }, firm] = await Promise.all([
     isAdminUser(account.userId),
     prisma.partner.findUnique({
       where: { userId: account.userId },
@@ -30,7 +31,8 @@ export default async function DashboardLayout({ children }: { children: React.Re
       where: { id: account.userId },
       select: { email: true, emailVerifiedAt: true },
     }),
-    getActiveConnection(account.ownerId),
+    getActiveConnection(account),
+    client ? prisma.user.findUnique({ where: { id: account.ownerId }, select: { name: true, email: true } }) : null,
   ]);
 
   return (
@@ -42,6 +44,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
               <Logo width={176} priority />
             </Link>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              {!client && companies.length > 1 ? <NavLink href="/dashboard/portfolio">Portfolio</NavLink> : null}
               <NavLink href="/dashboard">Dashboard</NavLink>
               <NavLink href="/dashboard/opportunities">Opportunities</NavLink>
               <NavLink href="/dashboard/estimates">Estimate Check</NavLink>
@@ -52,8 +55,8 @@ export default async function DashboardLayout({ children }: { children: React.Re
               {account.role === "owner" ? <NavLink href="/dashboard/referrals">Refer</NavLink> : null}
               {/* Only surfaced once someone is actually in the partner
                   program - it's irrelevant clutter for a contractor. */}
-              {partner ? <NavLink href="/dashboard/partner">Partner</NavLink> : null}
-              <NavLink href="/dashboard/billing">Billing</NavLink>
+              {partner && !client ? <NavLink href="/dashboard/partner">Partner</NavLink> : null}
+              {client ? null : <NavLink href="/dashboard/billing">Billing</NavLink>}
               <NavLink href="/dashboard/settings">Settings</NavLink>
               {isAdmin ? <NavLink href="/dashboard/admin">Admin</NavLink> : null}
             </div>
@@ -74,7 +77,16 @@ export default async function DashboardLayout({ children }: { children: React.Re
       {/* Trial countdown / billing status. Rendered server-side from the
           same entitlement source the access checks use, so what the banner
           says and what the app actually allows can't disagree. */}
-      <TrialBanner userId={account.ownerId} />
+      {client ? (
+        <div className="border-b border-blue-100 bg-blue-50">
+          <p className="mx-auto max-w-6xl px-6 py-2.5 text-sm text-navy">
+            View-only access to <strong>{activeCompany?.companyName ?? "your company"}</strong>, set up by{" "}
+            {firm?.name ?? firm?.email ?? "your bookkeeper"}. They manage the QuickBooks connection and settings.
+          </p>
+        </div>
+      ) : (
+        <TrialBanner userId={account.ownerId} />
+      )}
 
       {/* Shown on every dashboard page until the address is confirmed, and
           it says the one consequence that matters to the customer. */}

@@ -50,7 +50,9 @@ export default async function DashboardPage(props: {
 
   // The company chosen in the header's company switcher; the most recently
   // connected one by default.
-  const { connection, companies: connections } = await getActiveConnection(account.ownerId);
+  const { connection, companies: connections } = await getActiveConnection(account);
+  // A client's view-only login: no connect, sync or setup actions.
+  const viewOnly = account.role === "client";
 
   const latestDigest = connection
     ? await prisma.weeklyDigest.findFirst({
@@ -122,15 +124,24 @@ export default async function DashboardPage(props: {
       )}
 
       {connections.length === 0 || !connection || !profitData ? (
-        <div className="mt-8 rounded-xl border border-gray-200 p-8 text-center">
-          <p className="text-gray-600">Connect your QuickBooks Online company to see your job profitability.</p>
-          <div className="mt-4 flex justify-center">
-            <ConnectToQuickBooksButton />
+        viewOnly ? (
+          <div className="mt-8 rounded-xl border border-gray-200 p-8 text-center">
+            <p className="text-gray-600">
+              There&apos;s no company to show on this login right now. Ask your bookkeeper to check the QuickBooks
+              connection and your access.
+            </p>
           </div>
-        </div>
+        ) : (
+          <div className="mt-8 rounded-xl border border-gray-200 p-8 text-center">
+            <p className="text-gray-600">Connect your QuickBooks Online company to see your job profitability.</p>
+            <div className="mt-4 flex justify-center">
+              <ConnectToQuickBooksButton />
+            </div>
+          </div>
+        )
       ) : (
         <>
-          {connection.costTrackingMode === "classes" && connection.jobSource !== "classes" && connection.jobSourceConfirmedAt == null ? (
+          {!viewOnly && connection.costTrackingMode === "classes" && connection.jobSource !== "classes" && connection.jobSourceConfirmedAt == null ? (
             <JobSourcePrompt connectionId={connection.id} current={connection.jobSource === "customers" ? "customers" : "projects"} />
           ) : null}
           {/* Connection status + Sync/Digest actions. Disconnect lives on the
@@ -148,7 +159,7 @@ export default async function DashboardPage(props: {
             </p>
             {/* A revoked connection still counts as connected, so the
                 Connect button is hidden. This is the way back. */}
-            {needsReconnect(connection.lastSyncError) ? (
+            {!viewOnly && needsReconnect(connection.lastSyncError) ? (
               <div className="mt-3 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800">
                 <p>{connection.lastSyncError}</p>
                 <div className="mt-3">
@@ -156,10 +167,11 @@ export default async function DashboardPage(props: {
                 </div>
               </div>
             ) : null}
-            <DashboardActions connectionId={connection.id} />
+            {viewOnly ? null : <DashboardActions connectionId={connection.id} />}
             {/* A company that has never synced gets its first sync and first
                 brief run automatically, instead of a dashboard of zeros. */}
-            {(!connection.lastSyncedAt || searchParams.qbo_connected) &&
+            {!viewOnly &&
+            (!connection.lastSyncedAt || searchParams.qbo_connected) &&
             !needsReconnect(connection.lastSyncError) ? (
               <FirstRunSetup connectionId={connection.id} neverSynced={!connection.lastSyncedAt} />
             ) : null}
@@ -555,4 +567,5 @@ const QBO_ERROR_MESSAGES: Record<string, string> = {
   token_exchange_failed: "Intuit didn't complete the connection. Please try again in a minute.",
   connection_failed: "Something went wrong connecting QuickBooks. Please try again, or email support@jobprofitai.com.",
   verify_failed: "We couldn't confirm that QuickBooks company with Intuit, so it wasn't connected. Please try again.",
+  view_only: "This is a view-only login, so it can't connect QuickBooks companies. Your bookkeeper manages the connection.",
 };

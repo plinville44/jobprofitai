@@ -250,8 +250,26 @@ export function teamInviteEmail(input: {
   companyName: string | null;
   acceptUrl: string;
   expiryDays: number;
+  /** A client login from a bookkeeping firm: view-only, one company. */
+  viewOnly?: boolean;
 }): RenderedEmail {
   const who = input.inviterName ? `${input.inviterName} (${input.inviterEmail})` : input.inviterEmail;
+  if (input.viewOnly) {
+    const company = input.companyName ?? "your company";
+    return buildEmail("You're invited to see your job profit on JobProfitAI", {
+      preheader: "A view-only login to your own company's job profit.",
+      heading: "Your job profit, from your bookkeeper",
+      body: [
+        `${who} keeps the books for ${company} and has set you up with a view-only JobProfitAI login. You'll see ${company}'s profit by job, estimates against actual, work in progress, money you're owed and your pricing opportunities.`,
+        "You see only your own company. Your bookkeeper manages the QuickBooks connection and settings, and can remove this login at any time.",
+        `This invitation works once and expires in ${input.expiryDays} days.`,
+      ],
+      cta: { label: "Accept the invitation", url: input.acceptUrl },
+      footnote:
+        "If you weren't expecting this, you can ignore it and nothing will happen. If the button doesn't work, copy and paste this address into your browser: " +
+        input.acceptUrl,
+    });
+  }
   const what = input.companyName ? `job profit numbers for ${input.companyName}` : "their job profit numbers";
   // A fixed subject: the inviter's name is typed by them, and a subject line
   // of their choosing from our domain would be a gift to phishers.
@@ -534,12 +552,12 @@ export function testimonialRequestEmail(name: string | null): RenderedEmail {
 // BILLING
 // ─────────────────────────────────────────────────────────────────────────
 
-export function subscriptionConfirmedEmail(planName: string, priceLabel: string): RenderedEmail {
+export function subscriptionConfirmedEmail(planName: string, priceText: string): RenderedEmail {
   return buildEmail(`You're on ${planName}. Welcome aboard`, {
     preheader: "Your JobProfitAI subscription is active.",
     heading: "Your subscription is active",
     body: [
-      `You're now on ${planName} at ${priceLabel}/month. Everything stays exactly where you left it, same connection, same jobs, same history.`,
+      `You're now on ${planName} at ${priceText}. Everything stays exactly where you left it, same connection, same jobs, same history.`,
       "One thing worth doing now: check that the Weekly Profit Brief is going to the right people in Settings. That email is where most of the day-to-day value lands.",
     ],
     cta: { label: "Go to your dashboard", url: appUrl("/dashboard") },

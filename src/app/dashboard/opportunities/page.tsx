@@ -33,7 +33,7 @@ export default async function OpportunitiesPage() {
   const entitlements = await getEntitlements(account.ownerId);
   if (!entitlements.active) return <UpgradeRequired access={entitlements.access} />;
 
-  const { connection } = await getActiveConnection(account.ownerId);
+  const { connection } = await getActiveConnection(account);
   if (!connection) {
     return (
       <main>
@@ -44,6 +44,7 @@ export default async function OpportunitiesPage() {
   }
 
   const canSee = entitlements.has("profit_opportunities");
+  const viewOnly = account.role === "client";
   if (!canSee) {
     return (
       <main>
@@ -80,7 +81,7 @@ export default async function OpportunitiesPage() {
       item={item}
       jobNames={jobNames}
       connectionId={connection.id}
-      canTrack
+      canTrack={!viewOnly}
       tracked={item.trackable ? liveTracked.has(trackKey(item.trackable.kind, item.trackable.subjectKey, item.trackable.costCategory)) : false}
     />
   );
@@ -160,14 +161,14 @@ export default async function OpportunitiesPage() {
 
       <section className="mt-10" id="tracking">
         <h2 className="text-lg font-semibold text-navy">Changes you&apos;re tracking</h2>
-        <TrackedChanges actions={tracked} jobNames={jobNames} />
+        <TrackedChanges actions={tracked} jobNames={jobNames} readOnly={viewOnly} />
       </section>
 
       {insightsAccess && (
         <section className="mt-10">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-lg font-semibold text-navy">Advisor notes</h2>
-            <RefreshAnalysisButton connectionId={connection.id} />
+            {viewOnly ? null : <RefreshAnalysisButton connectionId={connection.id} />}
           </div>
           <p className="mt-1 text-xs text-gray-500">
             Written by AI from the opportunities above, as an experienced advisor would talk them through. The dollar

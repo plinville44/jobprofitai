@@ -34,6 +34,8 @@ export default async function JobDetailPage({
 
   const data = await getJobProfitData(jobId);
   if (!data || data.connectionUserId !== account.ownerId) notFound();
+  // A client login sees only its own company's jobs.
+  if (account.connectionId != null && data.connectionId !== account.connectionId) notFound();
 
   // Forecast-at-Completion is a Profit Intelligence feature (see
   // src/lib/entitlements.ts) - gated here, not by hiding the underlying
@@ -69,7 +71,7 @@ export default async function JobDetailPage({
 
       <QuickBooksCheck jobId={f.jobId} />
 
-      <JobEditForm
+      {account.role === "client" ? null : <JobEditForm
         jobId={f.jobId}
         jobName={f.jobName}
         initialCategory={f.category}
@@ -80,7 +82,7 @@ export default async function JobDetailPage({
         initialPercentComplete={data.percentCompleteOverride}
         syncedStatus={data.syncedStatus}
         jobTypes={await getJobTypes(data.connectionId)}
-      />
+      />}
 
       {!f.profitabilityAvailable && (
         <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">

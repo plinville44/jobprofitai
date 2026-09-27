@@ -82,7 +82,7 @@ const QUESTIONS: Question[] = [
     options: [
       { value: "1", label: "One" },
       { value: "2to3", label: "2 or 3" },
-      { value: "4plus", label: "4 or more" },
+      { value: "4plus", label: "4 or more, or I'm a bookkeeper with contractor clients" },
     ],
   },
 ];
@@ -148,16 +148,17 @@ function notesFor(a: Answers): Note[] {
 
 function planFor(a: Answers): { name: string; price: string; why: string; href: string; cta: string } | null {
   if (!a.open || !a.companies) return null;
+  const pro = PLANS.profit_intelligence_pro;
   if (a.companies === "4plus") {
+    const firm = PLANS.firm;
     return {
-      name: "Talk to us",
-      price: "",
-      why: "The plans cover up to 3 QuickBooks companies. If you're a bookkeeper or accountant with contractor clients, or run more companies than that, get in touch and we'll set you up.",
-      href: "/contact",
-      cta: "Get in touch",
+      name: firm.name,
+      price: `${firm.priceLabel} per company/month, ${firm.perCompany!.minCompanies} minimum`,
+      why: `Every company in one login, with a portfolio view of all of them and view-only logins for your clients. The free trial covers ${pro.limits.maxConnections} companies, client logins included; choose ${firm.name} to connect the rest.`,
+      href: "/pricing#firm",
+      cta: `See the ${firm.name} plan`,
     };
   }
-  const pro = PLANS.profit_intelligence_pro;
   const std = PLANS.profit_intelligence;
   if (a.companies === "2to3" || a.open === "over100") {
     return {

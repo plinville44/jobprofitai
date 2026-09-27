@@ -33,7 +33,16 @@ export interface JobRow {
  * pages. Job type is offered in the same bar because it is the other field
  * people fill in a batch, usually right after their first sync.
  */
-export default function JobsTable({ jobs, jobTypes }: { jobs: JobRow[]; jobTypes: { value: string; label: string }[] }) {
+export default function JobsTable({
+  jobs,
+  jobTypes,
+  readOnly = false,
+}: {
+  jobs: JobRow[];
+  jobTypes: { value: string; label: string }[];
+  /** View-only logins: no selection or bulk edit. */
+  readOnly?: boolean;
+}) {
   const router = useRouter();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -162,7 +171,7 @@ export default function JobsTable({ jobs, jobTypes }: { jobs: JobRow[]; jobTypes
         <table className="w-full min-w-[960px] text-left text-sm">
           <thead className="bg-gray-50 text-xs uppercase text-gray-500">
             <tr>
-              <th className="w-10 px-4 py-2">
+              {readOnly ? null : <th className="w-10 px-4 py-2">
                 <input
                   id="jobs-select-all"
                   type="checkbox"
@@ -177,7 +186,7 @@ export default function JobsTable({ jobs, jobTypes }: { jobs: JobRow[]; jobTypes
                   onChange={toggleAll}
                   className="h-4 w-4 cursor-pointer rounded border-gray-300"
                 />
-              </th>
+              </th>}
               <th className="px-4 py-2 font-medium">Job</th>
               <th className="px-4 py-2 font-medium">Customer</th>
               <th className="px-4 py-2 font-medium">Status</th>
@@ -197,7 +206,7 @@ export default function JobsTable({ jobs, jobTypes }: { jobs: JobRow[]; jobTypes
               const isSelected = selected.has(j.jobId);
               return (
                 <tr key={j.jobId} className={isSelected ? "bg-blue-50/50" : "hover:bg-gray-50"}>
-                  <td className="px-4 py-3">
+                  {readOnly ? null : <td className="px-4 py-3">
                     <input
                       id={`job-select-${j.jobId}`}
                       type="checkbox"
@@ -206,7 +215,7 @@ export default function JobsTable({ jobs, jobTypes }: { jobs: JobRow[]; jobTypes
                       onChange={() => toggleOne(j.jobId)}
                       className="h-4 w-4 cursor-pointer rounded border-gray-300"
                     />
-                  </td>
+                  </td>}
                   <td className="px-4 py-3 font-medium text-navy">
                     <Link href={`/dashboard/jobs/${j.jobId}`} className="hover:underline">
                       {j.jobName}

@@ -365,7 +365,7 @@ export function createFakePrisma(): FakePrisma {
     teamMember: new FakeModel(
       "teamMember",
       [{ fields: ["memberUserId"] }, { fields: ["tokenHash"] }, { fields: ["ownerUserId", "email"] }],
-      () => ({ invitedAt: new Date(), acceptedAt: null, memberUserId: null })
+      () => ({ invitedAt: new Date(), acceptedAt: null, memberUserId: null, role: "member", connectionId: null })
     ),
     feedback: new FakeModel("feedback", [], () => ({ createdAt: new Date() })),
   };

@@ -13,12 +13,17 @@
  * imported from client components, server components, and the marketing
  * pages alike.
  *
- * Launch pricing is exactly two paid plans. There is no Starter tier, no
- * freemium tier, and no sub-$149 plan - that's a strategic decision, not an
- * oversight: the trial is what removes purchase friction, not a cheap tier.
+ * Contractors choose between exactly two paid plans. There is no Starter
+ * tier, no freemium tier, and no sub-$149 plan - that's a strategic
+ * decision, not an oversight: the trial is what removes purchase friction,
+ * not a cheap tier. Bookkeeping and accounting firms have a third plan,
+ * Firm, priced per client company with a four-company minimum ($316 a
+ * month at least), so it's never cheaper than Pro ($299) for one contractor.
+ * (A three-company minimum was considered and rejected: at $237 it undercut
+ * Pro while including everything in it.)
  */
 
-export type PlanId = "profit_intelligence" | "profit_intelligence_pro";
+export type PlanId = "profit_intelligence" | "profit_intelligence_pro" | "firm";
 
 /** Includes the pre-launch tier that is no longer sold but may exist on old rows. */
 export type StoredPlan = PlanId | "profit_monitor";
@@ -39,6 +44,10 @@ export interface PlanDefinition {
   priceCents: number;
   /** Display price, e.g. "$149". */
   priceLabel: string;
+  /** What the price is per, after priceLabel: "/month", or " per company/month" for Firm. */
+  priceSuffix: string;
+  /** Firm: billed per connected QuickBooks company, with this minimum. */
+  perCompany?: { minCompanies: number };
   tagline: string;
   /** Shown on the pricing page under the price. */
   bestFor: string;
@@ -60,6 +69,7 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     name: "Profit Intelligence",
     priceCents: 14_900,
     priceLabel: "$149",
+    priceSuffix: "/month",
     tagline: "See what to change to make more money on your jobs, and what each change is worth.",
     bestFor:
       "Contractors who want to know where their pricing leaks money and what to fix first.",
@@ -121,6 +131,7 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     name: "Profit Intelligence Pro",
     priceCents: 29_900,
     priceLabel: "$299",
+    priceSuffix: "/month",
     tagline: "Everything in Profit Intelligence, plus forecasts for jobs in progress and more scale.",
     bestFor:
       "Larger or growing contractors who need more scale and forward-looking analysis.",
@@ -140,12 +151,63 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     ],
     stripePriceEnvVar: "STRIPE_PRICE_PROFIT_INTELLIGENCE_PRO_MONTHLY",
   },
+  firm: {
+    id: "firm",
+    name: "Firm",
+    // Per company. The Stripe price is $79 a unit; the subscription's
+    // quantity is the number of connected companies, never below four.
+    priceCents: 7_900,
+    priceLabel: "$79",
+    priceSuffix: " per company/month",
+    perCompany: { minCompanies: 4 },
+    tagline: "Every client's job profit in one login, priced per company.",
+    bestFor: "Bookkeepers and accountants who keep the books for contractors.",
+    mostPopular: false,
+    limits: { maxConnections: 100, maxActiveJobs: null, maxTeamMembers: 10 },
+    marketingFeatures: [
+      "$79 per client company a month, 4 minimum, billed on the companies you connect",
+      "Everything in Profit Intelligence Pro, for every client",
+      // /dashboard/portfolio
+      "Portfolio view: every client's margin, open jobs, unpaid invoices and data gaps on one page",
+      // TeamMember role "client" (src/lib/team.ts, src/lib/account.ts)
+      "View-only logins for your clients, each seeing only their own company",
+      "10 staff logins for your team",
+      "Priority support",
+    ],
+    stripePriceEnvVar: "STRIPE_PRICE_FIRM_MONTHLY",
+  },
 };
 
-export const PLAN_IDS: PlanId[] = ["profit_intelligence", "profit_intelligence_pro"];
+/** Every plan that can be bought. */
+export const PLAN_IDS: PlanId[] = ["profit_intelligence", "profit_intelligence_pro", "firm"];
 
-/** Ordered for display (cheapest first). */
-export const PLAN_LIST: PlanDefinition[] = PLAN_IDS.map((id) => PLANS[id]);
+/** The two plans a contractor chooses between. */
+export const CONTRACTOR_PLAN_IDS: PlanId[] = ["profit_intelligence", "profit_intelligence_pro"];
+
+/** The contractor plans, ordered for display (cheapest first). Firm is shown on its own. */
+export const PLAN_LIST: PlanDefinition[] = CONTRACTOR_PLAN_IDS.map((id) => PLANS[id]);
+
+/** View-only client logins a Firm account can give each client company. */
+export const CLIENT_LOGINS_PER_COMPANY = 3;
+
+/** Companies a Firm subscription is billed for: the connected ones, never below the minimum. */
+export function firmBillableCompanies(connectedCompanies: number): number {
+  return Math.max(PLANS.firm.perCompany!.minCompanies, Math.max(0, Math.floor(connectedCompanies)));
+}
+
+/**
+ * One month of a plan in cents: the plan's price, or for Firm the monthly
+ * bill for the companies it's billed for (the minimum when not known).
+ */
+export function monthlyPriceCents(plan: string, quantity?: number | null): number {
+  if (plan === "firm") return PLANS.firm.priceCents * firmBillableCompanies(quantity ?? 0);
+  return priceCentsForStoredPlan(plan);
+}
+
+/** "$149/month", or "$79 per company/month" for Firm. */
+export function planPriceText(plan: PlanId): string {
+  return `${PLANS[plan].priceLabel}${PLANS[plan].priceSuffix}`;
+}
 
 export function isPlanId(value: unknown): value is PlanId {
   return typeof value === "string" && (PLAN_IDS as string[]).includes(value);
@@ -171,6 +233,8 @@ export const TRIAL_LIMITS: PlanLimits = PLANS.profit_intelligence_pro.limits;
 
 /** Monthly price in cents for a stored plan value - used to size referral rewards. */
 export function priceCentsForStoredPlan(plan: string): number {
+  // Firm is per company: its smallest monthly bill.
+  if (plan === "firm") return PLANS.firm.priceCents * firmBillableCompanies(0);
   if (isPlanId(plan)) return PLANS[plan].priceCents;
   // Retired/unknown tiers reward at the entry plan price rather than $0, so a
   // legacy account that refers someone still gets a defensible credit.
