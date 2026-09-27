@@ -38,7 +38,7 @@
 
 import type { ForecastResult, JobFinancials } from "./profitability";
 import { forecastIsActionable } from "./forecastRules";
-import type { CostCategory, EstimateLine } from "./qboNormalize";
+import { isUnitPriced, type CostCategory, type EstimateLine } from "./qboNormalize";
 import { formatCurrency } from "./format";
 
 export const CORE_CATEGORIES = ["labor", "materials", "subcontractor", "equipment"] as const;
@@ -502,7 +502,7 @@ export interface EstimateFeedEntry {
   typeLabel: string;
   historyJobs: number;
   /** How the estimate was checked; a whole-price check speaks to the job type, not the job. */
-  method: "by_part" | "whole_job" | null;
+  method: "by_part" | "whole_job" | "quantities" | null;
 }
 
 export interface FeedInput {
@@ -1009,16 +1009,24 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
       impactKind: "profit",
       confidence: e.confidence,
       confidenceReason: e.confidenceReason,
-      finding: `If it goes like your last ${plural(e.historyJobs, `${typePhrase(e.typeLabel)} job`)}, it earns ${pct(e.predictedMarginPct)} against your ${fmtTarget(e.targetMarginPct)} target.`,
-      cause: `Your ${typePhrase(e.typeLabel)} jobs as a group come in below target, so an estimate priced the way they were does too. The fix is likely your ${typePhrase(e.typeLabel)} pricing in general, not only this estimate.`,
+      finding:
+        e.method === "quantities"
+          ? `Costed from its quantities, it earns ${pct(e.predictedMarginPct)} against your ${fmtTarget(e.targetMarginPct)} target.`
+          : `If it goes like your last ${plural(e.historyJobs, `${typePhrase(e.typeLabel)} job`)}, it earns ${pct(e.predictedMarginPct)} against your ${fmtTarget(e.targetMarginPct)} target.`,
+      cause:
+        e.method === "quantities"
+          ? null
+          : `Your ${typePhrase(e.typeLabel)} jobs as a group come in below target, so an estimate priced the way they were does too. The fix is likely your ${typePhrase(e.typeLabel)} pricing in general, not only this estimate.`,
       action:
         e.method === "by_part"
           ? "Open the Estimate Check for the price that reaches your target and which line is thinnest, then update the estimate in QuickBooks."
           : "Open the Estimate Check for the price that reaches your target, then update the estimate in QuickBooks.",
       method:
-        e.method === "by_part"
-          ? "What similar finished jobs actually cost for each dollar charged, applied to this estimate's total, with the lines compared against how those jobs' costs usually split. The Estimate Check page shows the working."
-          : "What similar finished jobs actually cost for each dollar charged, applied to this estimate's total. The Estimate Check page shows the working.",
+        e.method === "quantities"
+          ? "The estimate's own quantities, costed at your QuickBooks item costs and your average labor cost per hour. The Estimate Check page shows each line."
+          : e.method === "by_part"
+            ? "What similar finished jobs actually cost for each dollar charged, applied to this estimate's total, with the lines compared against how those jobs' costs usually split. The Estimate Check page shows the working."
+            : "What similar finished jobs actually cost for each dollar charged, applied to this estimate's total. The Estimate Check page shows the working.",
       jobIds: [],
       href: `/dashboard/estimates#estimate-${e.estimateId}`,
       breakdown: null,
@@ -1135,6 +1143,66 @@ export interface EstimateCheckInput {
   /** Finished jobs of the same type (any age; the window is applied here). */
   history: { f: JobFinancials; mix: PricedMix | null }[];
   now: Date;
+  /**
+   * The company's average labor cost per hour (pay rate from time entries,
+   * with labor burden), for costing the hours on labor lines. Null when
+   * there are no time entries with hours to average.
+   */
+  laborRate?: { perHour: number; hours: number; burden: number } | null;
+  /** The labor burden setting as a fraction, for labor items costed at their purchase cost. */
+  laborBurden?: number;
+}
+
+/** An estimate line costed from its quantity. */
+export interface EstimateQuantityLine {
+  name: string | null;
+  category: CostCategory;
+  qty: number;
+  /** item_cost: the product or service's purchase cost; labor_rate: hours at the average labor rate. */
+  basis: "item_cost" | "labor_rate";
+  unitCost: number;
+  cost: number;
+  /** What the estimate charges for the line. */
+  price: number;
+}
+
+/**
+ * The lines of an estimate that can be costed from their quantities: any
+ * product or service with a purchase cost set in QuickBooks (quantity x
+ * that cost, plus the labor burden on labor items, since a purchase cost is
+ * a wage), and labor lines priced at an hourly rate (hours x the company's
+ * average labor cost per hour, which already carries the burden). A $4,000
+ * labor line with a quantity of 1 is a lump sum, not an hour, and is left
+ * alone; so is a line priced far from its item's cost per unit. That's
+ * judged on each QuickBooks line before same-named lines are merged (the
+ * qa field); lines stored before then are judged here as merged.
+ */
+export function costFromQuantities(
+  lines: EstimateLine[],
+  laborRate: EstimateCheckInput["laborRate"],
+  laborBurden: number = laborRate?.burden ?? 0
+): {
+  lines: EstimateQuantityLine[];
+  cost: number;
+  costedPrice: number;
+} {
+  const out: EstimateQuantityLine[] = [];
+  for (const l of lines) {
+    const q = l.q ?? 0;
+    const judged = l.qa != null;
+    const price = judged ? l.qa! : l.a;
+    if (!(q > 0) || !(price > 0)) continue;
+    if (!judged && !isUnitPriced(l.c, price / q, l.u)) continue;
+    if (l.u != null && l.u > 0) {
+      const unitCost = l.c === "labor" && laborBurden > 0 ? l.u * (1 + laborBurden) : l.u;
+      out.push({ name: l.n, category: l.c, qty: q, basis: "item_cost", unitCost, cost: q * unitCost, price });
+      continue;
+    }
+    if (l.c === "labor" && laborRate && laborRate.perHour > 0) {
+      out.push({ name: l.n, category: l.c, qty: q, basis: "labor_rate", unitCost: laborRate.perHour, cost: q * laborRate.perHour, price });
+    }
+  }
+  return { lines: out, cost: out.reduce((s, x) => s + x.cost, 0), costedPrice: out.reduce((s, x) => s + x.price, 0) };
 }
 
 export interface EstimateCategoryCheck {
@@ -1155,7 +1223,7 @@ export interface EstimateCheckResult {
   status: EstimateCheckStatus;
   historyJobs: number;
   historyWithSplit: number;
-  method: "by_part" | "whole_job" | null;
+  method: "by_part" | "whole_job" | "quantities" | null;
   expectedCost: number | null;
   expectedMarginPct: number | null;
   targetMarginPct: number | null;
@@ -1173,6 +1241,10 @@ export interface EstimateCheckResult {
    * page says so.
    */
   methodNote: string | null;
+  /** The lines costed from their quantities (method "quantities"). */
+  quantityLines: EstimateQuantityLine[];
+  /** Share of the price costed from quantities (0 to 1), when that method was used. */
+  quantityCoverage: number | null;
 }
 
 /**
@@ -1221,13 +1293,65 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
     confidenceReason: summary,
     summary,
     methodNote: null,
+    quantityLines: [],
+    quantityCoverage: null,
   });
   if (input.amount <= 0) return empty("no_amount", "This estimate has no amount to check.");
   if (target == null) return empty("no_target", "Set a target margin (in Settings) to check estimates against it.");
-  if (history.length < MIN_JOBS) {
+
+  // Quantities first: an estimate whose lines carry quantities can be
+  // costed from what it actually includes, so its own price matters. Used
+  // when at least half the price can be costed this way (with the rest at
+  // the past jobs' rate), or all of it (then no history is needed).
+  const qc = costFromQuantities(input.lines, input.laborRate ?? null, input.laborBurden ?? input.laborRate?.burden ?? 0);
+  const coverage = qc.costedPrice / input.amount;
+  const histOk = history.length >= MIN_JOBS;
+  if (coverage >= 0.999 || (coverage >= 0.5 && histOk)) {
+    const histRatio = histOk ? history.reduce((s, h) => s + h.f.costs, 0) / history.reduce((s, h) => s + h.f.revenue, 0) : null;
+    const remainder = Math.max(0, input.amount - qc.costedPrice);
+    const expectedCost = qc.cost + (histRatio != null ? remainder * histRatio : 0);
+    const expectedMarginPct = 1 - expectedCost / input.amount;
+    const priceAtTarget = expectedCost / (1 - target);
+    const below = expectedMarginPct < target - 1e-9;
+    const shortfall = below ? Math.max(0, priceAtTarget - input.amount) : 0;
+    const share = Math.round(Math.min(1, coverage) * 100);
+    const partial = coverage < 0.999;
+    const hours = qc.lines.filter((l) => l.basis === "labor_rate").reduce((s, l) => s + l.qty, 0);
+    const rate = input.laborRate;
+    const past = histRatio != null ? ` Your past jobs of this type came in at ${pct(1 - histRatio)}.` : "";
+    const lead = `Costed from its quantities, this job costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}`;
+    return {
+      ...base,
+      status: below ? "below_target" : "on_target",
+      method: "quantities",
+      expectedCost,
+      expectedMarginPct,
+      targetMarginPct: target,
+      priceAtTarget,
+      shortfall,
+      confidence: coverage >= 0.8 ? "medium" : "low",
+      confidenceReason: `${plural(qc.lines.length, "line")} costed from quantities, ${share}% of the price${partial ? "; the rest at your usual rate for this type of job" : ""}.`,
+      methodNote:
+        "Lines with a quantity are costed directly: products and services at the purchase cost set on them in QuickBooks" +
+        (qc.lines.some((l) => l.basis === "item_cost" && l.category === "labor") && (input.laborBurden ?? rate?.burden ?? 0) > 0
+          ? " (labor ones plus your labor burden)"
+          : "") +
+        (hours > 0 && rate
+          ? `, and labor hours at your average labor cost of ${money(rate.perHour)} an hour (pay rates from time entries over the last 12 months${rate.burden > 0 ? `, plus your ${Math.round(rate.burden * 1000) / 10}% labor burden` : ""})`
+          : "") +
+        ". Waste, extra trips and work that isn't on the estimate aren't in the quantities, so real jobs usually cost a little more than this; compare it with how your past jobs of this type came in.",
+      quantityLines: qc.lines,
+      quantityCoverage: Math.min(1, coverage),
+      summary: below
+        ? `${lead}. Reaching your ${fmtTarget(target)} target takes about ${money(priceAtTarget)}, ${money(shortfall)} more than quoted.${past}`
+        : `${lead}, at or above your ${fmtTarget(target)} target.${past}`,
+    };
+  }
+
+  if (!histOk) {
     return empty(
       "no_history",
-      `Checking needs at least ${MIN_JOBS} finished jobs of this type from the last two years with revenue and costs. There ${history.length === 1 ? "is" : "are"} ${history.length}.`
+      `Checking needs at least ${MIN_JOBS} finished jobs of this type from the last two years with revenue and costs. There ${history.length === 1 ? "is" : "are"} ${history.length}. Or put quantities on every line of the estimate (hours for labor, and products or services with a purchase cost in QuickBooks) and it's costed from those.`
     );
   }
 
@@ -1323,6 +1447,8 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
     confidence,
     confidenceReason,
     methodNote,
+    quantityLines: [],
+    quantityCoverage: null,
     summary: below
       ? `If this job goes like your past ones, it costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}. Reaching your ${fmtTarget(target)} target takes about ${money(priceAtTarget)}, ${money(shortfall)} more than quoted.${thinText}`
       : `If this job goes like your past ones, it costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}, at or above your ${fmtTarget(target)} target.${thinText}`,

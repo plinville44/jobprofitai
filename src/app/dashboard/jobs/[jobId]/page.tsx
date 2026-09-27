@@ -308,6 +308,12 @@ export default async function JobDetailPage({
 
       {/* 5. Transactions */}
       <Section title="Transactions">
+        {data.laborBurden > 0 && data.rawCostEntries.some((c) => c.qboSourceType === "TimeActivity") ? (
+          <p className="mb-3 text-xs text-gray-500">
+            Time-entry labor includes your {Math.round(data.laborBurden * 1000) / 10}% labor burden (set in Settings) on top of
+            the pay rate QuickBooks has.
+          </p>
+        ) : null}
         <div className="overflow-x-auto">
           <table className="w-full min-w-[600px] text-left text-sm">
             <thead className="bg-gray-50 text-xs uppercase text-gray-500">

@@ -19,6 +19,7 @@ import {
   WeeklyBriefPreview,
 } from "@/components/marketing/ProductPreview";
 import PricingCards from "@/components/marketing/PricingCards";
+import FitCheck from "@/components/marketing/FitCheck";
 import { OG_IMAGE } from "@/lib/siteMeta";
 
 export const metadata: Metadata = {
@@ -63,9 +64,10 @@ const FAQ_ITEMS = [
         and by how much, whether labor, materials or subs is the thin part of your price, and
         whether a pending estimate is priced high enough before it goes out. Each one comes with a
         dollar figure, the jobs behind it and what to do, and when you make a change, JobProfitAI
-        measures whether it worked. It also builds the WIP (over and under billing) report, emails
-        you when a job goes over its estimate, and shows what&rsquo;s missing from your books before
-        you trust a number.
+        measures whether it worked. It also builds the WIP (over and under billing) report in the
+        layout banks and bonding companies read, shows the money you&rsquo;re owed (work not billed
+        yet, possible change orders, unpaid invoices), emails you when a job goes over its estimate,
+        and shows what&rsquo;s missing from your books before you trust a number.
       </>
     ),
   },
@@ -101,10 +103,9 @@ const FAQ_ITEMS = [
     a: (
       <>
         No. JobProfitAI reads your jobs from QuickBooks <strong>Projects</strong>{" "}
-        (sub-customers), or, if you make one customer per job, from your customers. It works out
-        which on the first sync, and you can switch in Settings. If you track job cost by Class
-        instead, it won&rsquo;t find your jobs yet. Classes are on the roadmap, not in the product.
-        Beyond that, you will get more out of it if costs are consistently tagged to jobs, and the
+        (sub-customers), from your customers if you make one customer per job, or from your{" "}
+        <strong>Classes</strong> if each job is a class. It works out Projects or customers on the
+        first sync, and you can choose Classes, or switch, in Settings. Beyond that, you will get more out of it if costs are consistently tagged to jobs, and the
         built-in Data Health page tells you exactly where that&rsquo;s incomplete rather than
         quietly guessing. If your QuickBooks estimates put labor, materials and subs on separate
         lines, JobProfitAI can also tell you which part of your price is thin.
@@ -205,6 +206,11 @@ export default function HomePage() {
           </div>
 
           <p className="mt-5 text-sm text-jp-muted">14 days free. No credit card required.</p>
+          <p className="mt-2 text-sm">
+            <a href="#fit-check" className="font-medium text-jp-blue hover:underline">
+              Will it work with your QuickBooks? Take the 30-second check
+            </a>
+          </p>
 
           <ul className="mx-auto mt-9 flex max-w-2xl flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-jp-slate">
             {[
@@ -343,11 +349,24 @@ export default function HomePage() {
             title="Weekly Profit Brief"
             body="Leads with the money: new margin risk on open jobs, estimates to fix, and your biggest opportunity. Then what changed."
           />
+          <ValueCard
+            title="Money you're owed"
+            body="Work done but not billed yet, costs past the estimate that may be change orders nobody billed, and unpaid invoices by age. One page, by job."
+          />
+          <ValueCard
+            title="Bank-ready WIP report"
+            body="The over and under billing schedule banks and bonding companies ask for, with totals and last year's finished contracts. Print it or save it as a PDF."
+          />
+          <ValueCard
+            title="Margin by job type, month by month"
+            body="See whether a price change is showing up in the jobs that finish, and catch a type of work that's starting to slip."
+          />
         </div>
         <p className="mx-auto mt-10 max-w-3xl text-center text-[15px] leading-relaxed text-jp-slate">
-          Built on the basics, done properly: profit by job with labor at real pay rates, the WIP
-          report, email alerts when a job goes over its estimate, and a Data Health page that shows
-          what&rsquo;s missing from your books before you trust a number.
+          Built on the basics, done properly: profit by job with labor at real pay rates plus your
+          labor burden, email alerts when a job goes over its estimate, and a Data Health page that
+          shows what&rsquo;s missing from your books before you trust a number. Jobs come from
+          QuickBooks Projects, customers or Classes.
         </p>
       </Section>
 
@@ -443,6 +462,7 @@ export default function HomePage() {
             <ul className="space-y-3 text-[15px] text-jp-slate">
               {[
                 "Picks up new estimates on the next sync, and says which QuickBooks hasn't emailed yet",
+                "Costs the quantities on the estimate: hours at your real labor cost, items at their QuickBooks cost",
                 "Shows which line is thin when your estimates list labor, materials and subs separately",
                 "Uses your finished jobs, not an industry average",
                 "Read-only: you change the estimate in QuickBooks as you always do",
@@ -530,12 +550,23 @@ export default function HomePage() {
         </Card>
       </Section>
 
+      {/* ── Fit check ────────────────────────────────────────────────── */}
+      <Section id="fit-check">
+        <SectionHeading
+          eyebrow="30-second check"
+          title="Will this work with my QuickBooks?"
+          intro="Six quick questions and a straight answer, with the plan that fits. Better to know before you sign up than after."
+          align="center"
+        />
+        <FitCheck />
+      </Section>
+
       {/* ── Pricing preview ──────────────────────────────────────────── */}
-      <Section id="pricing">
+      <Section id="pricing" tone="surface">
         <SectionHeading
           eyebrow="Pricing"
           title="Two plans. Both find the money."
-          intro="Every plan includes the Profit Opportunity Feed, the Estimate Check and results tracking. Pro adds forecasts for jobs in progress, benchmarking against similar jobs, and more companies and logins. Fix one underpriced job type and it can pay for itself."
+          intro="Every plan includes the Profit Opportunity Feed, the Estimate Check and results tracking. Up to 100 jobs open at once and one company: Profit Intelligence. More than 100, or 2 to 3 companies: Pro, which adds forecasts for jobs in progress and benchmarking against similar jobs. Fix one underpriced job type and it can pay for itself."
           align="center"
         />
         <PricingCards compact />
@@ -547,7 +578,7 @@ export default function HomePage() {
       </Section>
 
       {/* ── FAQ ──────────────────────────────────────────────────────── */}
-      <Section tone="surface">
+      <Section>
         <SectionHeading eyebrow="Questions" title="Frequently asked questions" align="center" />
         <div className="mx-auto max-w-3xl">
           <Faq items={FAQ_ITEMS} />

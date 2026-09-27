@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ButtonLink, Eyebrow, Faq, FinalCta, Section, SectionHeading } from "@/components/marketing/ui";
 import PricingCards from "@/components/marketing/PricingCards";
+import PlanGuide from "@/components/marketing/PlanGuide";
+import FitCheck from "@/components/marketing/FitCheck";
 import { PLANS } from "@/lib/plans";
 import { OG_IMAGE } from "@/lib/siteMeta";
 
@@ -110,19 +112,25 @@ const COMPARISON: { label: string; standard: string; pro: string }[] = [
   { label: "QuickBooks Online companies", standard: "1", pro: "Up to 3" },
   { label: "Active jobs", standard: "Up to 100", pro: "Unlimited" },
   { label: "Team logins", standard: "3", pro: "10" },
+  { label: "Jobs from Projects, customers or Classes", standard: "Included", pro: "Included" },
   { label: "Profit Opportunity Feed, ranked by dollars", standard: "Included", pro: "Included" },
   { label: "Pricing gaps by job type, customer, size & part of the job", standard: "Included", pro: "Included" },
   { label: "Estimate Check on pending QuickBooks estimates", standard: "Included", pro: "Included" },
+  { label: "Estimates costed from their quantities", standard: "Included", pro: "Included" },
   { label: "Track pricing changes and their results", standard: "Included", pro: "Included" },
   { label: "Your own job types, with suggestions", standard: "Included", pro: "Included" },
   { label: "Job profitability dashboard", standard: "Included", pro: "Included" },
   { label: "Revenue, cost, gross profit & margin by job", standard: "Included", pro: "Included" },
   { label: "Cost breakdown by category", standard: "Included", pro: "Included" },
+  { label: "Labor at pay rates, plus your labor burden", standard: "Included", pro: "Included" },
   { label: "Estimate vs. actual comparison", standard: "Included", pro: "Included" },
   { label: "Margin leak & cost-overrun detection", standard: "Included", pro: "Included" },
   { label: "Historical profitability trends", standard: "Included", pro: "Included" },
+  { label: "Margin by job type, month by month", standard: "Included", pro: "Included" },
   { label: "AI advisor notes on your opportunities", standard: "Included", pro: "Included" },
   { label: "WIP report (over and under billing)", standard: "Included", pro: "Included" },
+  { label: "Bank-ready WIP schedule, print or PDF", standard: "Included", pro: "Included" },
+  { label: "Money you're owed: unbilled work, possible change orders, unpaid invoices", standard: "Included", pro: "Included" },
   { label: "Data Health checks", standard: "Included", pro: "Included" },
   { label: "Weekly Profit Brief", standard: "Included", pro: "Included" },
   { label: "Forecast at completion on open jobs", standard: "-", pro: "Included" },
@@ -153,6 +161,26 @@ export default function PricingPage() {
 
       <Section className="!pt-4">
         <PricingCards />
+      </Section>
+
+      <Section tone="surface" id="which-plan">
+        <SectionHeading
+          eyebrow="Which plan fits"
+          title="Pick by how many jobs you have open at once"
+          intro="Both plans include everything that finds the money. The difference is scale, and forecasts for jobs in progress."
+          align="center"
+        />
+        <PlanGuide />
+      </Section>
+
+      <Section id="fit-check">
+        <SectionHeading
+          eyebrow="30-second check"
+          title="Will this work with my QuickBooks?"
+          intro="Six quick questions and a straight answer, with the plan that fits."
+          align="center"
+        />
+        <FitCheck />
       </Section>
 
       {/* ── Detailed comparison ─────────────────────────────────────── */}

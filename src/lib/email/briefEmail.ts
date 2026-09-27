@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { COMPANY_LEGAL_NAME, COMPANY_MAILING_ADDRESS } from "@/lib/company";
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { ConnectionMetrics } from "@/lib/profitability";
-import { jobChangeSentence, type WeekOverWeekReport } from "@/lib/weekOverWeek";
+import { jobChangeSentence, noComparisonMessage, type WeekOverWeekReport } from "@/lib/weekOverWeek";
 import type { BriefHeadline } from "@/lib/briefHeadline";
 import { SUPPORT_EMAIL } from "./client";
 import { appUrl } from "./templates";
@@ -145,11 +145,7 @@ export function renderBriefEmail(input: BriefEmailInput): { subject: string; htm
   const since = wow.comparedToWeekStarting ? `since the brief for the week of ${formatDate(wow.comparedToWeekStarting)}` : "";
 
   const changesHtml = wow.noComparisonReason
-    ? `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:${MUTED};">${
-        wow.noComparisonReason === "first_brief"
-          ? "This is the first Weekly Profit Brief for this company. From next week this section lists what moved in your books since the previous one."
-          : "The previous brief's figures couldn't be read, so there's no comparison this week."
-      }</p>`
+    ? `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:${MUTED};">${esc(noComparisonMessage(wow.noComparisonReason))}</p>`
     : changes.length === 0
       ? `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:${MUTED};">Nothing changed on your jobs in QuickBooks ${esc(since)}.</p>`
       : `<ul style="margin:0 0 16px;padding-left:18px;">${changes
@@ -242,7 +238,7 @@ export function renderBriefEmail(input: BriefEmailInput): { subject: string; htm
 </table></td></tr></table></body></html>`;
 
   const textChanges = wow.noComparisonReason
-    ? "This is the first Weekly Profit Brief for this company, so there is nothing to compare against yet."
+    ? noComparisonMessage(wow.noComparisonReason)
     : changes.length === 0
       ? `Nothing changed on your jobs in QuickBooks ${since}.`
       : changes.map((c) => `- ${c.jobName}: ${jobChangeSentence(c)}`).join("\n") + (hidden > 0 ? `\n${hidden} more jobs also changed.` : "");

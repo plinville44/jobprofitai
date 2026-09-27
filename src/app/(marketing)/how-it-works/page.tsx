@@ -131,14 +131,14 @@ export default function HowItWorksPage() {
             title="JobProfitAI organizes the financial information"
           >
             <p>
-              JobProfitAI reads QuickBooks <strong>Projects</strong> (sub-customers), or, if you
-              make one customer per job, your customers, and pulls together everything attached to
-              each one: invoices, sales receipts, credit memos, bills, expenses, vendor credits,
-              time entries and estimates. Sales tax is taken out of revenue, refunds and credits
-              come off, and labor from timesheets is costed at each person&rsquo;s pay rate, not
-              the rate you bill. Contractors who track job cost by Class instead are not supported
-              yet; that is on the roadmap rather than in the product, and it is worth checking
-              before you sign up.
+              JobProfitAI reads QuickBooks <strong>Projects</strong> (sub-customers), your
+              customers if you make one customer per job, or your <strong>Classes</strong> if each
+              job is a class, and pulls together everything attached to each one: invoices, sales
+              receipts, credit memos, bills, expenses, vendor credits, time entries and estimates.
+              Sales tax is taken out of revenue, refunds and credits come off, and labor from
+              timesheets is costed at each person&rsquo;s pay rate, not the rate you bill, plus the
+              labor burden you set for payroll taxes, workers&rsquo; comp and benefits. JobProfitAI
+              works with QuickBooks Online only, not QuickBooks Desktop.
             </p>
             <p>
               Costs are grouped into categories you&rsquo;d actually recognize: labor, materials,
@@ -179,8 +179,10 @@ export default function HowItWorksPage() {
             </p>
             <p>
               The WIP report shows every open job&rsquo;s contract, cost to date, percent complete
-              and whether you&rsquo;re over or under billed, the report banks and bonding companies
-              ask for. It exports to a spreadsheet for your accountant.
+              and whether you&rsquo;re over or under billed. The bank-ready version lays it out the
+              way banks and bonding companies read it, with estimated gross profit, cost to complete,
+              totals and the contracts you finished in the last 12 months, ready to print or save as
+              a PDF. It also exports to a spreadsheet for your accountant.
             </p>
           </Step>
 
@@ -195,6 +197,9 @@ export default function HowItWorksPage() {
             <p>
               JobProfitAI syncs every night, and emails you as soon as an open job goes over its
               estimate or gets well ahead of its billing, instead of waiting for the weekly brief.
+              The Money Owed page puts the cash side in one place: work done but not billed yet,
+              open jobs whose costs have gone well past the estimate (possible change orders nobody
+              billed), and unpaid invoices by how long they&rsquo;ve been waiting.
             </p>
             <p>
               Each finding carries a dollar impact, a severity, and a confidence level. Confidence
@@ -226,6 +231,10 @@ export default function HowItWorksPage() {
               to the labor on the next one.
             </p>
             <p>
+              A month-by-month view of margin by job type shows whether a change is coming through in
+              the jobs that finish, and catches a type of work that&rsquo;s starting to slip.
+            </p>
+            <p>
               Every number is calculated by the application from your data. AI writes advisor notes
               around the opportunities, and never produces or changes a figure. Profit decisions
               shouldn&rsquo;t rest on a number a language model came up with.
@@ -243,8 +252,15 @@ export default function HowItWorksPage() {
               the estimate yet.
             </p>
             <p>
-              It needs at least three finished jobs of the type, and it only reads QuickBooks: you
-              change the estimate there, and the check updates on the next sync.
+              When the estimate&rsquo;s lines carry quantities, it goes further and costs the job
+              itself: hours on labor lines at your average labor cost per hour from your time
+              entries (plus your labor burden), and products and services at the purchase cost set
+              on them in QuickBooks. Then the check follows this job&rsquo;s own price and scope,
+              not just your pricing for the type.
+            </p>
+            <p>
+              The past-jobs check needs at least three finished jobs of the type. It only reads
+              QuickBooks: you change the estimate there, and the check updates on the next sync.
             </p>
           </Step>
 

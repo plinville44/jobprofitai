@@ -118,8 +118,19 @@ export async function POST(req: NextRequest) {
     // next sync, so both are only written when they are actually sent.
     let jobSource: string | undefined;
     if ("jobSource" in body) {
-      if (body.jobSource === "projects" || body.jobSource === "customers") jobSource = body.jobSource;
+      if (body.jobSource === "projects" || body.jobSource === "customers" || body.jobSource === "classes") jobSource = body.jobSource;
       else errors.push("Choose how jobs are set up in QuickBooks.");
+    }
+    // Labor burden: payroll taxes, workers' comp and benefits as a percent
+    // of wages. Applied when figures are worked out, so no re-sync.
+    let laborBurdenPct: number | null | undefined;
+    if ("laborBurdenPct" in body) {
+      if (body.laborBurdenPct === null || body.laborBurdenPct === "") laborBurdenPct = null;
+      else {
+        const n = Number(body.laborBurdenPct);
+        if (!Number.isFinite(n) || n < 0 || n > 100) errors.push("Labor burden must be between 0 and 100 percent.");
+        else laborBurdenPct = n;
+      }
     }
     const laborFromTimeEntries = "laborFromTimeEntries" in body ? Boolean(body.laborFromTimeEntries) : undefined;
     const alertsEnabled = "alertsEnabled" in body ? Boolean(body.alertsEnabled) : undefined;
@@ -162,7 +173,13 @@ export async function POST(req: NextRequest) {
         emailDay,
         emailHour,
         emailTimezone,
-        ...(jobSource !== undefined ? { jobSource } : {}),
+        // Confirmed only by an actual choice: saving other settings leaves the
+        // dashboard's "is each job a class?" question standing.
+        ...(jobSource !== undefined && jobSource !== connection.jobSource ? { jobSource, jobSourceConfirmedAt: new Date() } : {}),
+        ...(laborBurdenPct !== undefined ? { laborBurdenPct } : {}),
+        ...(laborBurdenPct !== undefined && (laborBurdenPct ?? 0) !== Number(connection.laborBurdenPct ?? 0)
+          ? { laborBurdenSetAt: new Date() }
+          : {}),
         ...(laborFromTimeEntries !== undefined ? { laborFromTimeEntries } : {}),
         ...(alertsEnabled !== undefined ? { alertsEnabled } : {}),
         // Forces a full sync next time: an incremental one only reads what

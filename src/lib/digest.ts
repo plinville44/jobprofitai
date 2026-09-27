@@ -21,7 +21,7 @@ What the data means. Read this before anything else:
 - "estimatedRevenue" is the job's contract value. "overUnderBilling" (open jobs only) is billed to date minus the revenue earned by the work done so far: positive means billed ahead of the work, negative means work done that hasn't been billed yet. "percentComplete" is how far along the job is (0 to 1). "forecastMarginPct", when present, is the margin the job is on track to finish at.
 - An open job's "marginPct" is margin to date and mostly reflects billing timing. Never call an open job unprofitable or below target from marginPct alone; use forecastMarginPct when it is there, and otherwise talk about spend against the estimate.
 - "weekOverWeek" is the only source for what changed since the last brief. A deterministic "What changed" section built from it is shown to the reader directly above your text, word for word. Do not repeat it line by line. You may refer to it ("the new costs on Torres Kitchen above").
-- If weekOverWeek.noComparisonReason is set, there is no previous brief to compare against. Do not speculate about what changed.
+- If weekOverWeek.noComparisonReason is set, there is no usable previous brief to compare against. Do not speculate about what changed.
 
 Accuracy rules, no exceptions:
 - Use ONLY the numbers provided. Never estimate, round persuasively, or invent a figure. Every claim must be traceable to a field in the input.
@@ -205,12 +205,15 @@ export async function generateWeeklyDigestForConnection(
   // last week rather than against itself. If a week was skipped, this
   // compares against the last one that exists, and the section's heading
   // names that week so the gap is visible rather than implied away.
-  const prior = await prisma.weeklyDigest.findFirst({
-    where: { connectionId, weekStarting: { lt: weekStarting } },
-    orderBy: { weekStarting: "desc" },
-    select: { weekStarting: true, metrics: true },
-  });
-  const weekOverWeek = computeWeekOverWeek(prior, metrics);
+  const [prior, basis] = await Promise.all([
+    prisma.weeklyDigest.findFirst({
+      where: { connectionId, weekStarting: { lt: weekStarting } },
+      orderBy: { weekStarting: "desc" },
+      select: { weekStarting: true, metrics: true, createdAt: true },
+    }),
+    prisma.quickBooksConnection.findUnique({ where: { id: connectionId }, select: { laborBurdenSetAt: true } }),
+  ]);
+  const weekOverWeek = computeWeekOverWeek(prior, metrics, basis?.laborBurdenSetAt ?? null);
   const changesSection = renderWeekOverWeek(weekOverWeek);
 
   // The headline: the Profit Opportunity Feed in one line, and what's new in

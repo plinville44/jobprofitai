@@ -8,11 +8,14 @@ import {
   costEntryId,
   depositRevenueLines,
   emptyLookups,
+  classJobKey,
   estimateFromTxn,
   expenseLines,
   journalRevenueLines,
   resolveJob,
+  revenueByClass,
   revenueFromTxn,
+  selectJobClasses,
   selectJobCustomers,
   timeActivityCost,
   timeActivityHours,
@@ -344,7 +347,7 @@ describe("revenue recorded without an invoice", () => {
       ],
     };
     const lines = depositRevenueLines(deposit, lookups);
-    expect(lines).toEqual([{ lineId: "1", customerQboId: "58", amount: 8000, txnDate: new Date("2026-09-12T00:00:00Z") }]);
+    expect(lines).toEqual([{ lineId: "1", customerQboId: "58", classQboId: null, amount: 8000, txnDate: new Date("2026-09-12T00:00:00Z") }]);
   });
 
   it("reads journal entry income lines by customer, credit adds and debit takes away", () => {
@@ -359,5 +362,201 @@ describe("revenue recorded without an invoice", () => {
       ],
     };
     expect(journalRevenueLines(je, lookups).map((l) => [l.lineId, l.amount])).toEqual([["0", 1500], ["1", -200]]);
+  });
+});
+
+describe("lines posted to balance-sheet accounts", () => {
+  const lookups = emptyLookups();
+  lookups.accounts.set("80", { name: "Job Materials", fullName: "Job Materials", type: "Cost of Goods Sold", subType: null });
+  lookups.accounts.set("15", { name: "Trucks", fullName: "Trucks", type: "Fixed Asset", subType: "Vehicles" });
+  lookups.accounts.set("27", { name: "Truck loan", fullName: "Truck loan", type: "Long Term Liability", subType: "NotesPayable" });
+  const line = (id: string, amount: number, accountId: string) => ({
+    Id: id,
+    Amount: amount,
+    DetailType: "AccountBasedExpenseLineDetail",
+    AccountBasedExpenseLineDetail: { AccountRef: { value: accountId }, CustomerRef: { value: "21" } },
+  });
+
+  it("aren't job cost, even with the job on them", () => {
+    const lines = expenseLines(
+      { Id: "7", TxnDate: "2026-09-10", Line: [line("1", 900, "80"), line("2", 42_000, "15"), line("3", 650, "27")] },
+      "Purchase",
+      lookups
+    );
+    expect(lines.map((l) => [l.lineId, l.amount])).toEqual([["1", 900]]);
+  });
+
+  it("still counts a Construction in Progress asset account tagged to the job", () => {
+    const l2 = emptyLookups();
+    l2.accounts.set("13", { name: "Construction in progress", fullName: "Construction in progress", type: "Other Current Asset", subType: null });
+    expect(expenseLines({ Id: "9", TxnDate: "2026-09-10", Line: [line("1", 800, "13")] }, "Bill", l2)).toHaveLength(1);
+  });
+
+  it("still counts a line whose account can't be looked up", () => {
+    expect(expenseLines({ Id: "8", TxnDate: "2026-09-10", Line: [line("1", 300, "99")] }, "Bill", lookups)).toHaveLength(1);
+  });
+});
+
+describe("classes as jobs", () => {
+  it("makes leaf classes the jobs, grouped under their parent class", () => {
+    const jobs = selectJobClasses([
+      { Id: "1", Name: "Residential" },
+      { Id: "2", Name: "Smith kitchen", ParentRef: { value: "1" } },
+      { Id: "3", Name: "Lee bath", ParentRef: { value: "1" }, Active: false },
+      { Id: "4", Name: "Warehouse fit-out" },
+    ]);
+    expect(jobs.map((j) => [j.qboId, j.parentQboId, j.customerName, j.active])).toEqual([
+      ["class:2", "class:1", "Residential", true],
+      ["class:3", "class:1", "Residential", false],
+      ["class:4", null, null, true],
+    ]);
+    expect(classJobKey("4")).toBe("class:4");
+  });
+
+  it("reads the class on each cost line, then the transaction's", () => {
+    const lookups = emptyLookups();
+    const lines = expenseLines(
+      {
+        Id: "5",
+        TxnDate: "2026-09-10",
+        ClassRef: { value: "9" },
+        Line: [
+          { Id: "1", Amount: 100, AccountBasedExpenseLineDetail: { AccountRef: { value: "80" }, ClassRef: { value: "2" } } },
+          { Id: "2", Amount: 50, AccountBasedExpenseLineDetail: { AccountRef: { value: "80" } } },
+        ],
+      },
+      "Bill",
+      lookups
+    );
+    expect(lines.map((l) => l.classQboId)).toEqual(["2", "9"]);
+  });
+
+  it("matches time entries by class, not customer, in class mode", () => {
+    const ta = { Hours: 8, CostRate: 30, EmployeeRef: { value: "5" }, CustomerRef: { value: "21" } };
+    expect(timeActivityCost(ta, "classes")).toEqual({ kind: "skip", reason: "no_customer" });
+    const r = timeActivityCost({ ...ta, ClassRef: { value: "2" } }, "classes");
+    expect(r.kind === "cost" && r.hours).toBe(8);
+  });
+
+  it("splits a sale across its classes by line value, tax and open balance too", () => {
+    const invoice = {
+      Id: "300",
+      TxnDate: "2026-09-01",
+      TotalAmt: 10_800,
+      Balance: 5_400,
+      TxnTaxDetail: { TotalTax: 800 },
+      Line: [
+        { Amount: 7_500, SalesItemLineDetail: { ClassRef: { value: "2" } } },
+        { Amount: 2_500, SalesItemLineDetail: { ClassRef: { value: "4" } } },
+        { Amount: 10_000, DetailType: "SubTotalLineDetail", SubTotalLineDetail: {} },
+      ],
+    };
+    expect(revenueByClass(invoice, "Invoice")).toEqual([
+      { classQboId: "2", amount: 7_500, tax: 600, openBalance: 4_050 },
+      { classQboId: "4", amount: 2_500, tax: 200, openBalance: 1_350 },
+    ]);
+  });
+
+  it("puts a sale with no line classes on the transaction's class", () => {
+    const receipt = { TxnDate: "2026-09-01", TotalAmt: 500, ClassRef: { value: "4" }, Line: [{ Amount: 500, SalesItemLineDetail: {} }] };
+    expect(revenueByClass(receipt, "SalesReceipt")).toEqual([{ classQboId: "4", amount: 500, tax: 0, openBalance: null }]);
+  });
+
+  it("gives an estimate its own class, or the class with most of its value", () => {
+    const base = { TxnDate: "2026-09-01", TotalAmt: 1_000, CustomerRef: { value: "58" } };
+    expect(estimateFromTxn({ ...base, ClassRef: { value: "7" } }).classQboId).toBe("7");
+    const split = {
+      ...base,
+      Line: [
+        { Amount: 300, SalesItemLineDetail: { ClassRef: { value: "2" } } },
+        { Amount: 700, SalesItemLineDetail: { ClassRef: { value: "4" } } },
+      ],
+    };
+    expect(estimateFromTxn(split).classQboId).toBe("4");
+    expect(estimateFromTxn(base).classQboId).toBeNull();
+  });
+});
+
+describe("what's still owed on an invoice", () => {
+  it("keeps QuickBooks' open balance, tax included, and none once paid", () => {
+    const open = revenueFromTxn({ TxnDate: "2026-09-01", TotalAmt: 10_700, Balance: 3_210, TxnTaxDetail: { TotalTax: 700 } }, "Invoice");
+    expect(open.openBalance).toBe(3_210);
+    expect(revenueFromTxn({ TxnDate: "2026-09-01", TotalAmt: 500, Balance: 0 }, "Invoice").openBalance).toBeNull();
+    expect(revenueFromTxn({ TxnDate: "2026-09-01", TotalAmt: 500 }, "SalesReceipt").openBalance).toBeNull();
+  });
+});
+
+describe("estimate quantities", () => {
+  it("keeps each line's quantity and its item's purchase cost", () => {
+    const lookups = emptyLookups();
+    lookups.items.set("1", { name: "Framing labor", expenseAccountId: null });
+    lookups.items.set("2", { name: "Drywall sheet", expenseAccountId: null, purchaseCost: 14 });
+    const est = {
+      TxnDate: "2026-09-01",
+      TotalAmt: 5_000,
+      CustomerRef: { value: "58" },
+      Line: [
+        { Amount: 3_200, SalesItemLineDetail: { ItemRef: { value: "1" }, Qty: 40 } },
+        { Amount: 1_000, SalesItemLineDetail: { ItemRef: { value: "2" }, Qty: 30 } },
+        { Amount: 800, SalesItemLineDetail: { ItemRef: { value: "2" }, Qty: 20 } },
+      ],
+    };
+    const lines = estimateFromTxn(est, lookups).details.lines;
+    expect(lines.map((l) => [l.n, l.q, l.u, l.qa])).toEqual([
+      ["Framing labor", 40, null, 3_200],
+      ["Drywall sheet", 50, 14, 1_800],
+    ]);
+  });
+
+  it("judges each line before merging, so a lump sum can't pass as more hours", () => {
+    const lookups = emptyLookups();
+    lookups.items.set("1", { name: "Labor", expenseAccountId: null });
+    const est = {
+      TxnDate: "2026-09-01",
+      TotalAmt: 7_200,
+      CustomerRef: { value: "58" },
+      Line: [
+        { Amount: 3_200, SalesItemLineDetail: { ItemRef: { value: "1" }, Qty: 40 } },
+        { Amount: 4_000, SalesItemLineDetail: { ItemRef: { value: "1" }, Qty: 1 } },
+      ],
+    };
+    const [line] = estimateFromTxn(est, lookups).details.lines;
+    expect(line).toMatchObject({ n: "Labor", a: 7_200, q: 40, qa: 3_200 });
+  });
+});
+
+describe("class-mode income without an invoice", () => {
+  const lookups = emptyLookups();
+  lookups.accounts.set("40", { name: "Construction Income", fullName: "Construction Income", type: "Income", subType: null });
+  it("counts income with the job's class even when no customer is named", () => {
+    const deposit = {
+      Id: "901",
+      TxnDate: "2026-09-12",
+      Line: [
+        { Id: "1", Amount: 900, DepositLineDetail: { AccountRef: { value: "40" }, ClassRef: { value: "3" } } },
+        { Id: "2", Amount: 50, DepositLineDetail: { AccountRef: { value: "40" } } },
+        { Id: "3", Amount: 70, DepositLineDetail: { Entity: { value: "9", type: "VENDOR" }, AccountRef: { value: "40" }, ClassRef: { value: "3" } } },
+      ],
+    };
+    expect(depositRevenueLines(deposit, lookups).map((l) => l.lineId)).toEqual([]);
+    expect(depositRevenueLines(deposit, lookups, true).map((l) => [l.lineId, l.classQboId, l.customerQboId])).toEqual([["1", "3", null]]);
+    const je = {
+      Id: "611",
+      TxnDate: "2026-09-01",
+      Line: [{ Id: "0", Amount: 400, JournalEntryLineDetail: { PostingType: "Credit", AccountRef: { value: "40" }, ClassRef: { value: "3" } } }],
+    };
+    expect(journalRevenueLines(je, lookups)).toEqual([]);
+    expect(journalRevenueLines(je, lookups, true).map((l) => [l.classQboId, l.amount])).toEqual([["3", 400]]);
+  });
+});
+
+describe("class jobs that gain sub-classes", () => {
+  it("stay jobs, as customers do", () => {
+    const classes = [
+      { Id: "1", Name: "Smith remodel" },
+      { Id: "2", Name: "Kitchen", ParentRef: { value: "1" } },
+    ];
+    expect(selectJobClasses(classes).map((j) => j.qboId)).toEqual(["class:2"]);
+    expect(selectJobClasses(classes, new Set(["class:1"])).map((j) => j.qboId)).toEqual(["class:1", "class:2"]);
   });
 });

@@ -69,13 +69,16 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
       // Connection + scale
       "1 QuickBooks Online company",
       "Up to 100 active jobs",
+      // jobSource: projects | customers | classes (src/lib/qboNormalize.ts selectJobClasses)
+      "Jobs from QuickBooks Projects, customers or Classes",
       // src/lib/team.ts
       "3 team logins for your office manager, PMs or bookkeeper",
       // The Profit Opportunity Feed - src/lib/opportunities.ts computeOpportunityFeed
       "Profit Opportunity Feed: what to change, ranked by what it's worth",
       "Pricing gaps by job type, customer, job size and part of the job (labor, materials, subs)",
-      // computeEstimateCheck + /dashboard/estimates
+      // computeEstimateCheck + costFromQuantities + /dashboard/estimates
       "Estimate Check: pending QuickBooks estimates checked against your own finished jobs",
+      "Estimates costed from their quantities: hours at your real labor cost, items at their QuickBooks cost",
       // ProfitAction + computeActionOutcome
       "Track a pricing change and see its result on the jobs that follow",
       // JobType + src/lib/jobTypeSuggestions.ts
@@ -83,21 +86,25 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
       // Core profitability - src/lib/profitability.ts computeJobFinancials/computeDashboardTotals
       "Job profitability dashboard",
       "Revenue, cost, gross profit and margin by job",
-      // TimeActivity CostRate - src/lib/qboNormalize.ts timeActivityCost
-      "Labor at each person's pay rate from QuickBooks timesheets",
+      // TimeActivity CostRate - src/lib/qboNormalize.ts timeActivityCost; burdenedAmount
+      "Labor at each person's pay rate from QuickBooks timesheets, plus your labor burden",
       "Cost breakdown by category (labor, materials, subs, equipment)",
       "Estimate vs. actual comparison",
       // src/lib/qboCheck.ts + /api/jobs/[jobId]/quickbooks-check
       "Check any job against QuickBooks' own numbers in one click",
-      // computeWip + /dashboard/wip + /api/wip/export
+      // computeWip + buildWipSchedule + /dashboard/wip + /reports/wip + /api/wip/export
       "WIP report: over and under billing by job, with CSV export",
+      "Bank-ready WIP schedule for your bank or bonding company, to print or save as PDF",
+      // computeMoneyOwed + /dashboard/money-owed
+      "Money you're owed: work done but not billed, possible change orders and unpaid invoices",
       // Margin leak detection - computeNeedsAttentionForJob + computeProfitLeakage;
       // emails from src/lib/alerts.ts via the nightly sync
       "Margin leak detection, with email alerts when a job goes over its estimate or gets ahead of its billing",
       "Jobs-below-target-margin tracking",
       "Profit leakage breakdown per job",
-      // Trends - getMarginTrend
+      // Trends - getMarginTrend, computeMarginTrend
       "Historical profitability trends",
+      "Margin by job type, month by month",
       // Intelligence - src/lib/intelligence.ts (this is the core promise; it is
       // deliberately NOT held back for the higher tier)
       "AI advisor notes on your opportunities (the figures are calculated, never written by AI)",
