@@ -59,13 +59,25 @@ export default async function WipPage() {
             Over/under billing on every open job at {connection.companyName ?? "this company"}.
           </p>
         </div>
-        <a
-          href={`/api/wip/export?connectionId=${encodeURIComponent(connection.id)}`}
-          className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-navy hover:bg-gray-50"
-        >
-          Download CSV
-        </a>
+        <div className="flex flex-wrap gap-3">
+          <Link
+            href="/reports/wip"
+            className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+          >
+            Bank-ready report
+          </Link>
+          <a
+            href={`/api/wip/export?connectionId=${encodeURIComponent(connection.id)}`}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-navy hover:bg-gray-50"
+          >
+            Download CSV
+          </a>
+        </div>
       </div>
+      <p className="mt-2 text-xs text-gray-500">
+        The bank-ready report lays this out the way banks and bonding companies read a WIP schedule, with totals and
+        contracts completed in the last 12 months, ready to print or save as a PDF.
+      </p>
 
       <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Tile label="Open jobs on the schedule" value={`${ready.length} of ${open.length}`} />

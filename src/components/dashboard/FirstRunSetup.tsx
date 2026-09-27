@@ -139,7 +139,8 @@ export default function FirstRunSetup({
           and costs to it. Then click &quot;Sync now&quot; above.
         </p>
         <p className="mt-2">
-          Track jobs another way, such as by Class? Email{" "}
+          Each job a QuickBooks Class instead? Choose <strong>Classes</strong> in Settings, under how your jobs are
+          set up, then click &quot;Sync now&quot;. Something else? Email{" "}
           <a href={`mailto:${SUPPORT_ADDRESS}`} className="font-semibold underline">
             {SUPPORT_ADDRESS}
           </a>{" "}

@@ -10,7 +10,8 @@ import { DataQualityBadge, StatusDot } from "@/components/dashboard/Badges";
  * narrative appearing below as additional context - never as a replacement
  * for the structured info, and never as the only explanation on its own.
  */
-export default function DataHealthSummary({ dataHealth }: { dataHealth: DataHealthReport }) {
+export default function DataHealthSummary({ dataHealth, byClass = false }: { dataHealth: DataHealthReport; byClass?: boolean }) {
+  const unrecognized = byClass ? "expenses tagged to an unrecognized class" : "expenses tagged to an unrecognized customer";
   // Every check in the "Data Issues" tile is listed here too. When the card
   // listed fewer, it could say "No data quality issues found" under a tile
   // reading "Data Issues: 9". If a check is added to the tile, add it here.
@@ -25,7 +26,7 @@ export default function DataHealthSummary({ dataHealth }: { dataHealth: DataHeal
       count: dataHealth.completedJobsWithUnresolvedActivity.length,
     },
     { label: "job costs not tagged to a job (last 12 months)", count: dataHealth.untaggedJobCostCount },
-    { label: "expenses tagged to an unrecognized customer", count: dataHealth.unresolvedExpenseCount },
+    { label: unrecognized, count: dataHealth.unresolvedExpenseCount },
     { label: "employee time entries with no pay rate", count: dataHealth.timeEntriesWithoutPayRate },
     { label: "possible duplicate cost entries", count: dataHealth.possibleDuplicates.length },
     { label: "open jobs missing a cost estimate (setup)", count: dataHealth.jobsMissingEstimates.length },
@@ -57,7 +58,7 @@ export default function DataHealthSummary({ dataHealth }: { dataHealth: DataHeal
               {r.label.startsWith("job costs not tagged") && dataHealth.untaggedJobCostAmount ? (
                 <span className="text-gray-400"> ({formatCurrency(dataHealth.untaggedJobCostAmount)})</span>
               ) : null}
-              {r.label === "expenses tagged to an unrecognized customer" && dataHealth.unresolvedExpenseAmount ? (
+              {r.label === unrecognized && dataHealth.unresolvedExpenseAmount ? (
                 <span className="text-gray-400"> ({formatCurrency(dataHealth.unresolvedExpenseAmount)})</span>
               ) : null}
             </li>

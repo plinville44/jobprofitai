@@ -190,6 +190,23 @@ export function computeWip(input: {
 }
 
 /**
+ * A cost row's amount with labor burden added to time-entry labor.
+ * QuickBooks pay rates are wages only; payroll taxes, workers' comp and
+ * benefits are the contractor's labor burden setting (a fraction, 0.25 for
+ * 25%). Every other cost is as QuickBooks has it.
+ */
+export function burdenedAmount(c: { amount: unknown; qboSourceType?: string | null }, laborBurden: number): number {
+  const amount = toNum(c.amount as any);
+  return c.qboSourceType === "TimeActivity" && laborBurden > 0 ? amount * (1 + laborBurden) : amount;
+}
+
+/** The labor burden setting as a fraction (0 when unset). */
+export function laborBurdenOf(connection: { laborBurdenPct?: unknown }): number {
+  const n = Number(connection.laborBurdenPct ?? 0);
+  return Number.isFinite(n) && n > 0 && n <= 100 ? n / 100 : 0;
+}
+
+/**
  * Computes one job's financial picture. Pure and deterministic: identical
  * JobInput + FinancialContext always produces identical output.
  */
@@ -1371,7 +1388,13 @@ export interface PriorMarginPoint {
  */
 async function getPriorMarginsByJob(
   connectionId: string,
-  limit = 6
+  limit = 6,
+  /**
+   * Snapshots from before this are left out: they were worked out with a
+   * different labor burden, so a margin "decline" across it would only be
+   * the setting changing.
+   */
+  since: Date | null = null
 ): Promise<Record<string, PriorMarginPoint[]>> {
   // Newest first, then reversed into chronological order.
   //
@@ -1380,7 +1403,7 @@ async function getPriorMarginsByJob(
   // year of history had a trend line frozen on their first six weeks, and
   // the margin-declining rule was reading data from last spring.
   const digests = await prisma.weeklyDigest.findMany({
-    where: { connectionId },
+    where: { connectionId, ...(since ? { createdAt: { gte: since } } : {}) },
     orderBy: { weekStarting: "desc" },
     take: limit,
   });
@@ -1434,6 +1457,7 @@ export async function getConnectionProfitData(
     where: { connectionId, ...VISIBLE_JOB_WHERE },
     include: { costEntries: true, invoices: true },
   });
+  const laborBurden = laborBurdenOf(connection);
   const jobs =
     statusFilter === "all" ? allJobs : allJobs.filter((j) => effectiveJobStatus(j) === statusFilter);
 
@@ -1469,7 +1493,7 @@ export async function getConnectionProfitData(
     updatedAt: j.updatedAt,
     costEntries: j.costEntries
       .filter((c) => !windowed || inRange(c.txnDate))
-      .map((c) => ({ category: c.category, amount: toNum(c.amount), txnDate: c.txnDate })),
+      .map((c) => ({ category: c.category, amount: burdenedAmount(c, laborBurden), txnDate: c.txnDate })),
     invoices: j.invoices
       .filter((i) => !windowed || inRange(i.txnDate))
       .map((i) => ({ amount: toNum(i.amount), status: i.status, txnDate: i.txnDate })),
@@ -1556,7 +1580,7 @@ export async function getConnectionProfitData(
     }
   }
 
-  const priorMarginsByJob = await getPriorMarginsByJob(connectionId);
+  const priorMarginsByJob = await getPriorMarginsByJob(connectionId, 6, connection.laborBurdenSetAt);
   const completedByCategory: Record<string, JobFinancials[]> = {};
   // Peers come from every completed job, not the tab. On the Active tab the
   // tab contains no completed jobs, so the peer comparison silently switched
@@ -1614,10 +1638,15 @@ export async function getMarginTrend(
   connectionId: string,
   granularity: "monthly" | "quarterly"
 ): Promise<MarginTrendPoint[]> {
-  const jobs = await prisma.job.findMany({
-    where: { connectionId, ...CLOSED_JOB_WHERE },
-    include: { costEntries: true, invoices: true },
-  });
+  const [jobs, connection] = await Promise.all([
+    prisma.job.findMany({
+      where: { connectionId, ...CLOSED_JOB_WHERE },
+      include: { costEntries: true, invoices: true },
+    }),
+    prisma.quickBooksConnection.findUnique({ where: { id: connectionId }, select: { laborBurdenPct: true } }),
+  ]);
+  // The same costs as every other figure on the page, labor burden included.
+  const laborBurden = connection ? laborBurdenOf(connection) : 0;
 
   // UTC, explicitly. Transaction dates arrive from QuickBooks as date-only
   // strings and are stored as midnight UTC, so reading them with the local
@@ -1639,7 +1668,7 @@ export async function getMarginTrend(
     for (const c of job.costEntries) {
       const key = periodKey(c.txnDate);
       const b = buckets.get(key) ?? { revenue: 0, costs: 0 };
-      b.costs += toNum(c.amount);
+      b.costs += burdenedAmount(c, laborBurden);
       buckets.set(key, b);
     }
   }
@@ -1669,6 +1698,8 @@ export interface JobProfitData {
    * two months and a gap of one week as the same distance.
    */
   priorMarginPoints: PriorMarginPoint[];
+  /** Labor burden applied to time-entry labor, as a fraction (0 when unset). */
+  laborBurden: number;
   rawCostEntries: { id: string; category: string; description: string | null; amount: number; txnDate: Date; qboSourceType: string; accountName: string | null }[];
   rawInvoices: { id: string; amount: number; status: string; txnDate: Date; qboSourceType: string; taxAmount: number | null }[];
   /** The contractor's own status choice, or null when following QuickBooks. */
@@ -1701,6 +1732,7 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
   if (!job) return null;
 
   const connection = job.connection;
+  const laborBurden = laborBurdenOf(connection);
   const categoryTargetMarginPct: Record<string, number> = {};
   for (const mt of connection.marginTargets) {
     categoryTargetMarginPct[mt.category] = toNum(mt.targetPct);
@@ -1729,7 +1761,7 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
     startDate: job.startDate,
     endDate: job.endDate,
     updatedAt: job.updatedAt,
-    costEntries: job.costEntries.map((c) => ({ category: c.category, amount: toNum(c.amount), txnDate: c.txnDate })),
+    costEntries: job.costEntries.map((c) => ({ category: c.category, amount: burdenedAmount(c, laborBurden), txnDate: c.txnDate })),
     invoices: job.invoices.map((i) => ({ amount: toNum(i.amount), status: i.status, txnDate: i.txnDate })),
   };
 
@@ -1771,7 +1803,7 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
         startDate: peer.startDate,
         endDate: peer.endDate,
         updatedAt: peer.updatedAt,
-        costEntries: peer.costEntries.map((c) => ({ category: c.category, amount: toNum(c.amount), txnDate: c.txnDate })),
+        costEntries: peer.costEntries.map((c) => ({ category: c.category, amount: burdenedAmount(c, laborBurden), txnDate: c.txnDate })),
         invoices: peer.invoices.map((i) => ({ amount: toNum(i.amount), status: i.status, txnDate: i.txnDate })),
       };
       const peerFinancials = computeJobFinancials(peerInput, ctx);
@@ -1780,7 +1812,7 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
       }
     }
   }
-  const priorMarginsByJob = await getPriorMarginsByJob(connection.id);
+  const priorMarginsByJob = await getPriorMarginsByJob(connection.id, 6, connection.laborBurdenSetAt);
   const needsAttention = computeNeedsAttentionForJob(financials, {
     priorMarginPcts: marginPctsOnly(priorMarginsByJob[job.id]),
     peerCompletedCostByCategory,
@@ -1796,11 +1828,12 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
     leakage,
     needsAttention,
     priorMarginPoints: priorMarginsByJob[job.id] ?? [],
+    laborBurden,
     rawCostEntries: job.costEntries.map((c) => ({
       id: c.id,
       category: c.category,
       description: c.description,
-      amount: toNum(c.amount),
+      amount: burdenedAmount(c, laborBurden),
       txnDate: c.txnDate,
       qboSourceType: c.qboSourceType,
       accountName: c.accountName,

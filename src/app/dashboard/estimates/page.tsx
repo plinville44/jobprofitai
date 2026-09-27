@@ -81,10 +81,18 @@ export default async function EstimatesPage() {
       <section className="mt-10 rounded-xl border border-gray-200 p-5 text-xs text-gray-600">
         <h2 className="text-sm font-semibold text-navy">How the check works</h2>
         <p className="mt-2">
-          We take your finished jobs of the same type from the last two years and work out what they cost for every
-          dollar you charged, and apply that to the estimate&apos;s price. At one rate, any price comes out at the same
-          margin, so the check tells you whether your pricing for that type of job reaches your target, not whether one
-          job is priced right for its size: QuickBooks estimates carry prices, not hours or quantities. The price at
+          When an estimate&apos;s lines carry quantities, those lines are costed directly: products and services at the
+          purchase cost set on them in QuickBooks, and hours on labor lines at your average labor cost per hour (from time
+          entries, plus any labor burden set in Settings). A line priced as a lump sum, rather than per hour or per unit,
+          isn&apos;t counted. Then the check follows this job&apos;s own price and scope. When every line can be costed
+          that way, no past jobs are needed. When at least half the price can, the rest is checked at your past jobs&apos;
+          rate, which needs three finished jobs of the type.
+        </p>
+        <p className="mt-2">
+          Otherwise we take your finished jobs of the same type from the last two years, work out what they cost for
+          every dollar you charged, and apply that to the estimate&apos;s price. At one rate, any price comes out at the
+          same margin, so that check tells you whether your pricing for that type of job reaches your target, not whether
+          one job is priced right for its size. The price at
           target is what the expected cost needs to sell for to hit your target margin for that job type.
         </p>
         <p className="mt-2">
@@ -164,6 +172,39 @@ function EstimateCard({ e, options }: { e: CheckedEstimate; options: { value: st
       </div>
 
       <p className="mt-3 text-sm text-gray-700">{c.summary}</p>
+      {c.quantityLines.length > 0 && (
+        <table className="mt-3 w-full max-w-3xl text-left text-sm">
+          <thead className="text-xs text-gray-500">
+            <tr>
+              <th className="py-1 font-medium">Line</th>
+              <th className="py-1 font-medium">Quantity</th>
+              <th className="py-1 font-medium">Costed at</th>
+              <th className="py-1 font-medium">Cost</th>
+              <th className="py-1 font-medium">You&apos;re charging</th>
+            </tr>
+          </thead>
+          <tbody>
+            {c.quantityLines.map((l, i) => (
+              <tr key={i} className="border-t border-gray-100">
+                <td className="py-1.5">{l.name ?? coreCategoryName(l.category)}</td>
+                <td className="py-1.5">
+                  {l.qty.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                  {l.basis === "labor_rate" ? " h" : ""}
+                </td>
+                <td className="py-1.5 text-gray-600">
+                  {formatCurrency(l.unitCost)}
+                  {l.basis === "labor_rate" ? " an hour (your labor cost)" : " each (item cost)"}
+                </td>
+                <td className="py-1.5">{formatCurrency(l.cost)}</td>
+                <td className={`py-1.5 ${l.price < l.cost / (1 - (c.targetMarginPct ?? 0)) ? "font-medium text-red-700" : "text-gray-700"}`}>
+                  {formatCurrency(l.price)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
       {c.parts.length > 0 && (
         <p className="mt-1 max-w-2xl text-xs text-gray-500">
           Expected cost is the job&apos;s expected cost split the way it usually splits on these jobs. Price at target is what

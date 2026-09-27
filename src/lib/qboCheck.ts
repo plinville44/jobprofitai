@@ -75,6 +75,10 @@ export interface OurJobTotals {
   timesheetLabor: number;
   /** Costs tagged to the parent customer and assigned to this job here. */
   parentCustomerCosts: number;
+  /** Labor burden added to timesheet labor on the job's figures, as a fraction. */
+  laborBurden?: number;
+  /** The job is a QuickBooks Class, so "parent" means the parent class. */
+  byClass?: boolean;
 }
 
 export interface CheckLine {
@@ -105,12 +109,17 @@ export function compareWithQuickBooks(ours: OurJobTotals, qb: PnlTotals): CheckR
   const notes: string[] = [];
   if (ours.timesheetLabor !== 0) {
     notes.push(
-      `JobProfitAI also counts ${money(ours.timesheetLabor)} of labor from timesheets at each person's pay rate. QuickBooks' Profit and Loss doesn't include time entries, so that amount is on top of the costs compared above.`
+      `JobProfitAI also counts ${money(ours.timesheetLabor)} of labor from timesheets at each person's pay rate. QuickBooks' Profit and Loss doesn't include time entries, so that amount is on top of the costs compared above.` +
+        (ours.laborBurden && ours.laborBurden > 0
+          ? ` On the job's figures it also carries your ${Math.round(ours.laborBurden * 1000) / 10}% labor burden, another ${money(ours.timesheetLabor * ours.laborBurden)}.`
+          : "")
     );
   }
   if (ours.parentCustomerCosts !== 0) {
     notes.push(
-      `${money(ours.parentCustomerCosts)} of costs were tagged in QuickBooks to the parent customer rather than this project. Because it's that customer's only job, JobProfitAI counts them here; QuickBooks reports them under the customer. They are left out of the comparison above.`
+      ours.byClass
+        ? `${money(ours.parentCustomerCosts)} of costs were tagged in QuickBooks to the parent class rather than this one. Because it's that class's only job, JobProfitAI counts them here; QuickBooks reports them under the parent class. They are left out of the comparison above.`
+        : `${money(ours.parentCustomerCosts)} of costs were tagged in QuickBooks to the parent customer rather than this project. Because it's that customer's only job, JobProfitAI counts them here; QuickBooks reports them under the customer. They are left out of the comparison above.`
     );
   }
   if (!lines.every((l) => l.matches)) {

@@ -5,6 +5,7 @@ import { getEntitlements } from "@/lib/entitlements";
 import { qboProfitAndLossForCustomer } from "@/lib/quickbooks";
 import { withAccessToken } from "@/lib/quickbooksSync";
 import { compareWithQuickBooks, parseProfitAndLoss } from "@/lib/qboCheck";
+import { laborBurdenOf } from "@/lib/profitability";
 
 export const maxDuration = 30;
 
@@ -51,7 +52,11 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ job
   let report;
   try {
     report = await withAccessToken(job.connectionId, (realmId, token) =>
-      qboProfitAndLossForCustomer(realmId, token, job.qboId, "2000-01-01", today)
+      // A job from a QuickBooks Class is stored as "class:<id>"; its
+      // Profit and Loss is filtered by that class, not by a customer.
+      job.qboId.startsWith("class:")
+        ? qboProfitAndLossForCustomer(realmId, token, job.qboId.slice("class:".length), "2000-01-01", today, "class")
+        : qboProfitAndLossForCustomer(realmId, token, job.qboId, "2000-01-01", today)
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : "QuickBooks didn't answer.";
@@ -61,7 +66,14 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ job
   if (!qb) return NextResponse.json({ error: "QuickBooks sent a report we couldn't read." }, { status: 502 });
 
   const result = compareWithQuickBooks(
-    { revenue: Number(revenue._sum.amount ?? 0), postedCosts, timesheetLabor, parentCustomerCosts },
+    {
+      revenue: Number(revenue._sum.amount ?? 0),
+      postedCosts,
+      timesheetLabor,
+      parentCustomerCosts,
+      laborBurden: laborBurdenOf(job.connection),
+      byClass: job.qboId.startsWith("class:"),
+    },
     qb
   );
   return NextResponse.json({

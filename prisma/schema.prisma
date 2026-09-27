@@ -141,13 +141,27 @@ model QuickBooksConnection {
   //   "customers" = every customer with no sub-customers of its own, for
   //                 contractors who create one customer per job. Chosen
   //                 automatically on a first sync that finds no projects.
+  //   "classes"   = every QuickBooks Class (or sub-class) is a job, for
+  //                 contractors who track jobs by class. Never chosen
+  //                 automatically: the dashboard asks when classes are used.
   jobSource         String    @default("projects")
+  // When the contractor confirmed how their jobs are set up (Settings, or
+  // the dashboard question shown to companies that use Classes).
+  jobSourceConfirmedAt DateTime?
 
   // Labor is costed from time entries (hours x the employee's pay rate).
   // A contractor who already tags payroll to jobs another way (checks or
   // journal entries against the job) turns this off so labor isn't counted
   // twice.
   laborFromTimeEntries Boolean @default(true)
+  // Payroll taxes, workers' comp and benefits on top of the pay rate, as a
+  // percent of wages (0 to 100). Applied to labor from time entries when job
+  // figures are worked out, so changing it never needs a re-sync. Null or 0:
+  // wages only, as QuickBooks records them.
+  laborBurdenPct Decimal? @db.Decimal(5, 2)
+  // When the labor burden was last changed. Margins saved before then (weekly
+  // snapshots, tracked-change baselines) were worked out on other terms.
+  laborBurdenSetAt DateTime?
 
   // Bumped in code whenever the way synced rows are stored changes. A
   // connection below the current version gets a full sync next time,
@@ -445,6 +459,11 @@ model CostEntry {
   // amount is always the real transaction amount either way).
   attributionMethod String @default("direct")
 
+  // Hours, on time-entry labor (null for everything else). Gives the
+  // company's average pay rate, which the Estimate Check uses to cost the
+  // hours on an estimate's labor lines.
+  quantity      Decimal?  @db.Decimal(12, 2)
+
   createdAt     DateTime  @default(now())
 
   @@index([jobId])
@@ -469,6 +488,9 @@ model InvoiceSummary {
   amount       Decimal  @db.Decimal(12, 2)
   taxAmount    Decimal? @db.Decimal(12, 2)
   status       String   // "paid" | "open" | "credit"
+  // What's still owed on an invoice (QuickBooks' Balance, which includes
+  // any sales tax). Null for everything but open invoices.
+  openBalance  Decimal? @db.Decimal(12, 2)
   txnDate      DateTime
 
   @@index([jobId])

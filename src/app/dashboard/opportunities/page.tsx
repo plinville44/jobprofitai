@@ -10,6 +10,9 @@ import { ConfidenceBadge } from "@/components/dashboard/Badges";
 import OpportunitySummary from "@/components/opportunities/OpportunitySummary";
 import FeedItemCard from "@/components/opportunities/FeedItemCard";
 import TrackedChanges from "@/components/opportunities/TrackedChanges";
+import MarginTrendTable from "@/components/opportunities/MarginTrendTable";
+import { computeMarginTrend } from "@/lib/marginTrend";
+import { labelForJobType } from "@/lib/jobTypes";
 import RefreshAnalysisButton from "../intelligence/RefreshAnalysisButton";
 import type { FeedItem } from "@/lib/opportunities";
 
@@ -84,6 +87,8 @@ export default async function OpportunitiesPage() {
   const actNow = section("act_now");
   const pricing = section("pricing");
   const working = section("working");
+  const trend = computeMarginTrend(data.jobs, new Date());
+  const typeLabel = (key: string) => labelForJobType(data.jobTypes, key);
 
   return (
     <main>
@@ -135,6 +140,15 @@ export default async function OpportunitiesPage() {
         ) : (
           <div className="mt-4 space-y-4">{pricing.map(card)}</div>
         )}
+      </section>
+
+      <section className="mt-10">
+        <h2 className="text-lg font-semibold text-navy">Margin by job type, month by month</h2>
+        <p className="mt-1 text-xs text-gray-500">
+          Jobs finished in each of the last six months, at their whole-job margin, counted in the month of their last cost
+          or invoice. Use it to see whether a price change is showing up, or whether a type of work is slipping.
+        </p>
+        <MarginTrendTable trend={trend} typeLabel={typeLabel} />
       </section>
 
       {working.length > 0 && (

@@ -49,7 +49,7 @@ export interface WeekOverWeekReport {
   /** The week of the snapshot compared against. Null when there is none. */
   comparedToWeekStarting: Date | null;
   /** Why there is no comparison, when there isn't one. */
-  noComparisonReason: "first_brief" | "unreadable_snapshot" | null;
+  noComparisonReason: "first_brief" | "unreadable_snapshot" | "basis_changed" | null;
   revenueAdded: number;
   costAdded: number;
   marginBefore: number | null;
@@ -134,8 +134,14 @@ function snapshotFromCurrent(current: ConnectionMetrics): Snapshot {
 const isOverBudget = (pct: number | null) => pct != null && pct > OVER_BUDGET_PCT;
 
 export function computeWeekOverWeek(
-  prior: { weekStarting: Date; metrics: unknown } | null,
-  current: ConnectionMetrics
+  prior: { weekStarting: Date; metrics: unknown; createdAt?: Date } | null,
+  current: ConnectionMetrics,
+  /**
+   * When the labor burden setting last changed. A snapshot saved before it
+   * was worked out on other terms, and comparing with it would report every
+   * job with time entries as having new costs and a falling margin.
+   */
+  basisChangedAt: Date | null = null
 ): WeekOverWeekReport {
   const now = snapshotFromCurrent(current);
   const empty = {
@@ -149,6 +155,9 @@ export function computeWeekOverWeek(
 
   if (!prior) {
     return { ...empty, comparedToWeekStarting: null, noComparisonReason: "first_brief" };
+  }
+  if (basisChangedAt && prior.createdAt && prior.createdAt < basisChangedAt) {
+    return { ...empty, comparedToWeekStarting: null, noComparisonReason: "basis_changed" };
   }
   const before = readSnapshot(prior.metrics);
   if (!before) {
@@ -340,18 +349,20 @@ export function jobChangeSentence(c: JobChange): string {
  * Plain text because the brief is sent as text (and as that same text in a
  * <pre> for HTML clients), so anything richer would arrive as symbols.
  */
-export function renderWeekOverWeek(report: WeekOverWeekReport): string {
-  if (report.noComparisonReason === "first_brief") {
-    return [
-      "WHAT CHANGED SINCE LAST WEEK",
-      "This is the first Weekly Profit Brief for this company, so there is nothing to compare against yet. From next week, this section lists what moved in your books since the previous brief.",
-    ].join("\n");
+/** Why there's no "what changed" section this week, in a sentence. */
+export function noComparisonMessage(reason: WeekOverWeekReport["noComparisonReason"]): string {
+  if (reason === "first_brief") {
+    return "This is the first Weekly Profit Brief for this company, so there is nothing to compare against yet. From next week, this section lists what moved in your books since the previous brief.";
   }
-  if (report.noComparisonReason === "unreadable_snapshot" || !report.comparedToWeekStarting) {
-    return [
-      "WHAT CHANGED SINCE LAST WEEK",
-      "The previous brief's figures couldn't be read, so there's no comparison this week. Next week's brief will compare against this one.",
-    ].join("\n");
+  if (reason === "basis_changed") {
+    return "Your labor burden setting changed since the last brief, so this week's costs and margins aren't measured the same way as last week's and aren't compared. Next week's brief will compare against this one.";
+  }
+  return "The previous brief's figures couldn't be read, so there's no comparison this week. Next week's brief will compare against this one.";
+}
+
+export function renderWeekOverWeek(report: WeekOverWeekReport): string {
+  if (report.noComparisonReason || !report.comparedToWeekStarting) {
+    return ["WHAT CHANGED SINCE LAST WEEK", noComparisonMessage(report.noComparisonReason)].join("\n");
   }
 
   const since = formatShortDate(report.comparedToWeekStarting);

@@ -40,6 +40,8 @@ export interface AccountInfo {
 export interface ItemInfo {
   name: string;
   expenseAccountId: string | null;
+  /** What the contractor pays for one unit (QuickBooks' Purchase Cost), or null when not set. */
+  purchaseCost?: number | null;
 }
 
 export interface Lookups {
@@ -166,10 +168,28 @@ export function categorizeLine(src: LineSource, lookups: Lookups): { category: C
 // Expense lines (Purchase, Bill, VendorCredit, JournalEntry)
 // ---------------------------------------------------------------------------
 
+// "Other Current Asset" is left out on purpose: builders who hold job costs
+// in a Construction in Progress account post them there, tagged to the job.
+const NOT_COST_ACCOUNT_TYPES = new Set([
+  "bank",
+  "accounts receivable",
+  "fixed asset",
+  "other asset",
+  "accounts payable",
+  "credit card",
+  "other current liability",
+  "long term liability",
+  "equity",
+  "income",
+  "other income",
+]);
+
 export interface NormalizedCostLine {
   lineId: string;
   customerQboId: string | null;
   customerName: string | null;
+  /** The QuickBooks Class on the line (or the transaction), for companies that track jobs by class. */
+  classQboId: string | null;
   /** Signed: refunds, vendor credits and JE credits are negative. */
   amount: number;
   category: CostCategory;
@@ -208,6 +228,7 @@ export function expenseLines(txn: any, sourceType: ExpenseSourceType, lookups: L
         lineId: str(line.Id) ?? String(i),
         customerQboId: isCustomer ? str(entity?.EntityRef?.value) : null,
         customerName: isCustomer ? str(entity?.EntityRef?.name) : null,
+        classQboId: str(d.ClassRef?.value),
         amount: round2(amount),
         category,
         accountName: sourceName,
@@ -228,6 +249,11 @@ export function expenseLines(txn: any, sourceType: ExpenseSourceType, lookups: L
     const raw = num(line.Amount);
     if (raw === 0) continue;
     const accountId = str(acct?.AccountRef?.value);
+    // A line posted to a balance-sheet or income account (a trailer bought
+    // as a fixed asset, a loan payment, a transfer) isn't job cost, even
+    // with a customer on it: QuickBooks' own job reports leave it out too.
+    // Item lines always count, and so does an account we can't look up.
+    if (acct && accountId && NOT_COST_ACCOUNT_TYPES.has((lookups.accounts.get(accountId)?.type ?? "").toLowerCase())) continue;
     const itemId = str(item?.ItemRef?.value);
     const sourceName = str(acct?.AccountRef?.name) ?? str(item?.ItemRef?.name);
     const { category, isJobCostAccount } = categorizeLine({ sourceName, accountId, itemId }, lookups);
@@ -235,6 +261,7 @@ export function expenseLines(txn: any, sourceType: ExpenseSourceType, lookups: L
       lineId: str(line.Id) ?? String(i),
       customerQboId: str(acct?.CustomerRef?.value) ?? str(item?.CustomerRef?.value),
       customerName: str(acct?.CustomerRef?.name) ?? str(item?.CustomerRef?.name),
+      classQboId: str(acct?.ClassRef?.value) ?? str(item?.ClassRef?.value) ?? str(txn?.ClassRef?.value),
       amount: round2(sign * raw),
       category,
       accountName: sourceName,
@@ -271,8 +298,9 @@ export function timeActivityHours(ta: any): number {
  * hours, and what the contractor pays them arrives as a bill or expense,
  * which is already synced; costing the hours too would count it twice.
  */
-export function timeActivityCost(ta: any): TimeCostResult {
-  if (!str(ta?.CustomerRef?.value)) return { kind: "skip", reason: "no_customer" };
+export function timeActivityCost(ta: any, jobSource: JobSource = "projects"): TimeCostResult {
+  const tagged = jobSource === "classes" ? str(ta?.ClassRef?.value) : str(ta?.CustomerRef?.value);
+  if (!tagged) return { kind: "skip", reason: "no_customer" };
   if (ta?.VendorRef && !ta?.EmployeeRef) return { kind: "skip", reason: "vendor_time" };
   const payRate = num(ta?.CostRate);
   if (payRate <= 0) return { kind: "skip", reason: "no_pay_rate" };
@@ -292,6 +320,8 @@ export interface NormalizedRevenue {
   tax: number;
   status: "open" | "paid" | "credit";
   txnDate: Date | null;
+  /** What's still owed on an open invoice (QuickBooks' Balance, with tax), else null. */
+  openBalance: number | null;
 }
 
 export function revenueFromTxn(txn: any, sourceType: RevenueSourceType): NormalizedRevenue {
@@ -305,7 +335,49 @@ export function revenueFromTxn(txn: any, sourceType: RevenueSourceType): Normali
     tax: round2(negative ? -tax : tax),
     status: negative ? "credit" : sourceType === "Invoice" && num(txn?.Balance) > 0 ? "open" : "paid",
     txnDate: qboDate(txn?.TxnDate),
+    openBalance: sourceType === "Invoice" && num(txn?.Balance) > 0 ? round2(num(txn?.Balance)) : null,
   };
+}
+
+/**
+ * A sale split by QuickBooks Class, for companies that track each job as a
+ * class. Each class gets its share of the sale net of tax, in proportion to
+ * its lines (so a discount line is spread across them), and the same share
+ * of any open balance. Lines with no class of their own take the
+ * transaction's class; with none at all, the key is null.
+ */
+export function revenueByClass(txn: any, sourceType: RevenueSourceType): { classQboId: string | null; amount: number; tax: number; openBalance: number | null }[] {
+  const whole = revenueFromTxn(txn, sourceType);
+  const byClass = new Map<string | null, number>();
+  const walk = (lines: unknown) => {
+    if (!Array.isArray(lines)) return;
+    for (const line of lines) {
+      if (line?.GroupLineDetail) {
+        walk(line.GroupLineDetail.Line);
+        continue;
+      }
+      const d = line?.SalesItemLineDetail;
+      if (!d) continue;
+      const amount = num(line.Amount);
+      if (amount === 0) continue;
+      const key = str(d.ClassRef?.value) ?? str(txn?.ClassRef?.value);
+      byClass.set(key, (byClass.get(key) ?? 0) + amount);
+    }
+  };
+  walk(txn?.Line);
+  const gross = [...byClass.values()].reduce((a, b) => a + b, 0);
+  if (byClass.size === 0 || gross === 0) {
+    return [{ classQboId: str(txn?.ClassRef?.value), amount: whole.amount, tax: whole.tax, openBalance: whole.openBalance }];
+  }
+  return [...byClass].map(([classQboId, amount]) => {
+    const share = amount / gross;
+    return {
+      classQboId,
+      amount: round2(whole.amount * share),
+      tax: round2(whole.tax * share),
+      openBalance: whole.openBalance == null ? null : round2(whole.openBalance * share),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +386,9 @@ export function revenueFromTxn(txn: any, sourceType: RevenueSourceType): Normali
 
 export interface NormalizedRevenueLine {
   lineId: string;
-  customerQboId: string;
+  /** Null only for a class-mode line with the job's class and no customer. */
+  customerQboId: string | null;
+  classQboId: string | null;
   /** Signed: money in to an income account is positive. */
   amount: number;
   txnDate: Date | null;
@@ -340,7 +414,7 @@ function isIncomeAccount(accountId: string | null, lookups: Lookups): boolean {
  * Lines to anything but an income account (a customer deposit held as a
  * liability, a transfer, a refund from a supplier) aren't revenue either.
  */
-export function depositRevenueLines(txn: any, lookups: Lookups): NormalizedRevenueLine[] {
+export function depositRevenueLines(txn: any, lookups: Lookups, byClass = false): NormalizedRevenueLine[] {
   const out: NormalizedRevenueLine[] = [];
   const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
   for (const [i, line] of lines.entries()) {
@@ -349,12 +423,21 @@ export function depositRevenueLines(txn: any, lookups: Lookups): NormalizedReven
     if (!d) continue;
     const entity = d.Entity;
     const entityType = String(entity?.type ?? entity?.Type ?? "").toLowerCase();
-    const customerQboId = str(entity?.value ?? entity?.EntityRef?.value);
-    if (entityType !== "customer" || !customerQboId) continue;
+    const customerQboId = entityType === "customer" ? str(entity?.value ?? entity?.EntityRef?.value) : null;
+    const classQboId = str(d.ClassRef?.value) ?? str(txn?.ClassRef?.value);
+    // Jobs by class: income with the job's class counts whether or not a
+    // customer is named, as it does in QuickBooks' report for that class.
+    if (byClass ? !classQboId || (entityType !== "" && entityType !== "customer") : !customerQboId) continue;
     if (!isIncomeAccount(str(d.AccountRef?.value), lookups)) continue;
     const amount = num(line.Amount);
     if (amount === 0) continue;
-    out.push({ lineId: str(line.Id) ?? String(i), customerQboId, amount: round2(amount), txnDate: qboDate(txn?.TxnDate) });
+    out.push({
+      lineId: str(line.Id) ?? String(i),
+      customerQboId,
+      classQboId,
+      amount: round2(amount),
+      txnDate: qboDate(txn?.TxnDate),
+    });
   }
   return out;
 }
@@ -364,22 +447,24 @@ export function depositRevenueLines(txn: any, lookups: Lookups): NormalizedReven
  * adds income, a debit takes it away. (Cost lines on the same entry are
  * read by expenseLines.)
  */
-export function journalRevenueLines(txn: any, lookups: Lookups): NormalizedRevenueLine[] {
+export function journalRevenueLines(txn: any, lookups: Lookups, byClass = false): NormalizedRevenueLine[] {
   const out: NormalizedRevenueLine[] = [];
   const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
   for (const [i, line] of lines.entries()) {
     const d = line?.JournalEntryLineDetail;
     if (!d) continue;
     const entity = d.Entity;
-    if ((entity?.Type ?? "").toLowerCase() !== "customer") continue;
-    const customerQboId = str(entity?.EntityRef?.value);
-    if (!customerQboId) continue;
+    const entityType = String(entity?.Type ?? "").toLowerCase();
+    const customerQboId = entityType === "customer" ? str(entity?.EntityRef?.value) : null;
+    const classQboId = str(d.ClassRef?.value);
+    if (byClass ? !classQboId || (entityType !== "" && entityType !== "customer") : !customerQboId) continue;
     if (!isIncomeAccount(str(d.AccountRef?.value), lookups)) continue;
     const raw = num(line.Amount);
     if (raw === 0) continue;
     out.push({
       lineId: str(line.Id) ?? String(i),
       customerQboId,
+      classQboId,
       amount: round2((d.PostingType === "Credit" ? 1 : -1) * raw),
       txnDate: qboDate(txn?.TxnDate),
     });
@@ -405,6 +490,43 @@ export interface EstimateLine {
   c: CostCategory;
   /** Price quoted to the customer, net of discounts and without tax. */
   a: number;
+  /** Quantity on the line (hours, units), when QuickBooks has one. */
+  q?: number | null;
+  /** The product or service's purchase cost per unit in QuickBooks, when set. */
+  u?: number | null;
+  /**
+   * The price of just the lines counted in q. Lines are merged by product or
+   * service, and a lump-sum line (a $4,000 "Labor" line with a quantity of
+   * 1) is priced per job, not per unit: it's left out of q and of this, so
+   * it can't pass as one cheap hour. Null on lines stored before this was
+   * kept.
+   */
+  qa?: number | null;
+}
+
+/** Labor lines count as hours only when their price per unit looks like an hourly rate. */
+export const HOURLY_PRICE_MIN = 15;
+export const HOURLY_PRICE_MAX = 300;
+/**
+ * A line priced at more than ten times its item's cost per unit (or under a
+ * tenth of it) is a lump sum or a different unit, not that many units: a
+ * "Labor" service with a $35 cost used once on a $4,000 line isn't $35 of
+ * cost.
+ */
+export const ITEM_PRICE_RATIO_MAX = 10;
+
+/**
+ * Whether a line's quantity is a count of units its cost can be worked out
+ * from: units of an item with a purchase cost, priced near that cost, or
+ * labor priced at an hourly rate.
+ */
+export function isUnitPriced(category: CostCategory, pricePerUnit: number, unitCost: number | null | undefined): boolean {
+  if (!(pricePerUnit > 0)) return false;
+  if (unitCost != null && unitCost > 0) {
+    const ratio = pricePerUnit / unitCost;
+    return ratio <= ITEM_PRICE_RATIO_MAX && ratio >= 1 / ITEM_PRICE_RATIO_MAX;
+  }
+  return category === "labor" && pricePerUnit >= HOURLY_PRICE_MIN && pricePerUnit <= HOURLY_PRICE_MAX;
 }
 
 export interface EstimateDetails {
@@ -426,7 +548,7 @@ export interface EstimateDetails {
  * Lines with the same name and category are merged.
  */
 export function estimateLines(est: any, lookups: Lookups, netTotal: number): EstimateLine[] {
-  const raw: { name: string | null; itemId: string | null; amount: number }[] = [];
+  const raw: { name: string | null; itemId: string | null; amount: number; qty: number }[] = [];
   const walk = (lines: unknown) => {
     if (!Array.isArray(lines)) return;
     for (const line of lines) {
@@ -438,7 +560,7 @@ export function estimateLines(est: any, lookups: Lookups, netTotal: number): Est
       if (!d) continue; // subtotal, discount, description-only
       const amount = num(line.Amount);
       if (amount === 0) continue;
-      raw.push({ name: str(d.ItemRef?.name), itemId: str(d.ItemRef?.value), amount });
+      raw.push({ name: str(d.ItemRef?.name), itemId: str(d.ItemRef?.value), amount, qty: num(d.Qty) });
     }
   };
   walk(est?.Line);
@@ -448,24 +570,60 @@ export function estimateLines(est: any, lookups: Lookups, netTotal: number): Est
 
   const merged = new Map<string, EstimateLine>();
   for (const l of raw) {
-    const itemName = l.itemId ? lookups.items.get(l.itemId)?.name ?? l.name : l.name;
+    const item = l.itemId ? lookups.items.get(l.itemId) : undefined;
+    const itemName = item?.name ?? l.name;
     const { category } = categorizeLine({ sourceName: itemName, accountId: null, itemId: l.itemId }, lookups);
-    const key = `${itemName ?? ""}\u0000${category}`;
-    const cur = merged.get(key) ?? { n: itemName ?? null, c: category, a: 0 };
+    const unitCost = item?.purchaseCost != null && item.purchaseCost > 0 ? item.purchaseCost : null;
+    const key = `${itemName ?? ""}\u0000${category}\u0000${unitCost ?? ""}`;
+    const cur = merged.get(key) ?? { n: itemName ?? null, c: category, a: 0, q: 0, u: unitCost, qa: 0 };
     cur.a += l.amount * scale;
+    // Judged line by line, before merging: a lump sum merged with hourly
+    // lines would otherwise pass as a few more hours.
+    if (l.qty > 0 && isUnitPriced(category, l.amount / l.qty, unitCost)) {
+      cur.q = (cur.q ?? 0) + l.qty;
+      cur.qa = (cur.qa ?? 0) + l.amount * scale;
+    }
     merged.set(key, cur);
   }
-  return [...merged.values()].map((l) => ({ ...l, a: round2(l.a) })).filter((l) => l.a !== 0);
+  return [...merged.values()]
+    .map((l) => {
+      const counted = l.q != null && l.q > 0 && (l.qa ?? 0) > 0;
+      return { ...l, a: round2(l.a), q: counted ? round2(l.q!) : null, qa: counted ? round2(l.qa!) : null };
+    })
+    .filter((l) => l.a !== 0);
+}
+
+/** The class an estimate belongs to: its own, or the class with most of its lines' value. */
+function estimateClass(est: any): string | null {
+  const own = str(est?.ClassRef?.value);
+  if (own) return own;
+  const byClass = new Map<string, number>();
+  const walk = (lines: unknown) => {
+    if (!Array.isArray(lines)) return;
+    for (const line of lines) {
+      if (line?.GroupLineDetail) {
+        walk(line.GroupLineDetail.Line);
+        continue;
+      }
+      const c = str(line?.SalesItemLineDetail?.ClassRef?.value);
+      if (c) byClass.set(c, (byClass.get(c) ?? 0) + Math.abs(num(line.Amount)));
+    }
+  };
+  walk(est?.Line);
+  let best: string | null = null;
+  for (const [c, a] of byClass) if (best == null || a > (byClass.get(best) ?? 0)) best = c;
+  return best;
 }
 
 export function estimateFromTxn(
   est: any,
   lookups?: Lookups
-): { customerQboId: string | null; record: EstimateRecord | null; details: EstimateDetails } {
+): { customerQboId: string | null; classQboId: string | null; record: EstimateRecord | null; details: EstimateDetails } {
   const txnDate = qboDate(est?.TxnDate);
   const total = num(est?.TotalAmt) - num(est?.TxnTaxDetail?.TotalTax);
   return {
     customerQboId: str(est?.CustomerRef?.value),
+    classQboId: estimateClass(est),
     record: txnDate ? { amount: round2(total), status: str(est?.TxnStatus) ?? "Pending", txnDate } : null,
     details: {
       docNumber: str(est?.DocNumber),
@@ -498,7 +656,44 @@ export function contractValueFromEstimates(estimates: EstimateRecord[]): number 
 // Which customers are jobs
 // ---------------------------------------------------------------------------
 
-export type JobSource = "projects" | "customers";
+export type JobSource = "projects" | "customers" | "classes";
+
+/** Jobs from QuickBooks Classes are stored under this prefix, so a class and a customer with the same id never collide. */
+export const classJobKey = (classQboId: string) => `class:${classQboId}`;
+
+/**
+ * Classes as jobs, for contractors who track each job as a QuickBooks
+ * Class. A class with sub-classes is a group, not a job: its sub-classes
+ * are the jobs, and it becomes their "customer" for grouping. A cost tagged
+ * to the group itself lands on its only sub-class, the same as a
+ * parent-customer cost does.
+ */
+export function selectJobClasses(
+  classes: any[],
+  /** Class jobs already stored ("class:<id>"): they stay jobs when they gain sub-classes, as customers do. */
+  keepIds?: Set<string>
+): JobCandidate[] {
+  const parents = new Set<string>();
+  const nameById = new Map<string, string>();
+  for (const c of classes) {
+    const p = str(c?.ParentRef?.value);
+    if (p) parents.add(p);
+    if (c?.Id != null) nameById.set(String(c.Id), String(c.Name ?? ""));
+  }
+  return classes
+    .filter((c) => c?.Id != null && (!parents.has(String(c.Id)) || (keepIds?.has(classJobKey(String(c.Id))) ?? false)))
+    .map((c) => {
+      const parent = str(c.ParentRef?.value);
+      return {
+        qboId: classJobKey(String(c.Id)),
+        parentQboId: parent ? classJobKey(parent) : null,
+        name: String(c.Name ?? c.FullyQualifiedName ?? "Class"),
+        customerName: parent ? nameById.get(parent) ?? null : null,
+        active: c.Active !== false,
+        createdAt: typeof c?.MetaData?.CreateTime === "string" && Number.isFinite(Date.parse(c.MetaData.CreateTime)) ? new Date(c.MetaData.CreateTime) : null,
+      };
+    });
+}
 
 /**
  * QuickBooks renames a customer to "Name (deleted)" when it is made

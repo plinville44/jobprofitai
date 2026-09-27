@@ -207,3 +207,17 @@ describe("withoutOpenJobUnderspend", () => {
     expect(withoutOpenJobUnderspend(roof).varianceVsEstimate).toBe(-600);
   });
 });
+
+describe("after a labor burden change", () => {
+  it("doesn't compare with a snapshot worked out on the old setting", () => {
+    const before = metrics([job("a", "Smith Kitchen", 10_000, 6_000, 8_000)]);
+    const after = metrics([job("a", "Smith Kitchen", 10_000, 7_200, 8_000)]);
+    const stored = { weekStarting: LAST_WEEK, metrics: asStored(before), createdAt: new Date("2026-09-15T00:00:00Z") };
+    const r = computeWeekOverWeek(stored, after, new Date("2026-09-18T00:00:00Z"));
+    expect(r.noComparisonReason).toBe("basis_changed");
+    expect(r.changes).toEqual([]);
+    expect(renderWeekOverWeek(r)).toContain("labor burden setting changed");
+    // A snapshot saved after the change is compared as usual.
+    expect(computeWeekOverWeek({ ...stored, createdAt: new Date("2026-09-19T00:00:00Z") }, after, new Date("2026-09-18T00:00:00Z")).noComparisonReason).toBeNull();
+  });
+});

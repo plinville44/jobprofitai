@@ -20,6 +20,7 @@ import DataHealthSummary from "@/components/dashboard/DataHealthSummary";
 import OpportunitySummary from "@/components/opportunities/OpportunitySummary";
 import FeedItemCard from "@/components/opportunities/FeedItemCard";
 import { getOpportunityData } from "@/lib/opportunityData";
+import JobSourcePrompt from "@/components/dashboard/JobSourcePrompt";
 
 export default async function DashboardPage(props: {
   // Next.js 16: searchParams arrives as a Promise. Awaited into a local of
@@ -129,6 +130,9 @@ export default async function DashboardPage(props: {
         </div>
       ) : (
         <>
+          {connection.costTrackingMode === "classes" && connection.jobSource !== "classes" && connection.jobSourceConfirmedAt == null ? (
+            <JobSourcePrompt connectionId={connection.id} current={connection.jobSource === "customers" ? "customers" : "projects"} />
+          ) : null}
           {/* Connection status + Sync/Digest actions. Disconnect lives on the
               Settings page now (see src/app/dashboard/settings) - Sync now
               and Generate digest stay here since they're the day-to-day
@@ -418,7 +422,7 @@ export default async function DashboardPage(props: {
               never the other way around, per the "structured info primary,
               AI explanation secondary, never AI alone" product rule. */}
           <div className="mt-10">
-            <DataHealthSummary dataHealth={profitData.dataHealth} />
+            <DataHealthSummary dataHealth={profitData.dataHealth} byClass={connection.jobSource === "classes"} />
           </div>
 
           {latestDigest && (

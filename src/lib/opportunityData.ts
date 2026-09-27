@@ -1,5 +1,5 @@
 import { prisma } from "./prisma";
-import { getConnectionProfitData, type ConnectionProfitData, type JobFinancials } from "./profitability";
+import { getConnectionProfitData, laborBurdenOf, type ConnectionProfitData, type JobFinancials } from "./profitability";
 import { getJobTypes } from "./jobTypesServer";
 import { labelForJobType, suggestJobType, suggestJobTypeFromEstimateLines, type CompanyJobType } from "./jobTypes";
 import { buildJobIndex, resolveJob, type EstimateLine } from "./qboNormalize";
@@ -20,7 +20,16 @@ import {
 const PENDING_ESTIMATE_DAYS = 180;
 
 const asLines = (v: unknown): EstimateLine[] | null =>
-  Array.isArray(v) ? (v as EstimateLine[]).filter((l) => l && typeof l.a === "number" && typeof l.c === "string") : null;
+  Array.isArray(v)
+    ? (v as EstimateLine[])
+        .filter((l) => l && typeof l.a === "number" && typeof l.c === "string")
+        .map((l) => ({
+          ...l,
+          q: typeof l.q === "number" ? l.q : null,
+          u: typeof l.u === "number" ? l.u : null,
+          qa: typeof l.qa === "number" ? l.qa : null,
+        }))
+    : null;
 
 export interface CheckedEstimate {
   id: string;
@@ -59,19 +68,35 @@ export interface OpportunityData {
  * figures across every job, whatever the dashboard's tab or period.
  */
 export async function getOpportunityData(connectionId: string, now: Date = new Date()): Promise<OpportunityData> {
-  const [profitData, jobTypes, connection, jobRows, estimateRows] = await Promise.all([
+  const [profitData, jobTypes, connection, jobRows, estimateRows, timeTotals] = await Promise.all([
     getConnectionProfitData(connectionId, now),
     getJobTypes(connectionId),
     prisma.quickBooksConnection.findUniqueOrThrow({
       where: { id: connectionId },
-      select: { jobSource: true, targetMarginPct: true, marginTargets: { select: { category: true, targetPct: true } } },
+      select: { jobSource: true, targetMarginPct: true, laborBurdenPct: true, marginTargets: { select: { category: true, targetPct: true } } },
     }),
     prisma.job.findMany({
       where: { connectionId },
       select: { id: true, qboId: true, parentQboId: true, name: true, category: true, estimatedCostSource: true, missingSince: true },
     }),
     prisma.jobEstimate.findMany({ where: { connectionId } }),
+    // The company's average pay rate over the last 12 months, from time
+    // entries with hours, for costing the hours on estimates.
+    prisma.costEntry.aggregate({
+      where: {
+        job: { connectionId },
+        qboSourceType: "TimeActivity",
+        quantity: { not: null },
+        txnDate: { gte: new Date(now.getTime() - 365 * 86_400_000) },
+      },
+      _sum: { amount: true, quantity: true },
+    }),
   ]);
+  const burden = laborBurdenOf(connection);
+  const wages = Number(timeTotals._sum.amount ?? 0);
+  const hoursWorked = Number(timeTotals._sum.quantity ?? 0);
+  // At least a week's work, or the average is one person's odd rate.
+  const laborRate = hoursWorked >= 40 && wages > 0 ? { perHour: (wages / hoursWorked) * (1 + burden), hours: hoursWorked, burden } : null;
 
   const jobs = profitData.lifetimeJobs;
   const typeLabel = (key: string) => labelForJobType(jobTypes, key);
@@ -136,12 +161,12 @@ export async function getOpportunityData(connectionId: string, now: Date = new D
     const history = typeKey
       ? (finishedByType.get(typeKey) ?? []).filter((f) => f.jobId !== job?.id).map((f) => ({ f, mix: mixes.get(f.jobId) ?? null }))
       : [];
-    const check = typeKey
-      ? computeEstimateCheck({ amount: Number(e.amount), lines, targetPct, history, now })
-      : {
-          ...computeEstimateCheck({ amount: Number(e.amount), lines, targetPct, history: [], now }),
-          summary: "Choose a job type so this estimate can be compared with your finished jobs of that type.",
-        };
+    let check = computeEstimateCheck({ amount: Number(e.amount), lines, targetPct, history, now, laborRate, laborBurden: burden });
+    // Without a job type there's no history to compare with; an estimate
+    // costed wholly from its quantities is still checked.
+    if (!typeKey && check.method !== "quantities") {
+      check = { ...check, summary: "Choose a job type so this estimate can be compared with your finished jobs of that type." };
+    }
     // QuickBooks only knows whether IT emailed the estimate; one printed or
     // sent as a PDF still reads as not emailed, and the wording says so.
     const notEmailed = e.emailStatus !== "EmailSent";
@@ -238,8 +263,30 @@ export interface TrackedActionView {
 
 /** The pricing changes this company is tracking, each with its result so far. */
 export async function getTrackedActions(connectionId: string, data: Pick<OpportunityData, "jobs" | "mixes" | "jobTypes">): Promise<TrackedActionView[]> {
-  const rows = await prisma.profitAction.findMany({ where: { connectionId }, orderBy: { startedAt: "desc" } });
+  const [rows, connection] = await Promise.all([
+    prisma.profitAction.findMany({ where: { connectionId }, orderBy: { startedAt: "desc" } }),
+    prisma.quickBooksConnection.findUnique({ where: { id: connectionId }, select: { laborBurdenSetAt: true } }),
+  ]);
+  const burdenChangedAt = connection?.laborBurdenSetAt ?? null;
   return rows.map((r) => {
+    const outcome = computeActionOutcome(
+      {
+        kind: r.kind as "job_type" | "customer" | "small_jobs" | "cost_category",
+        subjectKey: r.subjectKey,
+        costCategory: (r.costCategory as CoreCategory | null) ?? null,
+        baselineMarginPct: Number(r.baselineMarginPct),
+        baselineJobs: r.baselineJobs,
+        startedAt: r.startedAt,
+        stoppedAt: r.stoppedAt,
+      },
+      data.jobs,
+      data.mixes
+    );
+    // The starting margin was saved when tracking began; job figures today
+    // carry whatever labor burden is set now.
+    if (burdenChangedAt && burdenChangedAt > r.startedAt) {
+      outcome.message = `${outcome.message} The labor burden setting changed after this started, so the starting margin and today's figures aren't worked out the same way.`;
+    }
     const costCategory = (r.costCategory as CoreCategory | null) ?? null;
     const baselineMarginPct = Number(r.baselineMarginPct);
     const kind = r.kind as "job_type" | "customer" | "small_jobs" | "cost_category";
@@ -265,11 +312,7 @@ export async function getTrackedActions(connectionId: string, data: Pick<Opportu
       targetMarginPct: r.targetMarginPct == null ? null : Number(r.targetMarginPct),
       startedAt: r.startedAt,
       stoppedAt: r.stoppedAt,
-      outcome: computeActionOutcome(
-        { kind, subjectKey: r.subjectKey, costCategory, baselineMarginPct, baselineJobs: r.baselineJobs, startedAt: r.startedAt, stoppedAt: r.stoppedAt },
-        data.jobs,
-        data.mixes
-      ),
+      outcome,
     };
   });
 }

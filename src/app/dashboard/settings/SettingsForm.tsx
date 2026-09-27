@@ -44,8 +44,9 @@ type Props = {
     emailDay: number;
     emailHour: number;
     emailTimezone: string;
-    jobSource: "projects" | "customers";
+    jobSource: "projects" | "customers" | "classes";
     laborFromTimeEntries: boolean;
+    laborBurdenPct: number | null;
     alertsEnabled: boolean;
     marginTargets: Record<string, number>;
   };
@@ -64,6 +65,7 @@ export default function SettingsForm({ connectionId, jobTypes, initial }: Props)
   const [emailTimezone, setEmailTimezone] = useState(initial.emailTimezone);
   const [jobSource, setJobSource] = useState(initial.jobSource);
   const [laborFromTimeEntries, setLaborFromTimeEntries] = useState(initial.laborFromTimeEntries);
+  const [laborBurdenPct, setLaborBurdenPct] = useState(initial.laborBurdenPct?.toString() ?? "");
   const [alertsEnabled, setAlertsEnabled] = useState(initial.alertsEnabled);
   const [marginTargets, setMarginTargets] = useState<Record<string, string>>(
     Object.fromEntries(jobTypes.map((o) => [o.value, initial.marginTargets[o.value]?.toString() ?? ""]))
@@ -95,6 +97,7 @@ export default function SettingsForm({ connectionId, jobTypes, initial }: Props)
           emailTimezone,
           jobSource,
           laborFromTimeEntries,
+          laborBurdenPct: laborBurdenPct === "" ? null : laborBurdenPct,
           alertsEnabled,
           marginTargets,
         }),
@@ -243,6 +246,20 @@ export default function SettingsForm({ connectionId, jobTypes, initial }: Props)
               have sub-customers, those are the jobs. Works on every QuickBooks Online plan.
             </span>
           </label>
+          <label className="flex items-start gap-2 text-sm text-gray-700">
+            <input
+              type="radio"
+              name="jobSource"
+              checked={jobSource === "classes"}
+              onChange={() => setJobSource("classes")}
+              className="mt-1"
+            />
+            <span>
+              <strong>Classes.</strong> Each QuickBooks Class is a job (where a class has sub-classes, those are the jobs),
+              and costs and sales are matched by the class on each line. For companies that turned on class tracking and
+              pick the job&apos;s class on bills, expenses, time entries and invoices. Plus or Advanced.
+            </span>
+          </label>
           {jobSource !== initial.jobSource ? (
             <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
               Switching re-reads your jobs at the next sync. Jobs that aren&apos;t jobs under the new setting are removed,
@@ -264,6 +281,31 @@ export default function SettingsForm({ connectionId, jobTypes, initial }: Props)
             to the job), so labor isn&apos;t counted twice.
           </span>
         </label>
+
+        {laborFromTimeEntries ? (
+          <div className="mt-4 pl-6">
+            <label htmlFor="laborBurdenPct" className="block text-sm font-medium text-gray-700">
+              Labor burden (%)
+            </label>
+            <input
+              id="laborBurdenPct"
+              type="number"
+              min={0}
+              max={100}
+              step="0.1"
+              value={laborBurdenPct}
+              onChange={(e) => setLaborBurdenPct(e.target.value)}
+              placeholder="0"
+              className="mt-1 w-32 rounded-lg border border-gray-300 px-3 py-2 text-sm"
+            />
+            <p className="mt-1 max-w-xl text-xs text-gray-500">
+              Payroll taxes, workers&apos; comp, insurance and benefits, as a percent of wages. QuickBooks pay rates are
+              wages only, so without this labor reads cheaper than it is. Many contractors&apos; burden falls somewhere
+              between 20% and 40%; your payroll provider or accountant can give you your own figure. Changes apply straight
+              away, with no re-sync.
+            </p>
+          </div>
+        ) : null}
       </section>
 
       <section className="rounded-xl border border-gray-200 p-6">

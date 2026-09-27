@@ -4,6 +4,7 @@ import { qboQuery, qboQueryAll, qboCompanyInfo, qboCdc, refreshTokens } from "@/
 import { encryptToken, decryptToken } from "@/lib/crypto";
 import {
   buildJobIndex,
+  classJobKey,
   contractValueFromEstimates,
   costEntryId,
   depositRevenueLines,
@@ -15,11 +16,14 @@ import {
   lineRevenueId,
   qboDate,
   resolveJob,
+  revenueByClass,
   revenueFromTxn,
   revenueId,
   round2,
+  selectJobClasses,
   selectJobCustomers,
   timeActivityCost,
+  type JobCandidate,
   type AccountInfo,
   type ExpenseSourceType,
   type ItemInfo,
@@ -63,8 +67,11 @@ import {
  *    Estimate Check and estimate accuracy by cost category.
  * 4: revenue from bank deposits and journal entries that name a customer
  *    (income recorded without an invoice).
+ * 5: jobs by QuickBooks Class; hours on time entries; quantities and item
+ *    costs on estimate lines; open invoice balances; lines posted to
+ *    balance-sheet and income accounts no longer counted as job cost.
  */
-export const SYNC_VERSION = 4;
+export const SYNC_VERSION = 5;
 
 /**
  * The last version that changed how COSTS and REVENUE are stored. The weekly
@@ -72,9 +79,10 @@ export const SYNC_VERSION = 4;
  * those upgrades can make figures read wrong mid-way. Version 3 only adds
  * estimate details, so a brief never waits on it. Version 4 adds revenue
  * (bank deposits and journal entries), so a brief waits for it rather than
- * going out with some jobs upgraded and others not.
+ * going out with some jobs upgraded and others not. Version 5 stops counting
+ * balance-sheet postings as cost, so it waits for that too.
  */
-export const COST_SYNC_VERSION = 4;
+export const COST_SYNC_VERSION = 5;
 
 const FULL_SYNC_INTERVAL_DAYS = 30;
 /** Data Health tallies look at the last 12 months, not the company's whole history. */
@@ -89,6 +97,8 @@ const CDC_MAX_PER_ENTITY = 1000;
 const EXPENSE_TYPES: ExpenseSourceType[] = ["Purchase", "Bill", "VendorCredit", "JournalEntry"];
 const REVENUE_TYPES: RevenueSourceType[] = ["Invoice", "SalesReceipt", "CreditMemo", "RefundReceipt"];
 const CDC_ENTITIES = ["Customer", ...EXPENSE_TYPES, "TimeActivity", ...REVENUE_TYPES, "Deposit", "Estimate"];
+/** Classes are only asked for when jobs are classes: companies on plans without class tracking have none to send. */
+const cdcEntitiesFor = (jobSource: JobSource) => (jobSource === "classes" ? ["Class", ...CDC_ENTITIES] : CDC_ENTITIES);
 /** Source types stored as revenue rows (InvoiceSummary). JournalEntry is also a cost type. */
 const REVENUE_ROW_TYPES = new Set<string>([...REVENUE_TYPES, "Deposit", "JournalEntry"]);
 /** Source types stored as cost rows (CostEntry). */
@@ -142,7 +152,7 @@ export async function runSyncForConnection(
       connectionId: connection.id,
       realmId,
       accessToken,
-      jobSource: (connection.jobSource === "customers" ? "customers" : "projects") as JobSource,
+      jobSource: (connection.jobSource === "customers" || connection.jobSource === "classes" ? connection.jobSource : "projects") as JobSource,
       autoDetectSource: !connection.lastSyncedAt,
       laborFromTimeEntries: connection.laborFromTimeEntries,
       startedAt: syncStartedAt,
@@ -364,7 +374,7 @@ interface SyncCtx {
   realmId: string;
   accessToken: string;
   jobSource: JobSource;
-  /** First sync: switch to one-customer-per-job when there are no projects. */
+  /** First sync: switch to one-customer-per-job (or classes) when there are no projects. */
   autoDetectSource: boolean;
   laborFromTimeEntries: boolean;
   startedAt: Date;
@@ -381,6 +391,7 @@ interface ExistingCost {
   accountName: string | null;
   qboSourceType: string;
   qboSourceId: string;
+  quantity: number | null;
 }
 
 interface ExistingRevenue {
@@ -392,6 +403,7 @@ interface ExistingRevenue {
   txnDate: number;
   qboSourceType: string;
   qboInvoiceId: string;
+  openBalance: number | null;
 }
 
 interface Tallies {
@@ -447,6 +459,7 @@ class Writer {
     amount: number;
     txnDate: Date;
     attributionMethod: string;
+    quantity?: number | null;
   }) {
     this.seenCost.add(row.id);
     const ex = this.existingCost.get(row.id);
@@ -462,7 +475,8 @@ class Writer {
       ex.txnDate !== row.txnDate.getTime() ||
       (ex.description ?? null) !== (row.description ?? null) ||
       ex.attributionMethod !== row.attributionMethod ||
-      (ex.accountName ?? null) !== (row.accountName ?? null);
+      (ex.accountName ?? null) !== (row.accountName ?? null) ||
+      (ex.quantity ?? null) !== (row.quantity ?? null);
     if (!changed) return;
     this.costUpdates++;
     await prisma.costEntry.update({
@@ -475,6 +489,7 @@ class Writer {
         amount: row.amount,
         txnDate: row.txnDate,
         attributionMethod: row.attributionMethod,
+        quantity: row.quantity ?? null,
       },
     });
   }
@@ -488,6 +503,7 @@ class Writer {
     taxAmount: number;
     status: string;
     txnDate: Date;
+    openBalance?: number | null;
   }) {
     this.seenRevenue.add(row.id);
     const ex = this.existingRevenue.get(row.id);
@@ -501,12 +517,20 @@ class Writer {
       Math.abs(ex.amount - row.amount) >= 0.005 ||
       Math.abs((ex.taxAmount ?? 0) - row.taxAmount) >= 0.005 ||
       ex.status !== row.status ||
-      ex.txnDate !== row.txnDate.getTime();
+      ex.txnDate !== row.txnDate.getTime() ||
+      (ex.openBalance ?? null) !== (row.openBalance ?? null);
     if (!changed) return;
     this.revenueUpdates++;
     await prisma.invoiceSummary.update({
       where: { id: row.id },
-      data: { jobId: row.jobId, amount: row.amount, taxAmount: row.taxAmount, status: row.status, txnDate: row.txnDate },
+      data: {
+        jobId: row.jobId,
+        amount: row.amount,
+        taxAmount: row.taxAmount,
+        status: row.status,
+        txnDate: row.txnDate,
+        openBalance: row.openBalance ?? null,
+      },
     });
   }
 
@@ -578,17 +602,17 @@ async function loadExisting(connectionId: string, onlyTxns?: Map<string, string[
       where: { job: { connectionId }, ...(costFilter ? { OR: costFilter } : {}) },
       select: {
         id: true, jobId: true, amount: true, category: true, txnDate: true, description: true,
-        attributionMethod: true, accountName: true, qboSourceType: true, qboSourceId: true,
+        attributionMethod: true, accountName: true, qboSourceType: true, qboSourceId: true, quantity: true,
       },
     }),
     revenueFilter && revenueFilter.length === 0 ? Promise.resolve([]) : prisma.invoiceSummary.findMany({
       where: { job: { connectionId }, ...(revenueFilter ? { OR: revenueFilter } : {}) },
-      select: { id: true, jobId: true, amount: true, taxAmount: true, status: true, txnDate: true, qboSourceType: true, qboInvoiceId: true },
+      select: { id: true, jobId: true, amount: true, taxAmount: true, status: true, txnDate: true, qboSourceType: true, qboInvoiceId: true, openBalance: true },
     }),
   ]);
   const existingCost = new Map<string, ExistingCost>();
   for (const r of costRows) {
-    existingCost.set(r.id, { ...r, amount: Number(r.amount), txnDate: r.txnDate.getTime() });
+    existingCost.set(r.id, { ...r, amount: Number(r.amount), txnDate: r.txnDate.getTime(), quantity: r.quantity == null ? null : Number(r.quantity) });
   }
   const existingRevenue = new Map<string, ExistingRevenue>();
   for (const r of revenueRows) {
@@ -597,6 +621,7 @@ async function loadExisting(connectionId: string, onlyTxns?: Map<string, string[
       amount: Number(r.amount),
       taxAmount: r.taxAmount == null ? null : Number(r.taxAmount),
       txnDate: r.txnDate.getTime(),
+      openBalance: r.openBalance == null ? null : Number(r.openBalance),
     });
   }
   return { existingCost, existingRevenue };
@@ -641,6 +666,7 @@ async function loadLookups(ctx: SyncCtx): Promise<Lookups> {
     const info: ItemInfo = {
       name: String(it.FullyQualifiedName ?? it.Name ?? ""),
       expenseAccountId: it.ExpenseAccountRef?.value != null ? String(it.ExpenseAccountRef.value) : null,
+      purchaseCost: Number.isFinite(Number(it.PurchaseCost)) && Number(it.PurchaseCost) > 0 ? Number(it.PurchaseCost) : null,
     };
     lookups.items.set(String(it.Id), info);
   }
@@ -693,7 +719,14 @@ function hasManualData(j: {
  * `allowRemoval`: that list is known to be complete, so jobs missing from
  * it may be removed.
  */
-async function upsertJobs(ctx: SyncCtx, customers: any[], fullList: boolean, allowRemoval = false): Promise<number> {
+async function upsertJobs(
+  ctx: SyncCtx,
+  customers: any[],
+  fullList: boolean,
+  allowRemoval = false,
+  /** Class mode: picks the jobs, given the class jobs already stored; customers is ignored then. */
+  precomputed?: (existingIds: Set<string>) => JobCandidate[]
+): Promise<number> {
   const nameById = new Map<string, string>();
   if (fullList) {
     for (const c of customers) if (c?.Id != null && typeof c.DisplayName === "string") nameById.set(String(c.Id), c.DisplayName);
@@ -713,11 +746,14 @@ async function upsertJobs(ctx: SyncCtx, customers: any[], fullList: boolean, all
   // already the parent of a stored job is a client, not a job, unless it is
   // itself a job already (see keepIds in selectJobCustomers).
   const knownParents = new Set(existing.map((j) => j.parentQboId).filter((v): v is string => Boolean(v)));
-  const candidates = selectJobCustomers(
-    customers,
-    ctx.jobSource,
-    fullList ? nameById : undefined,
-    ctx.jobSource === "customers" ? existingIds : undefined
+  const candidates = (
+    precomputed?.(existingIds) ??
+    selectJobCustomers(
+      customers,
+      ctx.jobSource,
+      fullList ? nameById : undefined,
+      ctx.jobSource === "customers" ? existingIds : undefined
+    )
   ).filter((c) => fullList || ctx.jobSource === "projects" || !knownParents.has(c.qboId) || existingIds.has(c.qboId));
 
   for (const c of candidates) {
@@ -815,6 +851,16 @@ interface Processor {
   windowStart: number;
 }
 
+/**
+ * The key a transaction line is matched to a job by: its customer, or in
+ * class mode its Class. Null when the line has neither, which counts as
+ * untagged.
+ */
+function jobKey(p: Processor, customerQboId: string | null, classQboId: string | null): string | null {
+  if (p.ctx.jobSource === "classes") return classQboId ? classJobKey(classQboId) : null;
+  return customerQboId;
+}
+
 function inWindow(p: Processor, date: Date | null): boolean {
   return date != null && date.getTime() >= p.windowStart;
 }
@@ -834,7 +880,8 @@ async function processExpenseTxn(p: Processor, txn: any, sourceType: ExpenseSour
   const txnDate = qboDate(txn.TxnDate);
   if (!txnDate) return;
   for (const line of expenseLines(txn, sourceType, p.lookups)) {
-    if (!line.customerQboId) {
+    const key = jobKey(p, line.customerQboId, line.classQboId);
+    if (!key) {
       if (!inWindow(p, txnDate)) continue;
       // Journal entries without a customer are usually company-wide
       // postings (a payroll summary, an allocation), not a job cost someone
@@ -848,9 +895,9 @@ async function processExpenseTxn(p: Processor, txn: any, sourceType: ExpenseSour
       }
       continue;
     }
-    const resolved = resolveJob(p.index, line.customerQboId);
+    const resolved = resolveJob(p.index, key);
     if (!resolved) {
-      noteUnresolved(p, sourceType, txnId, line.customerQboId, line.customerName, line.amount, txnDate);
+      noteUnresolved(p, sourceType, txnId, key, line.customerName, line.amount, txnDate);
       continue;
     }
     if (resolved.method === "parent_customer_fallback") {
@@ -877,16 +924,19 @@ async function processTimeActivity(p: Processor, ta: any) {
   const txnId = String(ta.Id);
   const txnDate = qboDate(ta.TxnDate);
   if (!txnDate) return;
-  const result = timeActivityCost(ta);
+  const result = timeActivityCost(ta, p.ctx.jobSource);
   if (result.kind === "skip") {
     if (result.reason === "no_pay_rate" && inWindow(p, txnDate)) p.tallies.timeEntriesWithoutPayRate++;
     if (result.reason === "vendor_time") p.tallies.vendorTimeEntriesSkipped++;
     return;
   }
-  const customerId = String(ta.CustomerRef.value);
-  const resolved = resolveJob(p.index, customerId);
+  const customerId = ta.CustomerRef?.value != null ? String(ta.CustomerRef.value) : null;
+  const classId = ta.ClassRef?.value != null ? String(ta.ClassRef.value) : null;
+  const key = jobKey(p, customerId, classId);
+  if (!key) return;
+  const resolved = resolveJob(p.index, key);
   if (!resolved) {
-    noteUnresolved(p, "TimeActivity", txnId, customerId, ta.CustomerRef?.name ?? null, result.amount, txnDate);
+    noteUnresolved(p, "TimeActivity", txnId, key, ta.CustomerRef?.name ?? null, result.amount, txnDate);
     return;
   }
   if (resolved.method === "parent_customer_fallback") {
@@ -907,12 +957,34 @@ async function processTimeActivity(p: Processor, ta: any) {
     amount: result.amount,
     txnDate,
     attributionMethod: resolved.method,
+    quantity: round2(result.hours),
   });
 }
 
 async function processRevenueTxn(p: Processor, txn: any, sourceType: RevenueSourceType) {
   const r = revenueFromTxn(txn, sourceType);
-  if (!r.customerQboId || !r.txnDate) return;
+  if (!r.txnDate) return;
+  if (p.ctx.jobSource === "classes") {
+    // One row per class on the sale: a single invoice can bill two jobs.
+    for (const part of revenueByClass(txn, sourceType)) {
+      if (!part.classQboId) continue;
+      const resolved = resolveJob(p.index, classJobKey(part.classQboId));
+      if (!resolved) continue;
+      await p.writer.revenue({
+        id: `${revenueId(p.ctx.connectionId, sourceType, String(txn.Id))}:${classJobKey(part.classQboId)}`,
+        jobId: resolved.jobId,
+        qboSourceType: sourceType,
+        qboInvoiceId: String(txn.Id),
+        amount: part.amount,
+        taxAmount: part.tax,
+        status: r.status,
+        txnDate: r.txnDate,
+        openBalance: part.openBalance,
+      });
+    }
+    return;
+  }
+  if (!r.customerQboId) return;
   const resolved = resolveJob(p.index, r.customerQboId);
   if (!resolved) return;
   await p.writer.revenue({
@@ -924,6 +996,7 @@ async function processRevenueTxn(p: Processor, txn: any, sourceType: RevenueSour
     taxAmount: r.tax,
     status: r.status,
     txnDate: r.txnDate,
+    openBalance: r.openBalance,
   });
 }
 
@@ -931,10 +1004,13 @@ async function processRevenueTxn(p: Processor, txn: any, sourceType: RevenueSour
 async function processLineRevenue(p: Processor, txn: any, sourceType: LineRevenueSourceType) {
   if (txn?.Id == null) return;
   const txnId = String(txn.Id);
-  const lines = sourceType === "Deposit" ? depositRevenueLines(txn, p.lookups) : journalRevenueLines(txn, p.lookups);
+  const byClass = p.ctx.jobSource === "classes";
+  const lines = sourceType === "Deposit" ? depositRevenueLines(txn, p.lookups, byClass) : journalRevenueLines(txn, p.lookups, byClass);
   for (const l of lines) {
     if (!l.txnDate) continue;
-    const resolved = resolveJob(p.index, l.customerQboId);
+    const key = jobKey(p, l.customerQboId, l.classQboId);
+    if (!key) continue;
+    const resolved = resolveJob(p.index, key);
     if (!resolved) continue;
     await p.writer.revenue({
       id: lineRevenueId(p.ctx.connectionId, sourceType, txnId, l.lineId),
@@ -953,9 +1029,19 @@ async function processLineRevenue(p: Processor, txn: any, sourceType: LineRevenu
 // Estimates -> contract value
 // ---------------------------------------------------------------------------
 
-function sameLines(stored: unknown, next: { n: string | null; c: string; a: number }[]): boolean {
+function sameLines(stored: unknown, next: { n: string | null; c: string; a: number; q?: number | null; u?: number | null; qa?: number | null }[]): boolean {
   if (!Array.isArray(stored) || stored.length !== next.length) return false;
-  return stored.every((l: any, i) => l?.n === next[i].n && l?.c === next[i].c && Math.abs(Number(l?.a) - next[i].a) < 0.005);
+  const same = (x: unknown, y: number | null | undefined) =>
+    (x == null && y == null) || (x != null && y != null && Math.abs(Number(x) - y) < 0.005);
+  return stored.every(
+    (l: any, i) =>
+      l?.n === next[i].n &&
+      l?.c === next[i].c &&
+      Math.abs(Number(l?.a) - next[i].a) < 0.005 &&
+      same(l?.q, next[i].q) &&
+      same(l?.u, next[i].u) &&
+      same(l?.qa, next[i].qa)
+  );
 }
 
 async function applyEstimates(ctx: SyncCtx, estimates: any[], full: boolean, lookups: Lookups): Promise<void> {
@@ -975,7 +1061,12 @@ async function applyEstimates(ctx: SyncCtx, estimates: any[], full: boolean, loo
       }
       continue;
     }
-    const { customerQboId, record, details } = estimateFromTxn(est, lookups);
+    const parsed = estimateFromTxn(est, lookups);
+    const { record, details } = parsed;
+    // In class mode an estimate belongs to its class's job; one with no
+    // class is kept under its customer, where it attaches to nothing.
+    const customerQboId =
+      ctx.jobSource === "classes" && parsed.classQboId ? classJobKey(parsed.classQboId) : parsed.customerQboId;
     if (!customerQboId || !record) continue;
     seen.add(id);
     touchedCustomers.add(customerQboId);
@@ -1059,26 +1150,45 @@ async function runFullSync(ctx: SyncCtx): Promise<Record<string, any>> {
   // when named in a column list) and inactive records too: QuickBooks'
   // query endpoint returns only active records unless asked, and making a
   // customer inactive is how many contractors mark a job finished.
-  const allCustomers = await qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM Customer WHERE Active IN (true, false)", "Customer");
-  // Paging has no guaranteed order, so a customer added or changed mid-read
-  // can shift a page and drop a record. Only a list at least as long as
+  // Paging has no guaranteed order, so a record added or changed mid-read
+  // can shift a page and drop one. Only a list at least as long as
   // QuickBooks' own count is trusted to remove jobs.
-  let customerListComplete = false;
-  try {
-    const counted = await qboQuery(ctx.realmId, ctx.accessToken, "SELECT COUNT(*) FROM Customer WHERE Active IN (true, false)");
-    const total = Number(counted?.QueryResponse?.totalCount);
-    customerListComplete = Number.isFinite(total) && allCustomers.length >= total;
-  } catch (err) {
-    if (isReconnectError(err)) throw err;
-  }
+  const listIsComplete = async (entity: string, got: number) => {
+    try {
+      const counted = await qboQuery(ctx.realmId, ctx.accessToken, `SELECT COUNT(*) FROM ${entity} WHERE Active IN (true, false)`);
+      const total = Number(counted?.QueryResponse?.totalCount);
+      return Number.isFinite(total) && got >= total;
+    } catch (err) {
+      if (isReconnectError(err)) throw err;
+      return false;
+    }
+  };
 
-  if (ctx.autoDetectSource && ctx.jobSource === "projects" && !allCustomers.some((c: any) => c?.Job === true) && allCustomers.length > 0) {
-    // No projects or sub-customers at all: this contractor makes one
-    // customer per job. Recorded so Settings shows it and can change it.
-    ctx.jobSource = "customers";
-    await prisma.quickBooksConnection.update({ where: { id: ctx.connectionId }, data: { jobSource: "customers" } });
+  let jobCount: number;
+  if (ctx.jobSource === "classes") {
+    // Each QuickBooks Class is a job (sub-classes, when a class has them).
+    const allClasses = await qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM Class WHERE Active IN (true, false)", "Class");
+    if (allClasses.length === 0) {
+      // Nothing is changed: the jobs stay as they were until the setting is fixed.
+      throw new Error(
+        "Your jobs are set to come from QuickBooks Classes, but QuickBooks sent no classes. If your jobs aren't classes, change how your jobs are set up in Settings."
+      );
+    }
+    const complete = await listIsComplete("Class", allClasses.length);
+    jobCount = await upsertJobs(ctx, [], true, complete, (keep) => selectJobClasses(allClasses, keep));
+  } else {
+    const allCustomers = await qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM Customer WHERE Active IN (true, false)", "Customer");
+    const customerListComplete = await listIsComplete("Customer", allCustomers.length);
+    if (ctx.autoDetectSource && ctx.jobSource === "projects" && !allCustomers.some((c: any) => c?.Job === true) && allCustomers.length > 0) {
+      // No projects or sub-customers at all: this contractor makes one
+      // customer per job. Recorded so Settings shows it and can change it.
+      // (A company that tracks jobs by Class is asked on the dashboard,
+      // since classes are just as often used for divisions or phases.)
+      ctx.jobSource = "customers";
+      await prisma.quickBooksConnection.update({ where: { id: ctx.connectionId }, data: { jobSource: "customers" } });
+    }
+    jobCount = await upsertJobs(ctx, allCustomers, true, customerListComplete);
   }
-  const jobCount = await upsertJobs(ctx, allCustomers, true, customerListComplete);
   const index = await loadJobIndex(ctx.connectionId);
 
   const { existingCost, existingRevenue } = await loadExisting(ctx.connectionId);
@@ -1189,7 +1299,8 @@ function roundTallies(t: Tallies) {
 
 async function runIncrementalSync(ctx: SyncCtx, changedSince: Date): Promise<Record<string, any>> {
   const errors: Record<string, string> = {};
-  const cdc = await qboCdc(ctx.realmId, ctx.accessToken, CDC_ENTITIES, changedSince);
+  const entities = cdcEntitiesFor(ctx.jobSource);
+  const cdc = await qboCdc(ctx.realmId, ctx.accessToken, entities, changedSince);
   const responses: any[] = cdc?.CDCResponse?.[0]?.QueryResponse ?? [];
   const byEntity = (name: string): any[] => {
     const match = responses.find((r) => Array.isArray(r?.[name]));
@@ -1201,12 +1312,14 @@ async function runIncrementalSync(ctx: SyncCtx, changedSince: Date): Promise<Rec
   // so the caller falls back to a full sync (see runSyncForConnection).
   // Checked across all entities together, in case the cap applies to the
   // whole response rather than to each type.
-  const cdcTotal = CDC_ENTITIES.reduce((sum, name) => sum + byEntity(name).length, 0);
+  const cdcTotal = entities.reduce((sum, name) => sum + byEntity(name).length, 0);
   if (cdcTotal >= CDC_MAX_PER_ENTITY) throw new Error(`Change Data Capture returned ${cdcTotal} records, at or over its cap`);
 
   const lookups = await loadLookups(ctx);
-  const customers = byEntity("Customer").filter((c) => c?.status !== "Deleted");
-  const jobCount = await upsertJobs(ctx, customers, false);
+  const jobCount =
+    ctx.jobSource === "classes"
+      ? await upsertJobs(ctx, [], false, false, (keep) => selectJobClasses(byEntity("Class").filter((c) => c?.status !== "Deleted"), keep))
+      : await upsertJobs(ctx, byEntity("Customer").filter((c) => c?.status !== "Deleted"), false);
   const index = await loadJobIndex(ctx.connectionId);
 
   // Only the stored rows of the transactions that changed are loaded:

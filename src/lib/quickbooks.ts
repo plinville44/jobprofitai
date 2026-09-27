@@ -407,10 +407,12 @@ export async function qboProfitAndLossForCustomer(
   accessToken: string,
   customerId: string,
   startDate: string,
-  endDate: string
+  endDate: string,
+  /** Filter by this QuickBooks Class instead of a customer (jobs tracked as classes). */
+  by: "customer" | "class" = "customer"
 ): Promise<any> {
   const params = new URLSearchParams({
-    customer: customerId,
+    [by]: customerId,
     accounting_method: "Accrual",
     start_date: startDate,
     end_date: endDate,

@@ -150,8 +150,9 @@ export default async function SettingsPage() {
                 emailDay: connection.emailDay,
                 emailHour: connection.emailHour,
                 emailTimezone: connection.emailTimezone,
-                jobSource: connection.jobSource === "customers" ? "customers" : "projects",
+                jobSource: connection.jobSource === "customers" || connection.jobSource === "classes" ? connection.jobSource : "projects",
                 laborFromTimeEntries: connection.laborFromTimeEntries,
+                laborBurdenPct: connection.laborBurdenPct == null ? null : Number(connection.laborBurdenPct),
                 alertsEnabled: connection.alertsEnabled,
                 marginTargets: Object.fromEntries(marginTargets.map((t) => [t.category, Number(t.targetPct)])),
               }}

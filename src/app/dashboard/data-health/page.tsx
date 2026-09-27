@@ -57,6 +57,7 @@ export default async function DataHealthPage() {
   // depending on which calendar window happens to be selected.
   const profitData = await getConnectionProfitData(connection.id, new Date());
   const h = profitData.dataHealth;
+  const byClass = connection.jobSource === "classes";
 
   return (
     <main>
@@ -190,13 +191,21 @@ export default async function DataHealthPage() {
       <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <CountAmountSection
           title="Job costs not tagged to a job (last 12 months)"
-          help="Bills and expenses posted to a job-cost account (Cost of Goods Sold) or bought as an item, with no customer or project on the line. Each one belongs to some job and is missing from it. Tag the customer or project on the line in QuickBooks. Overhead such as rent, fuel or insurance is not counted here."
+          help={
+            byClass
+              ? "Bills and expenses posted to a job-cost account (Cost of Goods Sold) or bought as an item, with no class on the line. Each one belongs to some job and is missing from it. Pick the job's class on the line in QuickBooks. Overhead such as rent, fuel or insurance is not counted here."
+              : "Bills and expenses posted to a job-cost account (Cost of Goods Sold) or bought as an item, with no customer or project on the line. Each one belongs to some job and is missing from it. Tag the customer or project on the line in QuickBooks. Overhead such as rent, fuel or insurance is not counted here."
+          }
           count={h.untaggedJobCostCount}
           amount={h.untaggedJobCostAmount}
         />
         <CountAmountSection
-          title="Expenses tagged to an unrecognized customer"
-          help="Last 12 months. Tagged to a real QuickBooks customer, but not one of your tracked jobs, and not unambiguously one of their projects either, so it isn't counted toward any job's cost. Usually the customer has two or more projects and the cost was tagged to the customer instead of the project."
+          title={byClass ? "Expenses tagged to an unrecognized class" : "Expenses tagged to an unrecognized customer"}
+          help={
+            byClass
+              ? "Last 12 months. Tagged to a QuickBooks class that isn't one of your tracked jobs, and not unambiguously one of its sub-classes either, so it isn't counted toward any job's cost. Usually the class has two or more sub-classes and the cost was tagged to the parent class instead of the job's."
+              : "Last 12 months. Tagged to a real QuickBooks customer, but not one of your tracked jobs, and not unambiguously one of their projects either, so it isn't counted toward any job's cost. Usually the customer has two or more projects and the cost was tagged to the customer instead of the project."
+          }
           count={h.unresolvedExpenseCount}
           amount={h.unresolvedExpenseAmount}
         />
@@ -204,8 +213,12 @@ export default async function DataHealthPage() {
 
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <CountAmountSection
-          title="Costs matched via a parent customer"
-          help="Not a problem - these were tagged to a job's top-level customer instead of the job itself, and matched automatically since that customer has only one tracked job. Worth a quick glance for accuracy, not a fix."
+          title={byClass ? "Costs matched via a parent class" : "Costs matched via a parent customer"}
+          help={
+            byClass
+              ? "Not a problem: these were tagged to a job's parent class instead of the job's own class, and matched automatically since that parent has only one tracked job. Worth a quick glance for accuracy, not a fix."
+              : "Not a problem: these were tagged to a job's top-level customer instead of the job itself, and matched automatically since that customer has only one tracked job. Worth a quick glance for accuracy, not a fix."
+          }
           count={h.costsMatchedViaParentCount}
           amount={h.costsMatchedViaParentAmount}
           neutral
