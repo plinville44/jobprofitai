@@ -1,3 +1,4 @@
+import { syncFirmQuantity } from "@/lib/stripe/firmQuantity";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccount } from "@/lib/account";
@@ -39,6 +40,8 @@ export async function POST(req: NextRequest) {
       where: { id: connection.id },
       data: { disconnectedAt: new Date() },
     });
+    // Firm: one company fewer to bill (never below the minimum).
+    await syncFirmQuantity(account.ownerId);
 
     return NextResponse.json({ ok: true });
   } catch (err) {

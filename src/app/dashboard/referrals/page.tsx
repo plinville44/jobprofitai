@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
 import { accountFor } from "@/lib/account";
 import { getEntitlements } from "@/lib/entitlements";
 import { getReferralHistory, getReferralSummary } from "@/lib/referrals";
@@ -9,7 +10,7 @@ import {
   PARTNER_TIERS,
   REFERRAL_QUALIFY_DAYS,
   TRIAL_DAYS,
-  priceCentsForStoredPlan,
+  monthlyPriceCents,
 } from "@/lib/plans";
 import { NO_VALUE, formatDate, formatCents } from "@/lib/format";
 import CopyLinkButton from "@/components/dashboard/CopyLinkButton";
@@ -89,7 +90,8 @@ export default async function ReferralsPage() {
     getEntitlements(session.userId),
   ]);
 
-  const rewardAmount = priceCentsForStoredPlan(entitlements.plan);
+  // Firm: a month at the plan's minimum (see processReferralQualification).
+  const rewardAmount = monthlyPriceCents(entitlements.plan, null);
 
   return (
     <div className="space-y-6">
@@ -98,7 +100,7 @@ export default async function ReferralsPage() {
         <p className="mt-1 max-w-2xl text-sm text-gray-600">
           Share your link. When someone you refer becomes a paying customer and stays subscribed for{" "}
           {REFERRAL_QUALIFY_DAYS} days, into their second paid month, you earn a free month of your current plan as an account
-          credit, currently {money(rewardAmount)}. Credits stack and come off future invoices
+          credit{entitlements.plan === "firm" ? " (for Firm, a month at the 4-company minimum)" : ""}, currently {money(rewardAmount)}. Credits stack and come off future invoices
           automatically.
         </p>
       </header>

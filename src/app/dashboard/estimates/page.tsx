@@ -23,7 +23,7 @@ export default async function EstimatesPage() {
   if (!account) redirect("/login");
   const entitlements = await getEntitlements(account.ownerId);
   if (!entitlements.active) return <UpgradeRequired access={entitlements.access} />;
-  const { connection } = await getActiveConnection(account.ownerId);
+  const { connection } = await getActiveConnection(account);
   if (!connection) {
     return (
       <main>
@@ -73,7 +73,7 @@ export default async function EstimatesPage() {
       ) : (
         <div className="mt-6 space-y-4">
           {data.estimates.map((e) => (
-            <EstimateCard key={e.id} e={e} options={options} />
+            <EstimateCard key={e.id} e={e} options={options} readOnly={account.role === "client"} />
           ))}
         </div>
       )}
@@ -109,7 +109,7 @@ export default async function EstimatesPage() {
   );
 }
 
-function EstimateCard({ e, options }: { e: CheckedEstimate; options: { value: string; label: string }[] }) {
+function EstimateCard({ e, options, readOnly }: { e: CheckedEstimate; options: { value: string; label: string }[]; readOnly: boolean }) {
   const c = e.check;
   const below = c.status === "below_target";
   const ok = c.status === "on_target";
@@ -155,9 +155,9 @@ function EstimateCard({ e, options }: { e: CheckedEstimate; options: { value: st
 
       <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-gray-700">
         <span className="font-medium text-navy">Job type:</span>
-        {e.typeSource === "job" ? (
+        {e.typeSource === "job" || readOnly ? (
           <span>
-            {e.typeLabel} <span className="text-xs text-gray-500">(from the job)</span>
+            {e.typeLabel} {e.typeSource === "job" ? <span className="text-xs text-gray-500">(from the job)</span> : null}
           </span>
         ) : (
           <>

@@ -20,7 +20,7 @@ export default async function MoneyOwedPage() {
   if (!account) redirect("/login");
   const entitlements = await getEntitlements(account.ownerId);
   if (!entitlements.active) return <UpgradeRequired access={entitlements.access} />;
-  const { connection } = await getActiveConnection(account.ownerId);
+  const { connection } = await getActiveConnection(account);
   if (!connection) {
     return (
       <main>

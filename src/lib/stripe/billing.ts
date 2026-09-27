@@ -1,6 +1,6 @@
 import type Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
-import { PLANS, type PlanId } from "@/lib/plans";
+import { PLANS, firmBillableCompanies, planPriceText, type PlanId } from "@/lib/plans";
 import { ensureSubscription } from "@/lib/trial";
 import { appUrl, getStripe, requirePriceIdForPlan } from "./client";
 
@@ -75,10 +75,21 @@ export async function createCheckoutSession(
   const priceId = requirePriceIdForPlan(plan);
   const customerId = await getOrCreateStripeCustomer(userId);
 
+  // Firm is billed per connected company, four at least. The quantity is
+  // kept in step afterwards as companies are connected and disconnected
+  // (src/lib/stripe/firmQuantity.ts).
+  const firm = plan === "firm";
+  const quantity = firm
+    ? firmBillableCompanies(await prisma.quickBooksConnection.count({ where: { userId, disconnectedAt: null } }))
+    : 1;
+  const renewal = firm
+    ? `${PLANS.firm.priceLabel} per connected QuickBooks company (${PLANS.firm.perCompany!.minCompanies} minimum; ${quantity} to start, ${formatUsd(PLANS.firm.priceCents * quantity)}), adjusted as you connect or disconnect companies,`
+    : planPriceText(plan).replace("/month", "");
+
   const session = await stripe.checkout.sessions.create({
     mode: "subscription",
     customer: customerId,
-    line_items: [{ price: priceId, quantity: 1 }],
+    line_items: [{ price: priceId, quantity }],
     // Lets a referred/partner-sourced customer redeem a Stripe coupon if one
     // is ever issued, without needing a code change.
     allow_promotion_codes: true,
@@ -95,7 +106,7 @@ export async function createCheckoutSession(
     // customer at the moment they agree to pay.
     custom_text: {
       submit: {
-        message: `Your ${PLANS[plan].name} subscription renews automatically every month at ${PLANS[plan].priceLabel} plus any applicable tax until you cancel. You can cancel anytime from Billing in your JobProfitAI account, and cancellation takes effect at the end of the month you have already paid for. By subscribing you agree to the JobProfitAI Terms of Service at ${appUrl("/terms")}.`,
+        message: `Your ${PLANS[plan].name} subscription renews automatically every month at ${renewal} plus any applicable tax until you cancel. You can cancel anytime from Billing in your JobProfitAI account, and cancellation takes effect at the end of the month you have already paid for. By subscribing you agree to the JobProfitAI Terms of Service at ${appUrl("/terms")}.`,
       },
     },
     success_url: appUrl(
@@ -258,5 +269,9 @@ export function priceIdFromSubscription(subscription: Stripe.Subscription): stri
 
 /** Human label for a plan id, for emails and the billing UI. */
 export function planLabel(plan: PlanId): string {
-  return `${PLANS[plan].name} (${PLANS[plan].priceLabel}/month)`;
+  return `${PLANS[plan].name} (${planPriceText(plan)})`;
+}
+
+function formatUsd(cents: number): string {
+  return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 }

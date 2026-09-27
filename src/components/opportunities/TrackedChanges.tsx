@@ -6,7 +6,15 @@ import type { TrackedActionView } from "@/lib/opportunityData";
 import StopTrackingButton from "./StopTrackingButton";
 
 /** Pricing changes the contractor said they're making, with before and after. */
-export default function TrackedChanges({ actions, jobNames }: { actions: TrackedActionView[]; jobNames: Record<string, string> }) {
+export default function TrackedChanges({
+  actions,
+  jobNames,
+  readOnly = false,
+}: {
+  actions: TrackedActionView[];
+  jobNames: Record<string, string>;
+  readOnly?: boolean;
+}) {
   if (actions.length === 0) {
     return (
       <p className="mt-3 text-sm text-gray-500">
@@ -81,7 +89,7 @@ export default function TrackedChanges({ actions, jobNames }: { actions: Tracked
               )}
             </div>
             <div className="mt-3 border-t border-gray-100 pt-3">
-              <StopTrackingButton actionId={a.id} stopped={a.stoppedAt != null} />
+              {readOnly ? null : <StopTrackingButton actionId={a.id} stopped={a.stoppedAt != null} />}
             </div>
           </article>
         );

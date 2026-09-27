@@ -29,6 +29,7 @@ export const metadata: Metadata = {
 
 const pi = PLANS.profit_intelligence;
 const pro = PLANS.profit_intelligence_pro;
+const firm = PLANS.firm;
 const tiersAscending = [...PARTNER_TIERS].reverse();
 /** "20% while 1 to 9 of your referred clients are paying, 25% while ..." */
 const tierSentence = tiersAscending
@@ -117,6 +118,17 @@ export default function TermsPage() {
             account and for making sure they may see the data in it. You can remove anyone at any
             time. Team members can&rsquo;t manage billing, the team or the account.
           </li>
+          <li id="firm-accounts">
+            <strong className="font-semibold text-jp-ink">Firm accounts.</strong> If you are a bookkeeper, accountant or
+            other firm connecting QuickBooks companies that belong to your clients, you confirm that each client has
+            authorized you to connect its QuickBooks company to JobProfitAI and to have its data processed as these
+            Terms and our Privacy Policy describe. You remain responsible for that authorization and for ending the
+            connection when it ends. A client login you create is view-only and shows only the company you choose for
+            it; you are responsible for giving it to the right person and for removing it when they should no longer
+            have access. We treat the firm as the account holder: we act on the firm&rsquo;s instructions about the
+            account, and a client who asks us about their data will be directed to the firm, except where the law
+            requires otherwise.
+          </li>
         </LegalList>
       </LegalSection>
 
@@ -160,8 +172,11 @@ export default function TermsPage() {
       <LegalSection id="billing" title="5. Subscriptions, automatic renewal and cancellation">
         <LegalSub title="Plans and prices">
           <p>
-            We currently offer two monthly plans: {pi.name} at {pi.priceLabel} per month, and{" "}
-            {pro.name} at {pro.priceLabel} per month. Each plan’s features and limits (such as the
+            We currently offer three monthly plans: {pi.name} at {pi.priceLabel} per month,{" "}
+            {pro.name} at {pro.priceLabel} per month, and {firm.name} at {firm.priceLabel} per connected
+            QuickBooks company per month with a minimum of {firm.perCompany!.minCompanies} companies. On{" "}
+            {firm.name}, the number of companies billed changes as you connect and disconnect companies, and
+            Stripe prorates the difference on your next invoice. Each plan’s features and limits (such as the
             number of QuickBooks companies you can connect) are described on our{" "}
             <Link href="/pricing" className="font-medium text-jp-blue hover:underline">
               Pricing page
@@ -435,7 +450,8 @@ export default function TermsPage() {
           <p>
             If someone signs up through your referral link, subscribes, and remains a paying
             customer for {REFERRAL_QUALIFY_DAYS} days without a full refund or chargeback, you earn
-            a credit equal to one month of your own current plan. Credits are applied to your
+            a credit equal to one month of your own current plan (on {firm.name}, one month at its{" "}
+            {firm.perCompany!.minCompanies}-company minimum). Credits are applied to your
             Stripe account balance and come off future JobProfitAI invoices automatically. If you
             are not subscribed when a credit is earned, it is held and applied when you subscribe.
             Credits have no cash value, cannot be transferred, and are not refundable. A referred

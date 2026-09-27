@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAccount } from "@/lib/account";
+import { getAccount, refuseClient } from "@/lib/account";
 import { refuseCrossSite } from "@/lib/sameOrigin";
 
 /**
@@ -15,6 +15,8 @@ export async function POST(req: NextRequest) {
   try {
     const account = await getAccount();
     if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const refused = refuseClient(account);
+    if (refused) return refused;
     const body = await req.json().catch(() => ({}));
     const actionId = typeof body?.actionId === "string" ? body.actionId : null;
     if (!actionId) return NextResponse.json({ error: "Missing actionId." }, { status: 400 });

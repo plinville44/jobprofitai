@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { connectionForAccount, getAccount } from "@/lib/account";
+import { connectionForAccount, getAccount, refuseClient } from "@/lib/account";
 import { refuseCrossSite } from "@/lib/sameOrigin";
 import { getJobTypes } from "@/lib/jobTypesServer";
 import { BUILT_IN_JOB_TYPE_KEYS, cleanJobTypeLabel, customJobTypeKey, MAX_CUSTOM_JOB_TYPES } from "@/lib/jobTypes";
@@ -32,6 +32,8 @@ export async function POST(req: NextRequest) {
   try {
     const account = await getAccount();
     if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const refused = refuseClient(account);
+    if (refused) return refused;
     const body = await req.json().catch(() => ({}));
     const connection = await connectionForAccount(account, body?.connectionId);
     if (!connection) return NextResponse.json({ error: "Company not found" }, { status: 404 });

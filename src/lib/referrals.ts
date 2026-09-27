@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import type { Referral } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { REFERRAL_QUALIFY_DAYS, priceCentsForStoredPlan } from "@/lib/plans";
+import { REFERRAL_QUALIFY_DAYS, monthlyPriceCents } from "@/lib/plans";
 import { applyCustomerCredit, findCreditByRewardId } from "@/lib/stripe/billing";
 
 // The customer referral program: refer a paying customer, earn one free
@@ -340,7 +340,9 @@ export async function qualifyDueReferrals(now: Date = new Date()): Promise<Quali
       // The reward is one month of the referrer's CURRENT plan, priced at
       // the moment it qualifies and then frozen on the reward row.
       const plan = referrerSub?.plan ?? "profit_intelligence";
-      const amountCents = priceCentsForStoredPlan(plan);
+      // Firm: a month at its minimum, whatever the firm is billed. A reward
+      // that grew with a large firm's bill would make fake referrals pay.
+      const amountCents = monthlyPriceCents(plan, null);
 
       const reward = await prisma.$transaction(async (tx) => {
         const created = await tx.referralReward.create({

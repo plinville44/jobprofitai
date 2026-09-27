@@ -201,5 +201,14 @@ export async function attachCompany(input: {
   // Half of trial "activation" (the other half is a first analysis).
   await tryMarkQuickBooksConnected(ownerId);
 
+  // A Firm account is billed per company: one more connected, one more
+  // billed. Never stops the connection; the nightly check retries.
+  try {
+    const { syncFirmQuantity } = await import("./stripe/firmQuantity");
+    await syncFirmQuantity(ownerId);
+  } catch {
+    // Logged inside; the nightly check puts it right.
+  }
+
   return { ok: true, connectionId: connection.id };
 }

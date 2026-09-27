@@ -264,6 +264,13 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session): Promis
     await handleSubscriptionUpsert(subscription, Math.floor(Date.now() / 1000));
   }
 
+  // A Firm subscription starts at the companies connected when checkout
+  // began; put it right if one was connected or disconnected since.
+  if (subscriptionId && session.metadata?.plan === "firm") {
+    const { syncFirmQuantity } = await import("./firmQuantity");
+    await syncFirmQuantity(userId);
+  }
+
   // Referral credits earned while this person was still on a free trial had
   // nowhere to go (no Stripe customer existed yet). Now there is one.
   const applied = await applyPendingRewardsForUser(userId);
@@ -333,6 +340,8 @@ async function handleSubscriptionUpsert(subscription: Stripe.Subscription, event
     stripeSubscriptionId: subscription.id,
     stripePriceId: priceId,
     status: subscription.status,
+    // Firm is billed per company; the quantity shows on the Billing page.
+    quantity: subscription.items.data[0]?.quantity ?? null,
     currentPeriodEnd: subscriptionPeriodEnd(subscription),
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
     canceledAt: subscription.canceled_at ? new Date(subscription.canceled_at * 1000) : null,
@@ -345,6 +354,16 @@ async function handleSubscriptionUpsert(subscription: Stripe.Subscription, event
   if (plan) data.plan = plan;
 
   await prisma.subscription.update({ where: { userId }, data });
+
+  // Firm is billed per company. A subscription that has just become Firm
+  // (a plan change made in Stripe) is brought to the right quantity, and one
+  // moved off Firm is set back to one.
+  const quantity = subscription.items.data[0]?.quantity ?? null;
+  const effectivePlan = plan ?? existing?.plan ?? null;
+  if ((effectivePlan === "firm" && existing?.plan !== "firm") || (effectivePlan !== "firm" && quantity != null && quantity > 1)) {
+    const { syncFirmQuantity } = await import("./firmQuantity");
+    await syncFirmQuantity(userId);
+  }
 
   // First transition into a live paid subscription - send the welcome.
   const becameActive = subscription.status === "active" && existing?.status !== "active";

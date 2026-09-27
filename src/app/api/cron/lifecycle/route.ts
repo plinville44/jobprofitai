@@ -1,3 +1,4 @@
+import { syncAllFirmQuantities } from "@/lib/stripe/firmQuantity";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { authorizeCron } from "@/lib/cronAuth";
@@ -63,6 +64,7 @@ interface Counters {
   passwordResetsPurged: number;
   emailVerificationsPurged: number;
   loginAttemptsPurged: number;
+  firmQuantitiesUpdated: number;
   errors: string[];
 }
 
@@ -87,6 +89,7 @@ export async function GET(req: NextRequest) {
     passwordResetsPurged: 0,
     emailVerificationsPurged: 0,
     loginAttemptsPurged: 0,
+    firmQuantitiesUpdated: 0,
     errors: [],
   };
 
@@ -99,6 +102,13 @@ export async function GET(req: NextRequest) {
   });
   await runStage(counters, "referrals", () => processReferralQualification(counters));
   await runStage(counters, "testimonials", () => processTestimonialRequests(counters, now));
+  // Firm subscriptions billed for the companies actually connected: puts
+  // right any change that didn't reach Stripe when it happened.
+  await runStage(counters, "firm-quantities", async () => {
+    const r = await syncAllFirmQuantities();
+    counters.firmQuantitiesUpdated = r.updated;
+    if (r.errors > 0) counters.errors.push(`firm-quantities: ${r.errors} failed`);
+  });
   // Housekeeping, deliberately last: an expired reset token is already
   // refused on use, so this only stops the table growing forever. It must
   // never be the reason a lifecycle email fails to send.

@@ -43,7 +43,8 @@ export type Feature =
   | "ai_insights" // Profit Intelligence findings + recommended actions
   | "profit_opportunities" // the Profit Opportunity Feed, Estimate Check and change tracking (src/lib/opportunities.ts)
   | "forecast_at_completion"
-  | "cross_job_benchmarking";
+  | "cross_job_benchmarking"
+  | "client_logins"; // view-only logins for a firm's clients, one company each (Firm plan)
 
 /**
  * The retired pre-launch tier. Kept only so existing rows resolve to
@@ -90,14 +91,25 @@ const PROFIT_INTELLIGENCE_PRO_FEATURES: Feature[] = [
   "cross_job_benchmarking",
 ];
 
+/**
+ * Firm: everything in Pro for every client company, plus view-only logins
+ * a firm can give each client for their own company.
+ */
+const FIRM_FEATURES: Feature[] = [...PROFIT_INTELLIGENCE_PRO_FEATURES, "client_logins"];
+
 export const PLAN_FEATURES: Record<Plan, Feature[]> = {
   profit_monitor: PROFIT_MONITOR_FEATURES,
   profit_intelligence: PROFIT_INTELLIGENCE_FEATURES,
   profit_intelligence_pro: PROFIT_INTELLIGENCE_PRO_FEATURES,
+  firm: FIRM_FEATURES,
 };
 
-/** A trial is full access, so a contractor evaluates the real product. */
-const TRIAL_FEATURES: Feature[] = PROFIT_INTELLIGENCE_PRO_FEATURES;
+/**
+ * A trial is full access, so a contractor evaluates the real product. Client
+ * logins are included so a bookkeeping firm can try them on the trial's
+ * three companies before choosing Firm.
+ */
+const TRIAL_FEATURES: Feature[] = FIRM_FEATURES;
 
 export type AccessState =
   | "trialing"
@@ -150,15 +162,17 @@ export async function getEntitlements(
     isComplimentaryAccount(userId),
   ]);
 
-  // The owner's own account: Pro, permanently, and never billed. Checked
-  // before the subscription so a cancelled or lapsed test subscription on
-  // the owner's login can't lock the owner out of their own product.
+  // The owner's own account: every feature, permanently, and never billed.
+  // Checked before the subscription so a cancelled or lapsed test
+  // subscription on the owner's login can't lock the owner out of their own
+  // product. Firm features and limits, so everything can be tried out,
+  // client logins and more than three companies included.
   if (complimentary) {
     return buildEntitlements({
       plan: "profit_intelligence_pro",
       access: "complimentary",
-      features: PLAN_FEATURES.profit_intelligence_pro,
-      limits: limitsForStoredPlan("profit_intelligence_pro"),
+      features: PLAN_FEATURES.firm,
+      limits: limitsForStoredPlan("firm"),
       trialEndsAt: null,
       now,
       paymentIssue: false,
@@ -396,9 +410,11 @@ export async function canConnectAnotherCompany(
   if (usage.connections >= usage.maxConnections) {
     const planLabel = entitlements.trialing ? "Your free trial" : entitlements.planName;
     const upgradeHint =
-      entitlements.plan === "profit_intelligence_pro"
-        ? "Email support@jobprofitai.com if you need to connect more than 3 companies."
-        : `Profit Intelligence Pro covers up to ${PLANS.profit_intelligence_pro.limits.maxConnections} companies.`;
+      entitlements.plan === "firm" || entitlements.access === "complimentary"
+        ? "Email support@jobprofitai.com if you need to connect more."
+        : entitlements.plan === "profit_intelligence_pro" && !entitlements.trialing
+          ? `Keeping the books for more contractors? The Firm plan is ${PLANS.firm.priceLabel} per company a month.`
+          : `Profit Intelligence Pro covers up to ${PLANS.profit_intelligence_pro.limits.maxConnections} companies, and the Firm plan more.`;
     return {
       allowed: false,
       reason: `${planLabel} covers ${usage.maxConnections} QuickBooks ${

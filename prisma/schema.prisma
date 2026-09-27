@@ -247,6 +247,7 @@ model QuickBooksConnection {
   analysisRuns      AnalysisRun[]
   profitInsights    ProfitInsight[]
   feedback          Feedback[]
+  clientLogins      TeamMember[]
 
   @@index([userId])
 }
@@ -637,6 +638,10 @@ model Subscription {
   // paid plan - that's what `status` is for. `plan` describes what they'd be
   // entitled to; `status` decides whether the entitlement is currently live.
   plan                  String    @default("profit_intelligence")
+  //   "firm" = $79 per connected company per month, 4 minimum. Billed by
+  //   quantity: `quantity` mirrors the Stripe subscription's, and is kept at
+  //   max(4, connected companies) by src/lib/stripe/firmQuantity.ts.
+  quantity              Int?
 
   // --- Trial lifecycle (server-side source of truth; never trust client dates) ---
   trialStartedAt        DateTime  @default(now())
@@ -987,8 +992,18 @@ model TeamMember {
   expiresAt       DateTime
   acceptedAt      DateTime?
 
+  // "member": a team login that sees every company on the account.
+  // "client": a view-only login for one company (connectionId), which a
+  // bookkeeping firm on the Firm plan gives the contractor it keeps books
+  // for. A client sees only that company, and can't change anything, see
+  // billing or settings, or invite anyone. See src/lib/account.ts.
+  role            String    @default("member")
+  connectionId    String?
+  connection      QuickBooksConnection? @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
   @@unique([ownerUserId, email])
   @@index([ownerUserId])
+  @@index([connectionId])
 }
 
 // Login attempts, for rate limiting. Neither the email address nor the IP

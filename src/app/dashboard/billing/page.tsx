@@ -8,12 +8,13 @@ import { getReferralSummary } from "@/lib/referrals";
 import {
   PLANS,
   PLAN_LIST,
+  firmBillableCompanies,
   REFERRAL_QUALIFY_DAYS,
   SUBSCRIPTION_STATUS_LABELS,
   TRIAL_EXTENSION_DAYS,
   type PlanId,
 } from "@/lib/plans";
-import { isStripeConfigured } from "@/lib/stripe/client";
+import { isPlanOffered, isStripeConfigured } from "@/lib/stripe/client";
 import { DEFAULT_TIME_ZONE, NO_VALUE, formatDateTime, formatCents } from "@/lib/format";
 import { CheckoutButton, ManageBillingButton } from "./BillingActions";
 
@@ -63,6 +64,8 @@ export default async function BillingPage(props: {
   const searchParams = await props.searchParams;
   const account = await getAccount();
   if (!account) redirect("/login");
+  // A client's view-only login has no settings or billing of its own.
+  if (account.role === "client") redirect("/dashboard");
   if (account.role !== "owner") {
     const owner = await prisma.user.findUnique({ where: { id: account.ownerId }, select: { email: true } });
     return (
@@ -109,9 +112,13 @@ export default async function BillingPage(props: {
 
   const stripeReady = isStripeConfigured();
   const currentPlan: PlanId | null =
-    entitlements.plan === "profit_intelligence" || entitlements.plan === "profit_intelligence_pro"
+    entitlements.plan === "profit_intelligence" || entitlements.plan === "profit_intelligence_pro" || entitlements.plan === "firm"
       ? entitlements.plan
       : null;
+  // Firm: billed per connected company, four at least.
+  const firmOffered = isPlanOffered("firm");
+  const firmCompanies = subscription?.quantity ?? firmBillableCompanies(usage.connections);
+  const firmStartCompanies = firmBillableCompanies(usage.connections);
   const isPaid = entitlements.access === "active" || entitlements.access === "past_due";
   // The owner's own login: every feature, never billed. A Stripe
   // subscription left on it (a test one, say) is shown for what it is.
@@ -276,7 +283,9 @@ export default async function BillingPage(props: {
                 ? "$0, never billed"
                 : entitlements.trialing
                 ? "$0 during trial"
-                : isPaid && currentPlan
+                : isPaid && currentPlan === "firm"
+                  ? `${formatCents(PLANS.firm.priceCents * firmCompanies)}/month (${firmCompanies} companies at ${PLANS.firm.priceLabel}, ${PLANS.firm.perCompany!.minCompanies} minimum)`
+                  : isPaid && currentPlan
                   ? `${PLANS[currentPlan].priceLabel}/month`
                   : NO_VALUE
             }
@@ -312,6 +321,14 @@ export default async function BillingPage(props: {
           </p>
         ) : null}
 
+        {usage.overConnectionLimit && !complimentary ? (
+          <p className="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            You have {usage.connections} QuickBooks companies connected and your plan covers {usage.maxConnections}.
+            Disconnect the ones you no longer need in Settings, or email support@jobprofitai.com to move to a plan that
+            covers them all.
+          </p>
+        ) : null}
+
         {usage.overJobLimit ? (
           <p className="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
             You have {usage.activeJobs} active jobs and your plan covers {usage.maxActiveJobs}.
@@ -324,8 +341,9 @@ export default async function BillingPage(props: {
           <div className="mt-5 flex flex-wrap gap-3">
             <ManageBillingButton />
             <span className="self-center text-xs text-gray-500">
-              Update your card, download invoices, change plan or cancel, all self-serve
-              through Stripe.
+              {currentPlan === "firm"
+                ? "Update your card, download invoices or cancel, all self-serve through Stripe."
+                : "Update your card, download invoices, change plan or cancel, all self-serve through Stripe."}
             </span>
           </div>
         ) : null}
@@ -344,9 +362,28 @@ export default async function BillingPage(props: {
             </p>
           ) : isPaid ? (
             <p className="text-sm text-gray-600">
-              Switch plans from{" "}
-              <span className="font-medium text-navy">Manage Billing</span> above. Stripe
-              prorates the change automatically, in either direction.
+              {currentPlan === "firm" ? (
+                <>
+                  You&rsquo;re billed for each connected QuickBooks company ({PLANS.firm.perCompany!.minCompanies}{" "}
+                  minimum). Connecting or disconnecting a company updates the bill on its own, prorated, and a company
+                  that hasn&rsquo;t synced for over a week because its QuickBooks access was cut off isn&rsquo;t billed.
+                  To move off the Firm plan, email{" "}
+                  <a href="mailto:support@jobprofitai.com" className="font-medium text-brand underline">
+                    support@jobprofitai.com
+                  </a>
+                  .
+                </>
+              ) : (
+                <>
+                  Switch plans from <span className="font-medium text-navy">Manage Billing</span> above. Stripe
+                  prorates the change automatically, in either direction. Keeping the books for several contractors?
+                  To move to the Firm plan, email{" "}
+                  <a href="mailto:support@jobprofitai.com" className="font-medium text-brand underline">
+                    support@jobprofitai.com
+                  </a>
+                  .
+                </>
+              )}
             </p>
           ) : (
             <>
@@ -380,6 +417,22 @@ export default async function BillingPage(props: {
                   </div>
                 ))}
               </div>
+              {firmOffered ? (
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-gray-200 p-5">
+                  <div className="max-w-2xl">
+                    <h3 className="font-semibold text-navy">{PLANS.firm.name}, for bookkeepers and accountants</h3>
+                    <p className="mt-1 text-sm text-gray-600">
+                      {PLANS.firm.priceLabel} per client company a month, {PLANS.firm.perCompany!.minCompanies} minimum:
+                      everything in Pro for every client, plus view-only logins for your clients and room for up to{" "}
+                      {PLANS.firm.limits.maxConnections} companies. With{" "}
+                      {usage.connections} connected {usage.connections === 1 ? "company" : "companies"} it starts at{" "}
+                      {formatCents(PLANS.firm.priceCents * firmStartCompanies)} a month, and adjusts as you connect or
+                      disconnect companies.
+                    </p>
+                  </div>
+                  <CheckoutButton plan="firm" label="Choose Firm" variant="secondary" />
+                </div>
+              ) : null}
               <p className="mt-4 text-xs text-gray-500">
                 Plans renew automatically every month at the price shown until you cancel. Cancel
                 anytime from Manage Billing on this page; cancellation takes effect at the end of the
@@ -402,7 +455,7 @@ export default async function BillingPage(props: {
         <p className="text-sm text-gray-600">
           Refer someone who becomes a paying customer and, once they&rsquo;ve paid for{" "}
           {REFERRAL_QUALIFY_DAYS} days and their second month, you earn one free month of your current plan as an account
-          credit. Credits stack and come off future invoices automatically.
+          credit{currentPlan === "firm" ? `, priced at the Firm minimum of ${PLANS.firm.perCompany!.minCompanies} companies` : ""}. Credits stack and come off future invoices automatically.
         </p>
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[

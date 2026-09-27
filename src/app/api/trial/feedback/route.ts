@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getAccount } from "@/lib/account";
+import { getAccount, refuseClient } from "@/lib/account";
 import { extendTrialWithFeedback, getTrialState } from "@/lib/trial";
 import { sendTrialExtended } from "@/lib/email/lifecycle";
 
@@ -34,6 +34,8 @@ export async function GET() {
   // too early) from the server rather than guessing in the browser.
   const account = await getAccount();
   if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  const refused = refuseClient(account);
+  if (refused) return refused;
 
   const state = await getTrialState(account.ownerId);
   return NextResponse.json({
@@ -49,6 +51,8 @@ export async function POST(req: NextRequest) {
   try {
     const account = await getAccount();
     if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const refused = refuseClient(account);
+    if (refused) return refused;
     // The trial belongs to the account owner, so only they can extend it.
     if (account.role !== "owner") {
       return NextResponse.json({ error: "Only the account owner can extend the trial." }, { status: 403 });

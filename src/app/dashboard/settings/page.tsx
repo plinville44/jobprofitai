@@ -33,10 +33,23 @@ export default async function SettingsPage() {
   const account = await getAccount();
   if (!account) redirect("/login");
   const isOwner = account.role === "owner";
+  // A client's view-only login has no company settings, only its own login.
+  if (account.role === "client") {
+    const self = await prisma.user.findUnique({ where: { id: account.userId }, select: { intuitSub: true } });
+    return (
+      <main>
+        <h1 className="text-2xl font-bold text-navy">Settings</h1>
+        <p className="mt-2 text-sm text-gray-600">
+          This is a view-only login. Your bookkeeper manages the QuickBooks connection and the company&apos;s settings.
+        </p>
+        {personalSections(false, Boolean(self?.intuitSub))}
+      </main>
+    );
+  }
 
   // The company picked in the company switcher (see src/lib/account.ts).
   // Settings below the companies list apply to that company only.
-  const { connection, companies } = await getActiveConnection(account.ownerId);
+  const { connection, companies } = await getActiveConnection(account);
   const permission = await canConnectAnotherCompany(account.ownerId);
   const me = await prisma.user.findUnique({ where: { id: account.userId }, select: { intuitSub: true } });
   const marginTargets = connection
@@ -191,6 +204,15 @@ export default async function SettingsPage() {
 
       <TeamSection account={account} />
 
+      {personalSections(isOwner, Boolean(me?.intuitSub))}
+    </main>
+  );
+}
+
+/** The signed-in person's own login: security, Intuit sign-in, deleting it. Every role sees these. */
+function personalSections(isOwner: boolean, intuitLinked: boolean) {
+  return (
+    <>
       <section className="mt-10 rounded-xl border border-gray-200 p-6">
         <h2 className="text-sm font-semibold text-navy">Sign-in security</h2>
         <p className="mt-1 text-sm text-gray-600">
@@ -202,7 +224,7 @@ export default async function SettingsPage() {
         </div>
         <div className="mt-6 border-t border-gray-100 pt-4">
           <h3 className="text-sm font-medium text-navy">Sign in with Intuit</h3>
-          {me?.intuitSub ? (
+          {intuitLinked ? (
             <>
               <p className="mt-1 text-sm text-gray-600">
                 On. An Intuit account is linked to your login and can sign in without your password. Resetting your
@@ -236,6 +258,6 @@ export default async function SettingsPage() {
           <DeleteAccountForm />
         </div>
       </section>
-    </main>
+    </>
   );
 }

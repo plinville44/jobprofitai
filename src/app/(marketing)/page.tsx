@@ -20,6 +20,7 @@ import {
 } from "@/components/marketing/ProductPreview";
 import PricingCards from "@/components/marketing/PricingCards";
 import FitCheck from "@/components/marketing/FitCheck";
+import { PLANS } from "@/lib/plans";
 import { OG_IMAGE } from "@/lib/siteMeta";
 
 export const metadata: Metadata = {
@@ -530,8 +531,14 @@ export default function HomePage() {
               <p className="mt-4 max-w-2xl text-[15px] leading-relaxed text-jp-slate">
                 You already have their QuickBooks data. JobProfitAI turns it into the pricing
                 conversation your contractor clients keep asking you for: what to charge, where the
-                money leaks, and what each fix is worth, without building a spreadsheet for each one. Firms working with several contractors can join
-                the JobProfitAI Partner Program and earn recurring commission.
+                money leaks, and what each fix is worth, without building a spreadsheet for each one.
+              </p>
+              <p className="mt-3 max-w-2xl text-[15px] leading-relaxed text-jp-slate">
+                On the <strong className="font-semibold text-jp-ink">Firm plan</strong>, every client is in one login
+                with a portfolio view of all of them, and each client can have a view-only login to their own company.
+                It&rsquo;s {PLANS.firm.priceLabel} per client company a month, {PLANS.firm.perCompany!.minCompanies}{" "}
+                minimum. Or refer clients who pay for themselves through the Partner Program and earn recurring
+                commission.
               </p>
               <p className="mt-3 text-sm leading-relaxed text-jp-muted">
                 Referring a client never gives you access to their financial data. That always
@@ -539,7 +546,10 @@ export default function HomePage() {
               </p>
             </div>
             <div className="flex flex-col gap-3">
-              <ButtonLink href="/partners" size="lg">
+              <ButtonLink href="/pricing#firm" size="lg">
+                See the Firm plan
+              </ButtonLink>
+              <ButtonLink href="/partners" size="lg" variant="secondary">
                 Explore the Partner Program
               </ButtonLink>
               <ButtonLink href="/contact" size="lg" variant="secondary">
@@ -566,7 +576,7 @@ export default function HomePage() {
         <SectionHeading
           eyebrow="Pricing"
           title="Two plans. Both find the money."
-          intro="Every plan includes the Profit Opportunity Feed, the Estimate Check and results tracking. Up to 100 jobs open at once and one company: Profit Intelligence. More than 100, or 2 to 3 companies: Pro, which adds forecasts for jobs in progress and benchmarking against similar jobs. Fix one underpriced job type and it can pay for itself."
+          intro="Every plan includes the Profit Opportunity Feed, the Estimate Check and results tracking. Up to 100 jobs open at once and one company: Profit Intelligence. More than 100, or 2 to 3 companies: Pro, which adds forecasts for jobs in progress and benchmarking against similar jobs. Bookkeeping firms have the Firm plan, priced per client company. Fix one underpriced job type and it can pay for itself."
           align="center"
         />
         <PricingCards compact />

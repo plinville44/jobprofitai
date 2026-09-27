@@ -10,13 +10,13 @@ import { OG_IMAGE } from "@/lib/siteMeta";
 export const metadata: Metadata = {
   title: "Pricing",
   description:
-    "JobProfitAI pricing: Profit Intelligence at $149/month and Profit Intelligence Pro at $299/month. 14-day free trial, no credit card required, cancel anytime.",
+    "JobProfitAI pricing: Profit Intelligence at $149/month, Profit Intelligence Pro at $299/month, and Firm for bookkeepers at $79 per client company. 14-day free trial, no credit card required, cancel anytime.",
   alternates: { canonical: "/pricing" },
   openGraph: {
     images: [OG_IMAGE],
-    title: "JobProfitAI Pricing, $149 and $299 per month",
+    title: "JobProfitAI Pricing: $149 and $299 a month, and $79 per company for bookkeepers",
     description:
-      "Two plans, both including AI profit insights and recommendations. 14 days free, no credit card required.",
+      "Two contractor plans and a Firm plan for bookkeepers, all including AI profit insights and recommendations. 14 days free, no credit card required.",
     url: "/pricing",
   },
 };
@@ -64,7 +64,7 @@ const FAQ_ITEMS = [
     q: "Can I cancel anytime?",
     a: (
       <>
-        Yes. Both plans are month to month. You cancel yourself from your billing settings through
+        Yes. Every plan is month to month. You cancel yourself from your billing settings through
         Stripe&rsquo;s billing portal, no contract, no notice period, no phone call.
       </>
     ),
@@ -73,8 +73,9 @@ const FAQ_ITEMS = [
     q: "Can I switch between plans?",
     a: (
       <>
-        Yes, in either direction, from your billing settings. Stripe prorates the change
-        automatically. If you move down to a plan that covers fewer jobs or companies than
+        Between Profit Intelligence and Pro, yes, in either direction, from your billing
+        settings, and Stripe prorates the change automatically. To move to or from the Firm plan,
+        email support@jobprofitai.com and we&rsquo;ll switch it for you. If you move down to a plan that covers fewer jobs or companies than
         you&rsquo;re currently using, nothing is deleted. Your Billing page shows your usage
         against the new plan&rsquo;s limits, and you can&rsquo;t connect another QuickBooks company
         while you&rsquo;re over the company limit.
@@ -97,8 +98,9 @@ const FAQ_ITEMS = [
     q: "Do you offer annual billing or an enterprise plan?",
     a: (
       <>
-        Not at launch. Both plans are monthly, and these two are the whole lineup. If you need
-        something the plans don&rsquo;t cover, more than three QuickBooks companies for instance,{" "}
+        Not at launch. Every plan is monthly. Bookkeepers and accountants with contractor clients
+        have the Firm plan, priced per client company. If you need something the plans don&rsquo;t
+        cover,{" "}
         <Link href="/contact" className="font-medium text-jp-blue hover:underline">
           get in touch
         </Link>{" "}
@@ -173,7 +175,53 @@ export default function PricingPage() {
         <PlanGuide />
       </Section>
 
-      <Section id="fit-check">
+      <Section id="firm">
+        <div className="mx-auto max-w-5xl rounded-2xl border border-jp-line bg-white p-7 sm:p-9">
+          <div className="grid gap-8 lg:grid-cols-[1.3fr_1fr]">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-wide text-jp-blue">For bookkeepers and accountants</p>
+              <h2 className="mt-2 text-2xl font-bold tracking-tight text-jp-ink sm:text-3xl">
+                {PLANS.firm.name}: every client&rsquo;s job profit in one login
+              </h2>
+              <p className="mt-3 text-[15px] leading-relaxed text-jp-slate">
+                Connect each contractor you keep books for. See all of them on one portfolio page, open any one for
+                its jobs, estimates, WIP and money owed, and give each client a view-only login to their own company.
+              </p>
+              <ul className="mt-5 space-y-2.5 text-[15px]">
+                {PLANS.firm.marketingFeatures.map((f) => (
+                  <li key={f} className="flex gap-2.5">
+                    <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-jp-green" aria-hidden="true" />
+                    <span className="leading-relaxed text-jp-slate">{f}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="flex flex-col justify-center rounded-xl bg-jp-surface p-6">
+              <p className="text-4xl font-bold tracking-tight text-jp-ink">
+                {PLANS.firm.priceLabel}
+                <span className="text-base font-normal text-jp-muted"> per company/month</span>
+              </p>
+              <p className="mt-2 text-sm text-jp-slate">
+                {PLANS.firm.perCompany!.minCompanies} company minimum, so{" "}
+                {`$${(PLANS.firm.priceCents * PLANS.firm.perCompany!.minCompanies) / 100}`} a month at least. The bill
+                follows the companies you have connected, prorated.
+              </p>
+              <ButtonLink href="/signup" className="mt-5 w-full">
+                Start Free Trial
+              </ButtonLink>
+              <p className="mt-3 text-center text-xs text-jp-muted">
+                The 14-day trial covers {PLANS.profit_intelligence_pro.limits.maxConnections} companies, client logins
+                included. Choose Firm to connect more.
+              </p>
+              <ButtonLink href="/contact" variant="secondary" className="mt-4 w-full">
+                Talk to us
+              </ButtonLink>
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      <Section id="fit-check" tone="surface">
         <SectionHeading
           eyebrow="30-second check"
           title="Will this work with my QuickBooks?"
@@ -184,7 +232,7 @@ export default function PricingPage() {
       </Section>
 
       {/* ── Detailed comparison ─────────────────────────────────────── */}
-      <Section tone="surface">
+      <Section>
         <SectionHeading
           eyebrow="Compare"
           title="What's in each plan"
@@ -229,7 +277,7 @@ export default function PricingPage() {
       </Section>
 
       {/* ── Why no cheap tier ───────────────────────────────────────── */}
-      <Section>
+      <Section tone="surface">
         <div className="mx-auto max-w-3xl">
           <SectionHeading
             eyebrow="Why there's no cheap plan"
@@ -253,11 +301,16 @@ export default function PricingPage() {
               access, no credit card. Connect QuickBooks and judge it on your own numbers before you
               pay anything.
             </p>
+            <p>
+              The Firm plan&rsquo;s {PLANS.firm.priceLabel} is per client company, with a{" "}
+              {PLANS.firm.perCompany!.minCompanies}-company minimum. It&rsquo;s for bookkeepers
+              covering several contractors, not a cheaper way in for one.
+            </p>
           </div>
         </div>
       </Section>
 
-      <Section tone="surface">
+      <Section>
         <SectionHeading eyebrow="Questions" title="Pricing questions" align="center" />
         <div className="mx-auto max-w-3xl">
           <Faq items={FAQ_ITEMS} />

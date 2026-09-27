@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAccount } from "@/lib/account";
+import { getAccount, refuseClient } from "@/lib/account";
 import { runSyncForConnection, SyncAlreadyRunningError } from "@/lib/quickbooksSync";
 import { getEntitlements } from "@/lib/entitlements";
 
@@ -41,6 +41,8 @@ export async function POST(req: NextRequest) {
 async function runSync(req: NextRequest) {
   const account = await getAccount();
   if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  const refused = refuseClient(account);
+  if (refused) return refused;
 
   // Server-side entitlement check - a lapsed account must not be able to
   // keep pulling fresh QuickBooks data by calling the API directly.

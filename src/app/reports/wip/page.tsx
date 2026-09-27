@@ -24,7 +24,7 @@ export default async function WipReportPage() {
   if (!account) redirect("/login");
   const entitlements = await getEntitlements(account.ownerId);
   if (!entitlements.active) redirect("/dashboard/billing");
-  const { connection } = await getActiveConnection(account.ownerId);
+  const { connection } = await getActiveConnection(account);
   if (!connection) redirect("/dashboard");
 
   const now = new Date();

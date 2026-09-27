@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { connectionForAccount, getAccount } from "@/lib/account";
+import { connectionForAccount, getAccount, refuseClient } from "@/lib/account";
 import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
 import { refuseCrossSite } from "@/lib/sameOrigin";
 import { SuggestionCooldownError, suggestJobTypesWithAI } from "@/lib/jobTypeSuggestions";
@@ -19,6 +19,8 @@ export async function POST(req: NextRequest) {
   try {
     const account = await getAccount();
     if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const refused = refuseClient(account);
+    if (refused) return refused;
     const entitlements = await getEntitlements(account.ownerId);
     if (!entitlements.active) return NextResponse.json({ error: inactiveMessage(entitlements) }, { status: 402 });
     const body = await req.json().catch(() => ({}));

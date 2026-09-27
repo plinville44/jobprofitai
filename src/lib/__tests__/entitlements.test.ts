@@ -217,7 +217,7 @@ describe("complimentary access for the owner's own login", () => {
     }
   };
 
-  it("gives an allowlisted, verified owner Pro for good, even with a cancelled subscription", async () => {
+  it("gives an allowlisted, verified owner every feature for good, even with a cancelled subscription", async () => {
     await withAllowlist(async () => {
       await fake.client.user.create({ data: { id: "u1", email: "owner@example.com", emailVerifiedAt: NOW } });
       await fake.client.subscription.create({
@@ -229,7 +229,9 @@ describe("complimentary access for the owner's own login", () => {
       expect(ent.plan).toBe("profit_intelligence_pro");
       expect(ent.has("forecast_at_completion")).toBe(true);
       expect(ent.has("profit_opportunities")).toBe(true);
-      expect(ent.limits.maxConnections).toBe(3);
+      // Firm features and limits, so client logins and many companies can be tried out.
+      expect(ent.has("client_logins")).toBe(true);
+      expect(ent.limits.maxConnections).toBe(100);
       expect(ent.cancelAtPeriodEnd).toBe(false);
       expect(ent.currentPeriodEnd).toBeNull();
       expect(ent.paymentIssue).toBe(false);
