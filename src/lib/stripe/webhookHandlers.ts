@@ -433,7 +433,8 @@ async function refundFirstPayment(duplicate: Stripe.Subscription): Promise<{ ok:
   }
   const refund = await stripe.refunds.create(
     {
-      ...(chargeId ? { charge: chargeId } : { payment_intent: paymentIntentId }),
+      // Stripe's types take a string or nothing here, never null.
+      ...(chargeId ? { charge: chargeId } : { payment_intent: paymentIntentId ?? undefined }),
       reason: "duplicate",
       metadata: { [DUPLICATE_REFUND_METADATA_KEY]: duplicate.id },
     },
