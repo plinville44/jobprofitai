@@ -4,9 +4,11 @@ import { getAccount, getActiveConnection } from "@/lib/account";
 import { getEntitlements } from "@/lib/entitlements";
 import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
 import { getConnectionProfitData, type DataHealthReport } from "@/lib/profitability";
-import { formatCurrency, formatDateTime } from "@/lib/format";
+import { formatCents, formatCurrency, formatDate, formatDateTime, NO_VALUE } from "@/lib/format";
 import { DataQualityBadge, StatusDot } from "@/components/dashboard/Badges";
 import CloseIdleJobsButton from "@/components/dashboard/CloseIdleJobsButton";
+import { qboTxnUrl, untaggedKindLabel, UNTAGGED_LIST_LIMIT, type UntaggedCostView } from "@/lib/untaggedCosts";
+import { connectionRealmId, loadUntaggedCosts } from "@/lib/untaggedCostStore";
 
 /**
  * What each data-completeness level actually means for the customer's
@@ -55,7 +57,11 @@ export default async function DataHealthPage() {
   // Full lifetime data, same reasoning as the Jobs table - data quality is a
   // property of the whole connection, not something that should change
   // depending on which calendar window happens to be selected.
-  const profitData = await getConnectionProfitData(connection.id, new Date());
+  const now = new Date();
+  const [profitData, untagged] = await Promise.all([
+    getConnectionProfitData(connection.id, now),
+    loadUntaggedCosts(connection.id, now, UNTAGGED_LIST_LIMIT),
+  ]);
   const h = profitData.dataHealth;
   const byClass = connection.jobSource === "classes";
 
@@ -211,6 +217,16 @@ export default async function DataHealthPage() {
         />
       </div>
 
+      <UntaggedCostList
+        rows={untagged.rows}
+        total={untagged.total}
+        countFromFullSync={h.untaggedJobCostCount}
+        byClass={byClass}
+        connectionId={connection.id}
+        realmId={connectionRealmId(connection)}
+        environment={connection.environment}
+      />
+
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <CountAmountSection
           title={byClass ? "Costs matched via a parent class" : "Costs matched via a parent customer"}
@@ -233,8 +249,8 @@ export default async function DataHealthPage() {
 
       <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <CountAmountSection
-          title="Employee time with no pay rate (last 12 months)"
-          help="Labor is costed as hours times what you pay the employee. These entries are for employees with no pay rate (cost rate) in QuickBooks, so their hours add no labor cost here. Set the employee's pay rate in QuickBooks and sync again. If you tag payroll to jobs another way, turn off labor from time entries in Settings."
+          title="Employee time with no cost rate (last 12 months)"
+          help="Labor is costed as hours times the cost rate on each time entry, which QuickBooks takes from the cost rate set on the employee. These entries have no cost rate, so their hours add no labor cost here. Set the employee's cost rate in QuickBooks and sync again. If you tag payroll to jobs another way, turn off labor from time entries in Settings."
           count={h.timeEntriesWithoutPayRate}
           amount={null}
           noun="time entry"
@@ -250,7 +266,7 @@ export default async function DataHealthPage() {
       </div>
 
       <p className="mt-8 text-xs text-gray-400">
-        Every number on this page is computed directly from your synced QuickBooks data - nothing here is estimated or
+        Every number on this page is computed directly from your synced QuickBooks data. Nothing here is estimated or
         written by AI.
       </p>
     </main>
@@ -355,7 +371,7 @@ function CountAmountSection({
       <p className="mt-1 text-xs text-gray-500">{help}</p>
       <div className="mt-3 flex items-baseline gap-2">
         {count == null ? (
-          <p className="text-sm text-gray-500">Not yet measured - sync QuickBooks to check.</p>
+          <p className="text-sm text-gray-500">Not yet measured. Sync QuickBooks to check.</p>
         ) : (
           <>
             <span className="text-xl font-bold text-navy">{count}</span>
@@ -379,7 +395,7 @@ function DuplicatesSection({ items }: { items: DataHealthReport["possibleDuplica
         <h3 className="text-sm font-semibold text-navy">Possible duplicate transactions</h3>
       </div>
       <p className="mt-1 text-xs text-gray-500">
-        Same job, amount, and date, but from two different QuickBooks transactions - flagged for a look, never auto-merged.
+        Same job, amount, and date, but from two different QuickBooks transactions. Flagged for a look, never merged automatically.
       </p>
       {items.length === 0 ? (
         <p className="mt-3 text-sm text-gray-500">None right now.</p>
@@ -397,6 +413,120 @@ function DuplicatesSection({ items }: { items: DataHealthReport["possibleDuplica
           ))}
         </ul>
       )}
+    </section>
+  );
+}
+
+/**
+ * The costs behind the "job costs not tagged to a job" count, one by one, so
+ * the contractor can open each in QuickBooks and put it on its job. Kept up
+ * to date by every sync, while the count comes from the last full sync, so
+ * the two can differ for a while and the note under the table says so.
+ */
+function UntaggedCostList({
+  rows,
+  total,
+  countFromFullSync,
+  byClass,
+  connectionId,
+  realmId,
+  environment,
+}: {
+  rows: UntaggedCostView[];
+  total: number;
+  countFromFullSync: number | null;
+  byClass: boolean;
+  connectionId: string;
+  realmId: string | null;
+  environment: string | null;
+}) {
+  const title = "Job costs not tagged to a job, biggest first";
+  if (total === 0) {
+    if ((countFromFullSync ?? 0) === 0) return null;
+    return (
+      <section id="untagged-costs" className="mt-4 rounded-xl border border-gray-200 p-5">
+        <h3 className="text-sm font-semibold text-navy">{title}</h3>
+        <p className="mt-1 text-xs text-gray-500">
+          None listed right now. This list is kept up to date by every sync, while the count above is from the last full
+          sync. If these costs haven&apos;t been tagged in QuickBooks since then, they are listed here after the next full
+          sync.
+        </p>
+      </section>
+    );
+  }
+  return (
+    <section id="untagged-costs" className="mt-4 rounded-xl border border-gray-200 p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="max-w-2xl">
+          <h3 className="text-sm font-semibold text-navy">{title}</h3>
+          <p className="mt-1 text-xs text-gray-500">
+            {byClass
+              ? "Open each one in QuickBooks, pick the job's class on the line, and save. It leaves this list after your next sync."
+              : "Open each one in QuickBooks, pick the customer or project on the line, and save. It leaves this list after your next sync."}
+          </p>
+        </div>
+        <a
+          href={`/api/data-health/untagged-costs?connectionId=${encodeURIComponent(connectionId)}`}
+          className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-navy hover:bg-gray-50"
+        >
+          Download all {total} (CSV)
+        </a>
+      </div>
+      <div className="mt-3 overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-200 text-left text-xs text-gray-500">
+              <th className="py-2 pr-3 font-medium">Date</th>
+              <th className="py-2 pr-3 font-medium">Vendor or payee</th>
+              <th className="py-2 pr-3 font-medium">Type</th>
+              <th className="py-2 pr-3 font-medium">Account</th>
+              <th className="py-2 pr-3 font-medium">Memo</th>
+              <th className="py-2 pr-3 text-right font-medium">Amount</th>
+              <th className="py-2 font-medium">
+                <span className="sr-only">Open in QuickBooks</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const url = qboTxnUrl({ realmId, kind: r.kind, txnId: r.qboSourceId, environment });
+              return (
+                <tr key={r.id} className="border-b border-gray-100 align-top">
+                  <td className="whitespace-nowrap py-2 pr-3 text-gray-700">{formatDate(r.txnDate)}</td>
+                  <td className="py-2 pr-3 text-navy">{r.payee ?? NO_VALUE}</td>
+                  <td className="whitespace-nowrap py-2 pr-3 text-gray-700">
+                    {untaggedKindLabel(r.kind)}
+                    {r.docNumber ? <span className="block text-xs text-gray-400">No. {r.docNumber}</span> : null}
+                  </td>
+                  <td className="py-2 pr-3 text-gray-700">{r.accountName ?? NO_VALUE}</td>
+                  <td className="max-w-xs truncate py-2 pr-3 text-gray-500" title={r.memo ?? undefined}>
+                    {r.memo ?? NO_VALUE}
+                  </td>
+                  <td className="whitespace-nowrap py-2 pr-3 text-right font-medium text-navy">
+                    {formatCents(Math.round(r.amount * 100))}
+                  </td>
+                  <td className="whitespace-nowrap py-2">
+                    {url ? (
+                      <a href={url} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">
+                        Open in QuickBooks
+                      </a>
+                    ) : (
+                      <span className="text-gray-400" title="Find it in QuickBooks by its date and amount.">
+                        {NO_VALUE}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-2 text-xs text-gray-500">
+        {total > rows.length ? `Showing the ${rows.length} biggest of ${total}. The CSV has all of them. ` : ""}
+        This list is kept up to date by every sync. The count above is from the last full sync, so the two can differ
+        until the next one.
+      </p>
     </section>
   );
 }

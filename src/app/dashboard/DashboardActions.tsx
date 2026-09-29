@@ -9,6 +9,9 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
   // Shown when this week's brief was already emailed: the preview is not
   // saved over it, so it is displayed here instead of on the page below.
   const [preview, setPreview] = useState<string | null>(null);
+  // Both buttons are off while either request runs, so a second click can't
+  // start a second sync (which the server refuses) or a second brief.
+  const [busy, setBusy] = useState(false);
 
   // Shared fetch wrapper: guarantees `status` always ends up with a real
   // message. Without this, a network error, a timeout, or the server
@@ -17,6 +20,8 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
   // "Syncing..." / "Generating..." message forever with no way to tell
   // whether it failed or is still running.
   async function callApi(url: string, busyMessage: string, onSuccess: (data: any) => string) {
+    if (busy) return;
+    setBusy(true);
     setStatus(busyMessage);
     try {
       const res = await fetch(url, {
@@ -39,7 +44,9 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
         setStatus(`Failed: ${data?.error ?? `Server returned status ${res.status}. Please try again, or email support@jobprofitai.com.`}`);
       }
     } catch (err) {
-      setStatus(`Failed: ${err instanceof Error ? err.message : "Network error - please try again."}`);
+      setStatus(`Failed: ${err instanceof Error ? err.message : "Network error. Please try again."}`);
+    } finally {
+      setBusy(false);
     }
     router.refresh();
   }
@@ -50,6 +57,11 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
       "/api/quickbooks/sync",
       "Syncing with QuickBooks...",
       (data) => {
+        // A large company can take more than one run to read in full. What's
+        // read so far is kept, and the rest follows.
+        if (data.unfinished) {
+          return "Part of your QuickBooks data is read. Click Sync now again to carry on, or leave it: the nightly sync finishes the rest.";
+        }
         const costEntries = (data.purchases ?? 0) + (data.bills ?? 0) + (data.timeActivities ?? 0);
         const base = `Synced ${data.jobs ?? 0} jobs, ${costEntries} cost entries, ${data.invoices ?? 0} invoices, ${data.estimates ?? 0} estimates.`;
         // partialErrors means some new-this-phase entity types (Bill/TimeActivity/
@@ -82,13 +94,15 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
     <div className="mt-4 flex flex-wrap items-center gap-3">
       <button
         onClick={sync}
-        className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-navy hover:bg-gray-50"
+        disabled={busy}
+        className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-navy hover:bg-gray-50 disabled:opacity-60"
       >
         Sync now
       </button>
       <button
         onClick={generateDigest}
-        className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+        disabled={busy}
+        className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
       >
         Preview this week&apos;s brief
       </button>

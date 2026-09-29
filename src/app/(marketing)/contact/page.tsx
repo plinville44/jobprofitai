@@ -74,10 +74,14 @@ export default function ContactPage() {
               <h3 className="font-semibold text-jp-ink">Accountants &amp; bookkeepers</h3>
               <p className="mt-1">
                 If you work with several contractor clients, have a look at the{" "}
+                <Link href="/pricing#which-plan" className="font-medium text-jp-blue hover:underline">
+                  plan guide
+                </Link>{" "}
+                (Pro covers up to 3 companies; the Firm plan starts at 4) and the{" "}
                 <Link href="/partners" className="font-medium text-jp-blue hover:underline">
                   Partner Program
                 </Link>{" "}
-                first. It may answer your question, and you can apply from there.
+                first. They may answer your question, and you can apply to the program from there.
               </p>
             </div>
             <div>

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createFakePrisma, type FakePrisma } from "./support/fakePrisma";
 
 const fake: { client: FakePrisma } = { client: createFakePrisma() };
@@ -24,6 +24,7 @@ vi.mock("@/lib/stripe/billing", () => ({
 
 import {
   approvePartner,
+  commissionAllowedForInvoice,
   countPayingClients,
   currentPartnerTier,
   getPartnerCommissionHistory,
@@ -386,5 +387,113 @@ describe("approval", () => {
     expect(
       (await fake.client.partner.findUnique({ where: { id: partner.id } })).status
     ).toBe("approved");
+  });
+});
+
+describe("no commission on the Firm plan", () => {
+  const FIRM_PRICE = "price_firm_test";
+  const PRO_PRICE = "price_pro_test";
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const key of ["STRIPE_PRICE_FIRM_MONTHLY", "STRIPE_PRICE_PROFIT_INTELLIGENCE_PRO_MONTHLY"]) saved[key] = process.env[key];
+    process.env.STRIPE_PRICE_FIRM_MONTHLY = FIRM_PRICE;
+    process.env.STRIPE_PRICE_PROFIT_INTELLIGENCE_PRO_MONTHLY = PRO_PRICE;
+  });
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  /** An invoice whose lines carry real price ids, old or new API shape. */
+  function pricedInvoice(id: string, lines: { price: string; amount: number; nested?: boolean }[]) {
+    return {
+      id,
+      lines: {
+        data: lines.map((l) =>
+          l.nested
+            ? { type: "subscription", amount: l.amount, pricing: { price_details: { price: l.price } } }
+            : { type: "subscription", amount: l.amount, price: { id: l.price, type: "recurring" } }
+        ),
+      },
+      amount_paid: lines.reduce((t, l) => t + Math.max(0, l.amount), 0),
+      subscription: "sub_123",
+      customer: "cus_123",
+    } as never;
+  }
+
+  it("writes no commission row for a Firm invoice, in either API shape", async () => {
+    const { partner, referralIds } = await seedPartnerWithClients(3);
+
+    for (const [id, nested] of [["in_firm_old", false], ["in_firm_new", true]] as const) {
+      const result = await recordCommissionForInvoice({
+        invoice: pricedInvoice(id, [{ price: FIRM_PRICE, amount: 31_600, nested }]),
+        referralId: referralIds[0],
+        partnerId: partner.id,
+        referredUserId: "client_0",
+        paidAt: NOW,
+      });
+      expect(result).toBeNull();
+    }
+    expect(await fake.client.partnerCommission.count()).toBe(0);
+  });
+
+  it("counts a move onto Firm as Firm, from the invoice itself", async () => {
+    const { partner, referralIds } = await seedPartnerWithClients(3);
+
+    // Pro to Firm mid-month: a credit for unused Pro and a charge for Firm.
+    // The account's row still says Pro, as when invoice.paid comes first.
+    const result = await recordCommissionForInvoice({
+      invoice: pricedInvoice("in_switch", [
+        { price: PRO_PRICE, amount: -15_000 },
+        { price: FIRM_PRICE, amount: 31_600 },
+      ]),
+      referralId: referralIds[0],
+      partnerId: partner.id,
+      referredUserId: "client_0",
+      paidAt: NOW,
+    });
+
+    expect(result).toBeNull();
+    expect(await fake.client.partnerCommission.count()).toBe(0);
+  });
+
+  it("falls back to the plan on file when the invoice names no price we sell", async () => {
+    const { partner, referralIds } = await seedPartnerWithClients(3);
+    await fake.client.subscription.update({ where: { userId: "client_0" }, data: { plan: "firm" } });
+
+    const result = await recordCommissionForInvoice({
+      invoice: invoice({ id: "in_unpriced", amountCents: 31_600 }),
+      referralId: referralIds[0],
+      partnerId: partner.id,
+      referredUserId: "client_0",
+      paidAt: NOW,
+    });
+
+    expect(result).toBeNull();
+    expect(commissionAllowedForInvoice(invoice({ id: "x" }) as never, "firm")).toBe(false);
+    expect(commissionAllowedForInvoice(invoice({ id: "x" }) as never, "profit_intelligence")).toBe(true);
+  });
+
+  it("still pays on Pro invoices, and Firm accounts don't lift the partner's tier", async () => {
+    const { partner, referralIds } = await seedPartnerWithClients(12);
+    // Three of the twelve are on Firm: 9 commissionable clients, so 20%, not 25%.
+    for (const i of [9, 10, 11]) {
+      await fake.client.subscription.update({ where: { userId: `client_${i}` }, data: { plan: "firm" } });
+    }
+    expect(await countPayingClients(partner.id)).toBe(9);
+
+    const result = await recordCommissionForInvoice({
+      invoice: pricedInvoice("in_pro", [{ price: PRO_PRICE, amount: 29_900 }]),
+      referralId: referralIds[0],
+      partnerId: partner.id,
+      referredUserId: "client_0",
+      paidAt: NOW,
+    });
+
+    expect(result?.rateBps).toBe(2000);
+    expect(result?.commissionCents).toBe(5_980);
   });
 });

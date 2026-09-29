@@ -144,20 +144,25 @@ export default function SecurityPage() {
             <Item title="What is stored">
               <p>
                 To produce profitability analysis, JobProfitAI stores a copy of the job-related data
-                it reads from QuickBooks: jobs (QuickBooks Projects, or customers if you make one
-                customer per job) and the customer each belongs to; cost line items from bills,
-                checks, expenses, vendor credits and journal entries tagged to a job, with the
-                account or product name; time entries as hours and a labor cost; invoice, sales
-                receipt, credit memo and refund totals and status; estimate values; and the
-                profitability figures calculated from them. It also stores each Weekly Profit Brief,
+                it reads from QuickBooks: jobs (QuickBooks Projects or sub-customers, customers if you
+                make one customer per job, or Classes if each job is a class, with their names) and
+                the customer each belongs to; cost line items from bills, checks, expenses, vendor
+                credits and journal entries tagged to a job, with the account or product name; job
+                cost lines from the last 12 months that aren&rsquo;t on any job, with the vendor or
+                payee and memo, so Data Health can list them; time entries as hours and a labor cost;
+                invoice, sales receipt, credit memo and refund totals, status and what&rsquo;s still
+                owed on open invoices; income from deposits and journal entries recorded against a
+                job; estimates, with each line&rsquo;s product or service, amount, quantity and the
+                purchase cost set on it in QuickBooks; and the profitability figures calculated from
+                them. It also stores each Weekly Profit Brief,
                 the profit alerts sent, the profit insights generated for you, and your own settings
                 such as target margin and email recipients.
               </p>
               <p>
-                About labor: a time entry&rsquo;s labor cost is its hours times the pay rate
-                QuickBooks holds for that person. The pay rate itself isn&rsquo;t stored, but it can
-                be worked out from a single entry, so anyone you give a login to can see what an
-                hour of each person&rsquo;s time costs. If that matters to you, turn off labor from
+                About labor: a time entry&rsquo;s labor cost is its hours times the cost rate on the
+                entry, which comes from the employee&rsquo;s cost rate in QuickBooks. The cost rate
+                itself isn&rsquo;t stored, but it can be worked out from a single entry, so anyone you
+                give a login to can see what an hour of each person&rsquo;s time costs. If that matters to you, turn off labor from
                 timesheets in Settings.
               </p>
             </Item>
@@ -179,14 +184,24 @@ export default function SecurityPage() {
               </p>
               <p>
                 If you invite team members, each has their own login and sees your account&rsquo;s
-                companies and reports under your plan, and nothing else. Only you can manage
-                billing, invite or remove people, disconnect a company or delete the account.
-                Removing someone signs them out everywhere at once.
+                companies and reports under your plan. Only you can manage billing, invite or remove
+                people, disconnect a company or delete the account. Removing someone signs them out
+                everywhere at once.
               </p>
               <p>
-                Being an accountant, a referral partner, or a referrer confers no access to any
-                other business&rsquo;s financial data whatsoever. Partner dashboards show counts and
-                commission amounts only, never a client&rsquo;s numbers.
+                On the Firm plan, a bookkeeper connects each client&rsquo;s QuickBooks company to the
+                firm&rsquo;s own account and can give a client a view-only login. A client login
+                sees one company, including its dashboard, Data Health and WIP report, and
+                can&rsquo;t change anything. It never sees the firm&rsquo;s other clients, its
+                settings or its billing, and every request it makes is checked on the server against
+                that one company.
+              </p>
+              <p>
+                Being a referral partner or a referrer confers no access to any other
+                business&rsquo;s financial data whatsoever. Partner dashboards show counts and
+                commission amounts only, never a client&rsquo;s numbers. A firm sees a
+                client&rsquo;s numbers only by connecting that client&rsquo;s QuickBooks company
+                through Intuit, which takes a QuickBooks login with access to it.
               </p>
             </Item>
 
@@ -202,16 +217,25 @@ export default function SecurityPage() {
               <p>
                 You can permanently delete your account from Settings. Doing so revokes any live
                 QuickBooks connection with Intuit, cancels any active subscription, and deletes your
-                account together with the jobs, cost data, invoices, weekly briefs and insights
-                derived from it. Any team members lose access at the same moment. Deletion is
-                irreversible and requires re-entering your password.
+                account together with your QuickBooks connections and tokens, jobs, cost data,
+                invoices, estimates, weekly briefs, alerts, insights and settings. Any team members
+                and client logins lose access at the same moment. Deletion is irreversible and
+                requires re-entering your password.
               </p>
               <p>
-                Two kinds of record outlive a deleted account. If an accounting partner referred you,
-                the commission records for payments you made are kept so the partner can be paid
-                correctly: they hold amounts, dates and internal and Stripe reference numbers, not
-                your name, email or any QuickBooks data. And Stripe keeps its own record of your
-                payments, as a payment processor must.
+                A few records outlive a deleted account, none of them holding your QuickBooks data.
+                If a partner referred you, the commission records for payments you made are kept so
+                the partner can be paid correctly: they hold amounts, dates and internal and Stripe
+                reference numbers, not your name or email. A record that a referral link led to an
+                account is kept with your account removed from it. For each QuickBooks company that
+                started a free trial, a keyed hash of its ID, with the date and an internal account
+                number, is kept so the same company can&rsquo;t start a second free trial. Stripe keeps its own record of your
+                payments, as a payment processor must, and we keep anything the law requires us to.
+                Our{" "}
+                <Link href="/privacy#retention" className="font-medium text-jp-blue hover:underline">
+                  Privacy Policy
+                </Link>{" "}
+                has the full list.
               </p>
             </Item>
           </div>

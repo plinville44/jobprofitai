@@ -73,14 +73,20 @@ export async function getOpportunityData(connectionId: string, now: Date = new D
     getJobTypes(connectionId),
     prisma.quickBooksConnection.findUniqueOrThrow({
       where: { id: connectionId },
-      select: { jobSource: true, targetMarginPct: true, laborBurdenPct: true, marginTargets: { select: { category: true, targetPct: true } } },
+      select: {
+        jobSource: true,
+        targetMarginPct: true,
+        laborBurdenPct: true,
+        laborFromTimeEntries: true,
+        marginTargets: { select: { category: true, targetPct: true } },
+      },
     }),
     prisma.job.findMany({
       where: { connectionId },
       select: { id: true, qboId: true, parentQboId: true, name: true, category: true, estimatedCostSource: true, missingSince: true },
     }),
     prisma.jobEstimate.findMany({ where: { connectionId } }),
-    // The company's average pay rate over the last 12 months, from time
+    // The company's average cost rate over the last 12 months, from time
     // entries with hours, for costing the hours on estimates.
     prisma.costEntry.aggregate({
       where: {
@@ -92,11 +98,18 @@ export async function getOpportunityData(connectionId: string, now: Date = new D
       _sum: { amount: true, quantity: true },
     }),
   ]);
-  const burden = laborBurdenOf(connection);
+  // With time-entry labor off, labor reaches jobs some other way (payroll
+  // checks or journal entries), the burden setting is hidden in Settings and
+  // applies to nothing, and time entries aren't read. So no burden on labor
+  // items' purchase cost, and no rate from time entries a sync hasn't
+  // cleared yet.
+  const timeLabor = connection.laborFromTimeEntries;
+  const burden = timeLabor ? laborBurdenOf(connection) : 0;
   const wages = Number(timeTotals._sum.amount ?? 0);
   const hoursWorked = Number(timeTotals._sum.quantity ?? 0);
   // At least a week's work, or the average is one person's odd rate.
-  const laborRate = hoursWorked >= 40 && wages > 0 ? { perHour: (wages / hoursWorked) * (1 + burden), hours: hoursWorked, burden } : null;
+  const laborRate =
+    timeLabor && hoursWorked >= 40 && wages > 0 ? { perHour: (wages / hoursWorked) * (1 + burden), hours: hoursWorked, burden } : null;
 
   const jobs = profitData.lifetimeJobs;
   const typeLabel = (key: string) => labelForJobType(jobTypes, key);
@@ -161,7 +174,16 @@ export async function getOpportunityData(connectionId: string, now: Date = new D
     const history = typeKey
       ? (finishedByType.get(typeKey) ?? []).filter((f) => f.jobId !== job?.id).map((f) => ({ f, mix: mixes.get(f.jobId) ?? null }))
       : [];
-    let check = computeEstimateCheck({ amount: Number(e.amount), lines, targetPct, history, now, laborRate, laborBurden: burden });
+    let check = computeEstimateCheck({
+      amount: Number(e.amount),
+      lines,
+      targetPct,
+      history,
+      now,
+      laborRate,
+      laborBurden: burden,
+      typeLabel: typeKey ? typeLabel(typeKey) : null,
+    });
     // Without a job type there's no history to compare with; an estimate
     // costed wholly from its quantities is still checked.
     if (!typeKey && check.method !== "quantities") {
@@ -219,6 +241,7 @@ export async function getOpportunityData(connectionId: string, now: Date = new D
       typeLabel: e.typeLabel,
       historyJobs: e.check.historyJobs,
       method: e.check.method,
+      quantityMarginOverruled: e.check.quantityMarginOverruled,
     }));
 
   const feed = computeOpportunityFeed({
@@ -265,9 +288,12 @@ export interface TrackedActionView {
 export async function getTrackedActions(connectionId: string, data: Pick<OpportunityData, "jobs" | "mixes" | "jobTypes">): Promise<TrackedActionView[]> {
   const [rows, connection] = await Promise.all([
     prisma.profitAction.findMany({ where: { connectionId }, orderBy: { startedAt: "desc" } }),
-    prisma.quickBooksConnection.findUnique({ where: { id: connectionId }, select: { laborBurdenSetAt: true } }),
+    prisma.quickBooksConnection.findUnique({ where: { id: connectionId }, select: { laborBurdenSetAt: true, basisChangedAt: true } }),
   ]);
-  const burdenChangedAt = connection?.laborBurdenSetAt ?? null;
+  // The starting margin was saved when tracking began; job figures today
+  // carry whatever labor burden and job setup apply now. A change to either
+  // after the start means no gain or loss can be shown.
+  const basis = { laborBurdenSetAt: connection?.laborBurdenSetAt ?? null, basisChangedAt: connection?.basisChangedAt ?? null };
   return rows.map((r) => {
     const outcome = computeActionOutcome(
       {
@@ -280,13 +306,9 @@ export async function getTrackedActions(connectionId: string, data: Pick<Opportu
         stoppedAt: r.stoppedAt,
       },
       data.jobs,
-      data.mixes
+      data.mixes,
+      basis
     );
-    // The starting margin was saved when tracking began; job figures today
-    // carry whatever labor burden is set now.
-    if (burdenChangedAt && burdenChangedAt > r.startedAt) {
-      outcome.message = `${outcome.message} The labor burden setting changed after this started, so the starting margin and today's figures aren't worked out the same way.`;
-    }
     const costCategory = (r.costCategory as CoreCategory | null) ?? null;
     const baselineMarginPct = Number(r.baselineMarginPct);
     const kind = r.kind as "job_type" | "customer" | "small_jobs" | "cost_category";

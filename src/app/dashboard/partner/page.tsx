@@ -27,9 +27,12 @@ export default async function PartnerPage() {
           <h1 className="text-2xl font-bold text-navy">JobProfitAI Partner Program</h1>
           <p className="mt-2 text-[15px] leading-relaxed text-gray-600">
             For accountants, bookkeepers, fractional CFOs and QuickBooks ProAdvisors who work with
-            contractor clients. Earn recurring commission on every client you refer,{" "}
-            {PARTNER_TIERS[PARTNER_TIERS.length - 1].ratePct}% to {PARTNER_TIERS[0].ratePct}% of
-            subscription revenue for their first {PARTNER_COMMISSION_MONTHS} paid months.
+            contractor clients. Earn recurring commission on clients you refer who pay for their own
+            plan, {PARTNER_TIERS[PARTNER_TIERS.length - 1].ratePct}% to {PARTNER_TIERS[0].ratePct}% of
+            subscription revenue for their first {PARTNER_COMMISSION_MONTHS} paid months. The{" "}
+            {PLANS.firm.name} plan earns no commission, including a referred firm&rsquo;s own{" "}
+            {PLANS.firm.name} subscription, and {PLANS.firm.name} accounts don&rsquo;t count toward
+            your tier.
           </p>
         </header>
 

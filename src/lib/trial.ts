@@ -37,9 +37,23 @@ export function daysUntil(end: Date, now: Date): number {
 }
 
 /**
- * The Subscription row every account needs. Created idempotently so a user
- * who predates the billing system (or whose signup half-failed) gets a
- * correct trial row the first time anything asks, instead of a crash.
+ * Subscription.status for a login with no plan and no trial of its own. See
+ * ensureSubscription; entitlements treat it the same as having no row.
+ */
+export const NO_PLAN_STATUS = "none";
+
+/**
+ * The Subscription row every account needs, created idempotently the first
+ * time anything asks so callers never crash on a missing row.
+ *
+ * A row created HERE never starts a free trial. Every signup path (the
+ * signup form and Sign in with Intuit) creates the trial row in the same
+ * write as the login, so a login that reaches this point without one joined
+ * someone else's account from an invitation: its own trial row was deleted
+ * when it joined (acceptInvite), or it never had one. When that team member
+ * or client login is removed and signs in again, the trial banner and
+ * Billing used to land here and hand it a fresh 14 days. Now it gets a
+ * "no plan" row and chooses a plan like anyone whose trial is over.
  *
  * Uses the unique constraint on Subscription.userId for the idempotency
  * rather than a read-then-write, so two concurrent requests can't both
@@ -56,9 +70,9 @@ export async function ensureSubscription(
     return await prisma.subscription.create({
       data: {
         userId,
-        status: "trialing",
+        status: NO_PLAN_STATUS,
         trialStartedAt: now,
-        trialEndsAt: addDays(now, TRIAL_DAYS),
+        trialEndsAt: null,
       },
     });
   } catch {

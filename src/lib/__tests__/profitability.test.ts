@@ -477,6 +477,14 @@ describe("computeNeedsAttentionForJob", () => {
     expect(medium.severity).toBe("medium");
   });
 
+  it("raises no over_budget item (so no alert) on an estimate filled in from the target margin, as the brief's tile leaves it out", () => {
+    const over = makeFinancials({ status: "open", flags: ["over_budget_10pct_plus"], varianceVsEstimate: 3000, varianceVsEstimatePct: 0.3 });
+    expect(computeNeedsAttentionForJob(over, { estimateFromTargetMargin: true }).map((i) => i.issueCode)).not.toContain("over_budget");
+    // The contractor's own estimate still raises it.
+    expect(computeNeedsAttentionForJob(over, { estimateFromTargetMargin: false }).map((i) => i.issueCode)).toContain("over_budget");
+    expect(computeNeedsAttentionForJob(over).map((i) => i.issueCode)).toContain("over_budget");
+  });
+
   it("raises stale_job", () => {
     const items = computeNeedsAttentionForJob(makeFinancials({ flags: ["stale_job"] }));
     expect(items.map((i) => i.issueCode)).toContain("stale_job");

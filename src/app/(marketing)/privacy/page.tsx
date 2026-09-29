@@ -122,8 +122,9 @@ export default function PrivacyPage() {
           </p>
           <LegalList>
             <li>
-              projects (jobs), or customers if you make one customer per job, and the customer each
-              job belongs to, including customer names;
+              your jobs and their names: projects or sub-customers, customers if you make one
+              customer per job, or classes (including class names) if each job is a class, and the
+              customer each job belongs to, including customer names;
             </li>
             <li>
               cost lines from bills, checks, expenses, credit card charges and refunds, vendor
@@ -132,16 +133,31 @@ export default function PrivacyPage() {
               contain whatever text was typed into QuickBooks, such as a vendor or employee name);
             </li>
             <li>
-              time entries, as the employee&rsquo;s name, hours and a labor cost calculated from
-              the pay rate QuickBooks holds for them. We don&rsquo;t store the pay rate itself, but
-              it can be worked out from a single entry, so anyone with a login to your account can
-              see it. You can turn off labor from timesheets in Settings;
+              job cost lines from the last 12 months that aren&rsquo;t tagged to any job, so the
+              Data Health page can list them: the date, amount, form (bill, check, expense and so
+              on), bill or check number, vendor or payee name, account or product name, and the
+              line description or memo (up to 500 characters);
             </li>
-            <li>invoice, sales receipt, credit memo and refund totals, sales tax amounts, dates and payment status;</li>
+            <li>
+              time entries, as the employee&rsquo;s name, hours and a labor cost calculated from
+              the cost rate on the entry, which comes from the employee&rsquo;s cost rate in
+              QuickBooks. We don&rsquo;t store the cost rate itself, but it can be worked out from a
+              single entry, so anyone with a login to your account can see it. You can turn off
+              labor from timesheets in Settings;
+            </li>
+            <li>
+              invoice, sales receipt, credit memo and refund totals, sales tax amounts, dates and
+              payment status, and what is still owed on each open invoice;
+            </li>
+            <li>
+              income recorded against a job without an invoice, from deposits and journal entries:
+              the amount and date of each line;
+            </li>
             <li>
               estimates: the number, date, expiry date, status, whether QuickBooks has emailed it,
               the customer or project it names, and each line&rsquo;s product or service name,
-              amount and cost category (not line descriptions); and
+              amount, quantity, cost category and the purchase cost set on that product or service
+              in QuickBooks (not line descriptions); and
             </li>
             <li>your company name and basic company information.</li>
           </LegalList>
@@ -325,7 +341,20 @@ export default function PrivacyPage() {
         <LegalSub title="People you choose">
           <p>
             If you add recipients to the Weekly Profit Brief, we send it to them. The brief
-            contains your job names, customer names and profitability figures.
+            contains your job names, customer names and profitability figures. Team members you
+            invite see the companies on your account, and a view-only client login sees only the
+            one company you choose for it.
+          </p>
+        </LegalSub>
+        <LegalSub title="Firm accounts">
+          <p>
+            A bookkeeper or accounting firm on our Firm plan connects its clients&rsquo; QuickBooks
+            companies to its own account. The firm is the account holder: it and the team members
+            it invites see every client company it connects, and it controls each connection, the
+            settings and deletion. One client of a firm never sees another client&rsquo;s company.
+            Each view-only client login the firm creates sees one company, and can&rsquo;t change
+            anything. If your QuickBooks company was connected by a firm and you ask us about its
+            data, we will direct you to the firm, except where the law requires otherwise.
           </p>
         </LegalSub>
         <LegalSub title="Referrers and partners">
@@ -369,9 +398,11 @@ export default function PrivacyPage() {
             <span className="font-medium text-jp-ink">When you delete your account:</span> we
             revoke any live QuickBooks connection with Intuit, cancel any subscription, and delete
             your account together with your QuickBooks connections and tokens, jobs, cost data,
-            invoices, estimates, Weekly Profit Briefs, alerts, insights, settings, team
-            invitations, trial feedback, in-app feedback, referral codes and email records. Team
-            members you invited lose access at once; their own logins remain theirs to delete.
+            invoices, estimates, Weekly Profit Briefs, alerts, insights, settings, team and client
+            login invitations, trial feedback, in-app feedback, referral codes and the referrals
+            and credits made through them, any partner application and its commission records,
+            and email records. Team members and client logins you invited lose access at once;
+            their own logins remain theirs to delete.
           </li>
           <li>
             <span className="font-medium text-jp-ink">What we keep after deletion:</span> if you

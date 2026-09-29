@@ -21,7 +21,7 @@ import { OG_IMAGE } from "@/lib/siteMeta";
 export const metadata: Metadata = {
   title: "Partner Program for Accountants & Bookkeepers",
   description:
-    "Earn 20% to 30% recurring commission for 12 months on every contractor client you refer to JobProfitAI. Built for accountants, bookkeepers, fractional CFOs and QuickBooks ProAdvisors.",
+    "Earn 20% to 30% recurring commission for 12 months on contractor clients you refer to JobProfitAI. Built for accountants, bookkeepers, fractional CFOs and QuickBooks ProAdvisors.",
   alternates: { canonical: "/partners" },
   openGraph: {
     images: [OG_IMAGE],
@@ -49,8 +49,9 @@ const FAQ_ITEMS = [
         No, and this is deliberate, not an oversight. Being a referral partner grants you no
         access whatsoever to a contractor&rsquo;s QuickBooks data, jobs or profitability. Your
         partner dashboard shows counts and commission amounts only. If a client wants you to see
-        their numbers, they have to share them with you themselves, for example by adding your
-        address to the recipients for their Weekly Profit Brief. There is no partner-side view
+        their numbers, they have to share them with you themselves, for example by giving you a
+        team login on their account or adding your address to the recipients for their Weekly
+        Profit Brief. There is no partner-side view
         of a client&rsquo;s financial data at all. A referral link is not consent.
       </>
     ),
@@ -69,7 +70,8 @@ const FAQ_ITEMS = [
     q: "How is the commission rate decided?",
     a: (
       <>
-        By how many referred clients are currently paying. Your rate is applied at the moment each
+        By how many referred clients are currently paying for their own plan ({PLANS.firm.name}{" "}
+        accounts don&rsquo;t count). Your rate is applied at the moment each
         invoice is paid and then fixed for that commission. Moving up a tier raises the rate on
         invoices from that point forward. It doesn&rsquo;t retroactively re-price commissions
         you&rsquo;ve already earned.
@@ -121,11 +123,18 @@ const FAQ_ITEMS = [
         Yes, with the {PLANS.firm.name} plan: {PLANS.firm.priceLabel} per client company a month,{" "}
         {PLANS.firm.perCompany!.minCompanies} minimum. You connect each client&rsquo;s QuickBooks
         company to your own account, see them all on one portfolio page, and can give each client
-        a view-only login to their own company. You&rsquo;re the customer, so there&rsquo;s no
-        commission on companies on your {PLANS.firm.name} account: it would only be paying you
-        back part of your own bill. You can mix the two. A client you refer pays for themselves
-        and earns you commission; a client on your {PLANS.firm.name} account is billed to you. Each
-        QuickBooks company is one or the other.{" "}
+        a view-only login to their own company. With only 2 or 3 clients,{" "}
+        {PLANS.profit_intelligence_pro.name} covers up to{" "}
+        {PLANS.profit_intelligence_pro.limits.maxConnections} companies for{" "}
+        {PLANS.profit_intelligence_pro.priceLabel} a month, with the same portfolio page but no
+        client logins. Either way you&rsquo;re the customer, so there&rsquo;s no commission on
+        companies on your own account: it would only be paying you back part of your own bill. You
+        can mix the two. A client you refer who pays for their own {PLANS.profit_intelligence.name}{" "}
+        or {PLANS.profit_intelligence_pro.name} plan earns you commission; a client on your own
+        account is billed to you. Each QuickBooks company is one or the other. The{" "}
+        {PLANS.firm.name} plan never earns commission, including a referred firm&rsquo;s own{" "}
+        {PLANS.firm.name} subscription, and {PLANS.firm.name} accounts don&rsquo;t count toward
+        your tier.{" "}
         <Link href="/pricing#firm" className="font-medium text-jp-blue hover:underline">
           About the {PLANS.firm.name} plan
         </Link>
@@ -143,9 +152,9 @@ const FAQ_ITEMS = [
         {PLANS.profit_intelligence_pro.limits.maxConnections} QuickBooks companies, for your own
         books or for a client who doesn&rsquo;t use JobProfitAI themselves. It isn&rsquo;t the{" "}
         {PLANS.firm.name} plan: to run more clients from one login, {PLANS.firm.name} is billed as
-        normal. A QuickBooks company can only be connected to one JobProfitAI account at a time,
-        so connecting one a client has already connected moves it to your account and out of
-        theirs.
+        normal. A QuickBooks company can only be connected to one JobProfitAI account at a time.
+        If a client has already connected theirs, they disconnect it in their own account first,
+        and then you connect it to yours.
       </>
     ),
   },
@@ -184,7 +193,7 @@ export default function PartnersPage() {
         <SectionHeading
           eyebrow="Commission"
           title={`${PARTNER_TIERS[PARTNER_TIERS.length - 1].ratePct}% to ${PARTNER_TIERS[0].ratePct}% of subscription revenue, for ${PARTNER_COMMISSION_MONTHS} months per client`}
-          intro="Free months don't scale for a firm bringing in ten, twenty or fifty contractors. A recurring percentage does, so accountants earn on a different model from individual customer referrals."
+          intro="A month's credit per referral doesn't scale for a firm bringing in ten, twenty or fifty contractors. A recurring percentage does, so accountants earn on a different model from individual customer referrals."
           align="center"
         />
 
@@ -237,8 +246,9 @@ export default function PartnersPage() {
         <p className="mt-5 max-w-3xl text-sm leading-relaxed text-jp-muted">
           Commission applies to qualifying subscription revenue for each client&rsquo;s first{" "}
           {PARTNER_COMMISSION_MONTHS} successfully paid months. Sales tax is excluded. Failed
-          payments earn nothing, and refunded or disputed payments are reversed. A firm with roughly
-          20 paying clients sits in the 25% tier.
+          payments earn nothing, and refunded or disputed payments are reversed. The{" "}
+          {PLANS.firm.name} plan earns no commission and doesn&rsquo;t count toward your tier. A firm
+          with roughly 20 paying clients sits in the 25% tier.
         </p>
       </Section>
 
@@ -285,8 +295,9 @@ export default function PartnersPage() {
             <p>
               There is no way for us to give you access to a client&rsquo;s account, and no feature
               that asks them to share it. If you work in a client&rsquo;s numbers today, you do it
-              the way you already do: through the QuickBooks access they have given your firm, or by
-              sitting down with them and their own JobProfitAI login.
+              the way you already do: through the QuickBooks access they have given your firm, with
+              a team login they choose to give you on their account, or by sitting down with them
+              and their own JobProfitAI login.
             </p>
           </div>
         </Card>

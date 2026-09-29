@@ -333,6 +333,40 @@ describe("open jobs and cash", () => {
     expect(out.summary.unbilledWork).toBe(20_000);
     expect(out.summary.openJobRisk).toBe(0);
   });
+
+  it("gives client logins a plain line instead of a link to something they can't change", () => {
+    const out = feed([job({ revenue: 10_000, costs: 7_000, targetMarginPct: null })], { idleOpenJobs: 2 });
+    const codes = out.setup.map((h) => h.code);
+    expect(codes).toEqual(expect.arrayContaining(["no_target", "idle_open_jobs", "no_finished_jobs"]));
+    for (const h of out.setup) {
+      expect(h.clientNote == null || h.clientNote.startsWith("Your bookkeeper can")).toBe(true);
+    }
+    expect(out.setup.find((h) => h.code === "idle_open_jobs")!.clientNote).toBe("Your bookkeeper can mark them completed.");
+  });
+
+  it("doesn't count a job past its estimate as billing checked", () => {
+    // Cost has passed the estimate, so percent complete is capped at 100% and
+    // the "under billed" figure isn't a measurement.
+    const past = job({
+      status: "open",
+      revenue: 10_000,
+      costs: 40_000,
+      estimatedRevenue: 50_000,
+      estimatedCost: 35_000,
+      wip: { percentComplete: 1, percentCompleteSource: "cost", earnedRevenue: 50_000, overUnderBilling: -40_000, costPastEstimate: true },
+    });
+    const measured = job({
+      status: "open",
+      revenue: 30_000,
+      costs: 20_000,
+      estimatedRevenue: 50_000,
+      estimatedCost: 35_000,
+      wip: { percentComplete: 0.57, percentCompleteSource: "cost", earnedRevenue: 28_500, overUnderBilling: 1_500, costPastEstimate: false },
+    });
+    const out = feed([past, measured]);
+    expect(out.summary.billingChecked).toBe(1);
+    expect(out.items.some((i) => i.kind === "underbilled")).toBe(false);
+  });
 });
 
 describe("estimates in the feed", () => {

@@ -7,13 +7,17 @@ import {
   classJobKey,
   contractValueFromEstimates,
   costEntryId,
+  depositCostLines,
   depositRevenueLines,
   emptyLookups,
   estimateFromTxn,
   estimateRowId,
   expenseLines,
+  expenseRevenueLines,
   journalRevenueLines,
+  customersCreatedSince,
   lineRevenueId,
+  parentsNeedingFullSync,
   qboDate,
   resolveJob,
   revenueByClass,
@@ -33,6 +37,9 @@ import {
   type Lookups,
   type RevenueSourceType,
 } from "@/lib/qboNormalize";
+import { syncMayPickJobSource } from "@/lib/jobSetup";
+import { isUntaggedJobCost, UntaggedCostCollector } from "@/lib/untaggedCosts";
+import { replaceUntaggedCosts, replaceUntaggedCostsForTxns } from "@/lib/untaggedCostStore";
 
 /**
  * The QuickBooks sync engine: reads a connection's job-costing data from
@@ -43,7 +50,7 @@ import {
  * nightly sync cron and by the weekly-email cron. Callers decide whether the
  * caller may sync this connection; this module only does the work.
  *
- * What a payload MEANS (bill rate vs pay rate, refunds, tax, which
+ * What a payload MEANS (bill rate vs cost rate, refunds, tax, which
  * customers are jobs) is decided in src/lib/qboNormalize.ts, which is pure
  * and tested. This file is the database side: it keeps local rows exactly
  * in step with QuickBooks, which means it also REMOVES rows. A full sync
@@ -60,7 +67,7 @@ import {
  * syncVersion is lower gets a full sync next time, which rewrites every
  * row under the new rules and sweeps away rows stored under the old ones.
  *
- * 2: row ids include the connection id; labor at pay rate; refunds,
+ * 2: row ids include the connection id; labor at cost rate; refunds,
  *    vendor credits, sales receipts, credit memos, journal entries; tax
  *    removed from revenue; deletions honoured.
  * 3: estimate lines, numbers, email status and expiry dates, for the
@@ -70,8 +77,15 @@ import {
  * 5: jobs by QuickBooks Class; hours on time entries; quantities and item
  *    costs on estimate lines; open invoice balances; lines posted to
  *    balance-sheet and income accounts no longer counted as job cost.
+ * 6: journal entries judged by the same account rule as bills, so closing
+ *    Construction in Progress to cost of goods sold counts once; retainage
+ *    and other receivable asset accounts never count as cost; income lines on
+ *    checks, bills and vendor credits (a refund check to a customer) stored
+ *    as revenue; supplier refunds deposited to a cost account reduce the
+ *    job's cost; a discount with its own class comes off that class only;
+ *    time entries with start and end times always have the break taken off.
  */
-export const SYNC_VERSION = 5;
+export const SYNC_VERSION = 6;
 
 /**
  * The last version that changed how COSTS and REVENUE are stored. The weekly
@@ -80,9 +94,10 @@ export const SYNC_VERSION = 5;
  * estimate details, so a brief never waits on it. Version 4 adds revenue
  * (bank deposits and journal entries), so a brief waits for it rather than
  * going out with some jobs upgraded and others not. Version 5 stops counting
- * balance-sheet postings as cost, so it waits for that too.
+ * balance-sheet postings as cost, so it waits for that too. Version 6 changes
+ * journal entry costs, refunds and deposits, so it waits for that as well.
  */
-export const COST_SYNC_VERSION = 5;
+export const COST_SYNC_VERSION = 6;
 
 const FULL_SYNC_INTERVAL_DAYS = 30;
 /** Data Health tallies look at the last 12 months, not the company's whole history. */
@@ -99,10 +114,234 @@ const REVENUE_TYPES: RevenueSourceType[] = ["Invoice", "SalesReceipt", "CreditMe
 const CDC_ENTITIES = ["Customer", ...EXPENSE_TYPES, "TimeActivity", ...REVENUE_TYPES, "Deposit", "Estimate"];
 /** Classes are only asked for when jobs are classes: companies on plans without class tracking have none to send. */
 const cdcEntitiesFor = (jobSource: JobSource) => (jobSource === "classes" ? ["Class", ...CDC_ENTITIES] : CDC_ENTITIES);
-/** Source types stored as revenue rows (InvoiceSummary). JournalEntry is also a cost type. */
-const REVENUE_ROW_TYPES = new Set<string>([...REVENUE_TYPES, "Deposit", "JournalEntry"]);
-/** Source types stored as cost rows (CostEntry). */
-const COST_ROW_TYPES = new Set<string>([...EXPENSE_TYPES, "TimeActivity"]);
+/**
+ * Source types stored as revenue rows (InvoiceSummary). Every expense type
+ * is one too: a journal entry's income lines, and a refund check to a
+ * customer posted to an income account.
+ */
+const REVENUE_ROW_TYPES = new Set<string>([...REVENUE_TYPES, "Deposit", ...EXPENSE_TYPES]);
+/** Source types stored as cost rows (CostEntry). Deposit is also a revenue type: a supplier refund deposited to a cost account is a cost reduction. */
+const COST_ROW_TYPES = new Set<string>([...EXPENSE_TYPES, "TimeActivity", "Deposit"]);
+
+// ---------------------------------------------------------------------------
+// Full syncs over several runs
+// ---------------------------------------------------------------------------
+
+/**
+ * A full sync's steps, in order: the jobs, then each data type. Each step is
+ * read from QuickBooks in full before any of its stored rows are changed or
+ * removed, and nothing in a later step depends on an earlier step's rows, so
+ * a full sync can stop between two steps and carry on in a later run with
+ * the steps it hadn't done.
+ *
+ * That is what the deadline is for (see runSyncForConnection). The platform
+ * stops a function at its time limit wherever it is, so a company with years
+ * of history whose full sync took longer never finished, and was retried
+ * every hour, taking the rest of that hour's work down with it each time.
+ */
+export const FULL_SYNC_STEPS: readonly string[] = ["Jobs", ...EXPENSE_TYPES, "TimeActivity", ...REVENUE_TYPES, "Deposit", "Estimate"];
+/** How long a step is expected to take when no earlier full sync timed it. */
+const DEFAULT_STEP_MS = 30_000;
+/** Reading the chart of accounts and product list, which every run does first ("Lookups" in stepMs). */
+const DEFAULT_LOOKUPS_MS = 10_000;
+/** A step timed before is expected to take this much longer, at least MIN_STEP_MS. */
+const STEP_ESTIMATE_FACTOR = 1.5;
+const MIN_STEP_MS = 5_000;
+/**
+ * How far past its deadline a run's first step may be expected to finish.
+ * Callers keep at least a minute between their deadline and the function's
+ * time limit (the nightly job 80 seconds, Sync now 60), and a run that does
+ * nothing gets nowhere, so its first step may use most of that margin, but a
+ * step expected to run into the time limit itself isn't started.
+ */
+const FIRST_STEP_GRACE_MS = 45_000;
+/**
+ * A run whose first step doesn't fit is left for the next one (see
+ * runSyncForConnection), unless it started this soon after its caller's time
+ * window opened: a later run would have no more time, so it goes ahead.
+ */
+const WINDOW_START_SLACK_MS = 30_000;
+/**
+ * Progress older than this is started over. The run that finishes a full
+ * sync hands the next incremental sync the first run's start (see
+ * runSyncForConnection), and QuickBooks' change feed only goes back 30 days.
+ */
+const MAX_PROGRESS_AGE_MS = 20 * 86_400_000;
+/** Runs one full sync may take (stopped partway or cut off) before it's tried once a day and the company is told. */
+export const FULL_SYNC_MAX_PARTS = 8;
+/**
+ * Runs cut off by the platform's time limit before the same. Fewer: each one
+ * also ends every other sync and alert email in that run.
+ */
+export const FULL_SYNC_MAX_CUT_OFF = 3;
+const DAY_MS = 86_400_000;
+/** A full sync that failed partway is continued after this, like any failed sync. */
+const RETRY_FAILED_FULL_SYNC_MS = 2 * 3_600_000;
+/** What a sync the platform stopped at its time limit is closed with (see runSyncForConnection). */
+const INTERRUPTED_MESSAGE = "Interrupted before it finished (time limit). Retried automatically.";
+/**
+ * The sync error a company gets when its full sync keeps running out of
+ * time. Shown in Settings and, like any failed sync, flagged on every
+ * dashboard page (src/lib/syncProblem.ts).
+ */
+export const FULL_SYNC_TOO_LONG_MESSAGE =
+  "Reading this company's QuickBooks history keeps running out of time, so some of its figures may be out of date. It's tried again once a day. If this hasn't cleared in a few days, email support@jobprofitai.com.";
+
+/**
+ * Whether this company's next sync is a full one: never had one, the last
+ * one was a while ago, its rows were stored under older rules, or one is
+ * owed or partway (fullSyncContinueAt). Pure; the nightly job decides by it
+ * which companies go to its full-sync slot.
+ */
+export function fullSyncDue(
+  c: { lastFullSyncAt: Date | null; syncVersion: number; fullSyncContinueAt?: Date | null },
+  now: number = Date.now()
+): boolean {
+  if (c.fullSyncContinueAt != null) return true;
+  if (c.syncVersion < SYNC_VERSION) return true;
+  return !c.lastFullSyncAt || now - c.lastFullSyncAt.getTime() > FULL_SYNC_INTERVAL_DAYS * DAY_MS;
+}
+
+/**
+ * How long a step (or "Lookups") is expected to take. Pure. `history` is how
+ * long each took when last timed.
+ */
+export function fullSyncStepMs(step: string, history: Record<string, number>): number {
+  const last = history[step];
+  if (typeof last === "number" && last > 0) return Math.max(MIN_STEP_MS, last * STEP_ESTIMATE_FACTOR);
+  return step === "Lookups" ? DEFAULT_LOOKUPS_MS : DEFAULT_STEP_MS;
+}
+
+/**
+ * Whether a full sync with a deadline has time to start this step. Pure.
+ * `graceMs` lets it run that far past the deadline (a run's first step; see
+ * FIRST_STEP_GRACE_MS).
+ */
+export function fullSyncStepFits(
+  step: string,
+  deadline: number | undefined,
+  history: Record<string, number>,
+  now: number = Date.now(),
+  graceMs: number = 0
+): boolean {
+  if (deadline == null) return true;
+  return now + fullSyncStepMs(step, history) <= deadline + graceMs;
+}
+
+/**
+ * Whether a run's first step, after the lookups every run reads, is expected
+ * to finish within its deadline plus FIRST_STEP_GRACE_MS. Pure.
+ */
+export function fullSyncFirstStepFits(
+  step: string,
+  deadline: number | undefined,
+  history: Record<string, number>,
+  now: number = Date.now()
+): boolean {
+  if (deadline == null) return true;
+  return fullSyncStepFits(step, deadline, history, now + fullSyncStepMs("Lookups", history), FIRST_STEP_GRACE_MS);
+}
+
+/**
+ * Whether a full sync, given the runs it has taken so far without finishing
+ * (its SyncRun rows since the last finished one), still can't finish: it's
+ * then tried once a day and the company is told. Pure.
+ */
+export function fullSyncStuck(runs: { status: string; errorMessage: string | null }[]): boolean {
+  const cutOff = runs.filter((r) => r.status === "error" && r.errorMessage === INTERRUPTED_MESSAGE).length;
+  const parts = runs.filter((r) => r.status === "partial").length + cutOff;
+  return parts >= FULL_SYNC_MAX_PARTS || cutOff >= FULL_SYNC_MAX_CUT_OFF;
+}
+
+interface SyncTotals {
+  costRowsWritten: number;
+  costRowsUpdated: number;
+  costRowsRemoved: number;
+  revenueRowsUpdated: number;
+  revenueRowsRemoved: number;
+  /** See rebuildChangedFigures: summed over every run of a full sync. */
+  figureRowsChanged: number;
+}
+
+const emptyTotals = (): SyncTotals => ({
+  costRowsWritten: 0,
+  costRowsUpdated: 0,
+  costRowsRemoved: 0,
+  revenueRowsUpdated: 0,
+  revenueRowsRemoved: 0,
+  figureRowsChanged: 0,
+});
+
+/**
+ * Where a full sync that stopped partway got to, kept on its SyncRun row
+ * (entitiesUpdated.fullSyncProgress) for the run that carries on. Counts and
+ * tallies are running totals, so the run that finishes records the whole
+ * sync's figures, which Data Health reads.
+ */
+export interface FullSyncProgress {
+  /** When the first run started: every finished step's rows are at least this fresh. */
+  startedAt: string;
+  version: number;
+  jobSource: JobSource;
+  laborFromTimeEntries: boolean;
+  /** Steps finished (FULL_SYNC_STEPS), whether QuickBooks sent that type or failed to. */
+  done: string[];
+  parts: number;
+  jobs: number;
+  fetched: Record<string, number>;
+  tallies: Tallies;
+  totals: SyncTotals;
+  errors: Record<string, string>;
+  stepMs: Record<string, number>;
+  /** When this progress was last saved (after a step, or when the run stopped). */
+  savedAt?: string;
+}
+
+/**
+ * The progress a full sync may carry on from, or null to start over: one
+ * made under other rules or another job setup, one older than a rebuild
+ * Settings asked for since, one too old, or one some sync has finished since
+ * (lastSyncedAt only moves when a sync finishes, a full sync over several
+ * runs only when its last step does). Resuming that would skip steps whose
+ * rows have moved on, and move lastSyncedAt back. Pure.
+ */
+export function usableFullSyncProgress(
+  stored: unknown,
+  c: { jobSource: string | null; laborFromTimeEntries: boolean; rebuildRequestedAt: Date | null; lastSyncedAt: Date | null },
+  now: number = Date.now()
+): FullSyncProgress | null {
+  if (!stored || typeof stored !== "object") return null;
+  const p = stored as Partial<FullSyncProgress>;
+  const started = typeof p.startedAt === "string" ? new Date(p.startedAt).getTime() : NaN;
+  if (!Number.isFinite(started) || !Array.isArray(p.done) || !p.tallies || !p.totals) return null;
+  if (p.version !== SYNC_VERSION) return null;
+  if (p.jobSource !== jobSourceOf(c.jobSource) || p.laborFromTimeEntries !== c.laborFromTimeEntries) return null;
+  if (c.rebuildRequestedAt && c.rebuildRequestedAt.getTime() > started) return null;
+  if (c.lastSyncedAt && c.lastSyncedAt.getTime() >= started) return null;
+  if (now - started > MAX_PROGRESS_AGE_MS) return null;
+  return p as FullSyncProgress;
+}
+
+function jobSourceOf(stored: string | null): JobSource {
+  return (stored === "customers" || stored === "classes" ? stored : "projects") as JobSource;
+}
+
+/** Adds one run's tallies to the totals so far. */
+function addTallies(a: Tallies, b: Tallies): Tallies {
+  return {
+    untaggedJobCostCount: a.untaggedJobCostCount + b.untaggedJobCostCount,
+    untaggedJobCostAmount: a.untaggedJobCostAmount + b.untaggedJobCostAmount,
+    untaggedOverheadCount: a.untaggedOverheadCount + b.untaggedOverheadCount,
+    untaggedOverheadAmount: a.untaggedOverheadAmount + b.untaggedOverheadAmount,
+    unresolvedExpenseCount: a.unresolvedExpenseCount + b.unresolvedExpenseCount,
+    unresolvedExpenseAmount: a.unresolvedExpenseAmount + b.unresolvedExpenseAmount,
+    costsMatchedViaParentCount: a.costsMatchedViaParentCount + b.costsMatchedViaParentCount,
+    costsMatchedViaParentAmount: a.costsMatchedViaParentAmount + b.costsMatchedViaParentAmount,
+    timeEntriesWithoutPayRate: a.timeEntriesWithoutPayRate + b.timeEntriesWithoutPayRate,
+    vendorTimeEntriesSkipped: a.vendorTimeEntriesSkipped + b.vendorTimeEntriesSkipped,
+    unresolvedSamples: [...a.unresolvedSamples, ...b.unresolvedSamples].slice(0, 5),
+  };
+}
 
 export class SyncAlreadyRunningError extends Error {
   constructor() {
@@ -111,30 +350,138 @@ export class SyncAlreadyRunningError extends Error {
   }
 }
 
+/**
+ * Thrown by an incremental-only sync (see runSyncForConnection) instead of
+ * reading the company's whole history. The caller carries on with what is
+ * already synced; the nightly sync does the full read.
+ */
+export class FullSyncNotAllowedError extends Error {
+  constructor(reason: "full_sync_needed" | "change_feed_failed") {
+    super(
+      reason === "change_feed_failed"
+        ? "QuickBooks' list of recent changes couldn't be read in full, so this sync stopped. The nightly sync will try again."
+        : "This company needs a full read of its QuickBooks data, which is left to the nightly sync."
+    );
+    this.name = "FullSyncNotAllowedError";
+  }
+}
+
 export async function runSyncForConnection(
   connectionId: string,
-  options: { forceFull?: boolean } = {}
+  options: {
+    forceFull?: boolean;
+    /**
+     * Never run a full sync: throw FullSyncNotAllowedError instead, both when
+     * one is due and when the change feed fails. For the weekly brief job,
+     * where a full sync can outlast the whole run and take other companies'
+     * briefs down with it.
+     */
+    incrementalOnly?: boolean;
+    /**
+     * When (ms since the epoch) this sync should be done by. A full sync
+     * stops starting new steps when too little time is left before it, and
+     * the next full sync carries on with the steps it hadn't done (see
+     * FULL_SYNC_STEPS). For the nightly job, whose whole run has a time
+     * limit. Without one, a full sync reads everything in one go.
+     */
+    deadline?: number;
+    /**
+     * Don't run a full sync here, leave it to the nightly job's one
+     * full-sync slot: when one is due, or when the change feed fails, the
+     * claim is handed back as it was, the next nightly run is made to do the
+     * full sync, and FullSyncNotAllowedError is thrown. For the nightly job's
+     * other workers, so only one full sync runs at a time.
+     */
+    deferFullSync?: boolean;
+    /**
+     * With forceFull: carry on from a full sync that stopped partway less
+     * than this long ago, instead of starting again from the first step. For
+     * Sync now, which has a deadline: a large company's second press picks
+     * up where the first one stopped, rather than rereading the same steps
+     * and never finishing.
+     */
+    resumeWithinMs?: number;
+    /**
+     * With a deadline: when the caller's time window opened (default: now).
+     * A full sync whose first step wouldn't finish in time starts nothing
+     * when called well into the window, and is first in line next time.
+     */
+    windowStart?: number;
+  } = {}
 ): Promise<Record<string, any>> {
+  const calledAt = Date.now();
+  // What the claim overwrites, so a sync that doesn't run can hand it back
+  // as it was: nothing ran, so nothing failed.
+  const beforeClaim =
+    options.incrementalOnly || options.deferFullSync || options.deadline != null
+      ? await prisma.quickBooksConnection.findUnique({
+          where: { id: connectionId },
+          select: { lastSyncStatus: true, lastSyncAttemptAt: true },
+        })
+      : null;
   if (!(await claimSync(connectionId))) throw new SyncAlreadyRunningError();
   // Read after taking the claim, so the refresh token is the one the last
   // sync left behind, not one it rotated a moment ago.
   const connection = await prisma.quickBooksConnection.findUniqueOrThrow({ where: { id: connectionId } });
+  const handBack = (extra: Prisma.QuickBooksConnectionUpdateManyMutationInput = {}) =>
+    prisma.quickBooksConnection.updateMany({
+      where: { id: connection.id, lastSyncStatus: "in_progress" },
+      data: { lastSyncStatus: beforeClaim?.lastSyncStatus ?? null, lastSyncAttemptAt: beforeClaim?.lastSyncAttemptAt ?? null, ...extra },
+    });
 
-  const fullSyncDue =
-    !connection.lastFullSyncAt ||
-    Date.now() - connection.lastFullSyncAt.getTime() > FULL_SYNC_INTERVAL_DAYS * 86_400_000;
   // forceFull exists because an incremental sync cannot repair anything: it
   // only sees what QuickBooks says changed. The same goes for a connection
-  // stored under an older version of these rules.
-  let mode: "full" | "incremental" =
-    options.forceFull || fullSyncDue || connection.syncVersion < SYNC_VERSION ? "full" : "incremental";
+  // stored under an older version of these rules, and for a full sync that
+  // stopped partway (see fullSyncDue).
+  let mode: "full" | "incremental" = options.forceFull || fullSyncDue(connection) ? "full" : "incremental";
+
+  // Checked here as well as by the caller: Settings can ask for a rebuild
+  // (which clears lastFullSyncAt) between the caller's check and the claim.
+  if (mode === "full" && (options.incrementalOnly || options.deferFullSync)) {
+    await handBack();
+    throw new FullSyncNotAllowedError("full_sync_needed");
+  }
 
   // A sync cut off by the platform's time limit never reaches its own
   // error handling, so its record is still "in progress". Close it now.
   await prisma.syncRun.updateMany({
     where: { connectionId: connection.id, status: "in_progress", startedAt: { lt: new Date(Date.now() - STALE_SYNC_MINUTES * 60_000) } },
-    data: { status: "error", finishedAt: new Date(), errorMessage: "Interrupted before it finished (time limit). Retried automatically." },
+    data: { status: "error", finishedAt: new Date(), errorMessage: INTERRUPTED_MESSAGE },
   });
+  // Read before this run's own SyncRun exists. Sync now (forceFull) always
+  // reads everything afresh: a person pressing it wants what QuickBooks says
+  // now, not steps read hours ago.
+  let plan =
+    mode === "full"
+      ? await planFullSync(connection, {
+          fresh: options.forceFull === true && options.resumeWithinMs == null,
+          maxAgeMs: options.forceFull === true ? options.resumeWithinMs : undefined,
+        })
+      : null;
+  // Too little time left in the caller's window for even the first step:
+  // nothing is started (no run is recorded, so it isn't a try), and the
+  // company is first in line for the next window (fullSyncContinueAt at the
+  // epoch sorts first), where it starts at the beginning. Early in a window
+  // it goes ahead regardless: no later run would have more time, and a step
+  // that fits in no run at all ends up flagged (fullSyncStuck).
+  if (plan != null && options.deadline != null) {
+    const first = FULL_SYNC_STEPS.find((step) => !plan!.resume?.done.includes(step)) ?? FULL_SYNC_STEPS[0];
+    const lateInWindow = Date.now() - (options.windowStart ?? calledAt) > WINDOW_START_SLACK_MS;
+    if (lateInWindow && !fullSyncFirstStepFits(first, options.deadline, plan.stepMs)) {
+      await handBack({ fullSyncContinueAt: new Date(0) });
+      const remaining = FULL_SYNC_STEPS.filter((step) => !plan!.resume?.done.includes(step));
+      return { ok: true, mode, unfinished: true, deferred: true, remaining };
+    }
+  }
+  // Running out of time again and again: tried once a day from now on,
+  // whatever happens to this run (the platform can stop it without a trace).
+  const slowLane = plan != null && options.deadline != null && fullSyncStuck(plan.tries);
+  if (slowLane) {
+    await prisma.quickBooksConnection.update({
+      where: { id: connection.id },
+      data: { fullSyncContinueAt: new Date(Date.now() + DAY_MS), lastSyncError: FULL_SYNC_TOO_LONG_MESSAGE },
+    });
+  }
   const syncRun = await prisma.syncRun.create({
     data: { connectionId: connection.id, status: "in_progress", mode },
   });
@@ -143,8 +490,10 @@ export async function runSyncForConnection(
   // The next incremental sync asks QuickBooks for changes since this sync
   // STARTED (less a small overlap), not since it finished: anything edited
   // while this one was running would otherwise fall in the gap until the
-  // next full sync. Reprocessing a transaction twice is harmless.
-  const syncStartedAt = new Date();
+  // next full sync. Reprocessing a transaction twice is harmless. A full sync
+  // over several runs started when its first run did.
+  const syncStartedAt = plan?.resume ? new Date(plan.resume.startedAt) : new Date();
+  let handedBack = false;
   try {
     const accessToken = await getValidAccessToken(connection);
     const realmId = decryptToken(connection.realmId);
@@ -152,14 +501,27 @@ export async function runSyncForConnection(
       connectionId: connection.id,
       realmId,
       accessToken,
-      jobSource: (connection.jobSource === "customers" || connection.jobSource === "classes" ? connection.jobSource : "projects") as JobSource,
-      autoDetectSource: !connection.lastSyncedAt,
+      jobSource: jobSourceOf(connection.jobSource),
+      // Checked again, atomically, at the moment of switching (see runFullSync).
+      autoDetectSource: syncMayPickJobSource(connection),
       laborFromTimeEntries: connection.laborFromTimeEntries,
       startedAt: syncStartedAt,
+      previousSyncAt: connection.lastSyncedAt,
     };
 
+    let unfinished: FullSyncProgress | null = null;
+    // Where the full sync has got to, after each step: the platform can stop
+    // this run at its time limit without warning.
+    const onStep = async (progress: FullSyncProgress, soFar: Record<string, any>) => {
+      await prisma.syncRun.update({
+        where: { id: syncRun.id },
+        data: { entitiesUpdated: { ...soFar, fullSyncProgress: progress } as unknown as Prisma.InputJsonValue },
+      });
+    };
     if (mode === "full") {
-      counts = await runFullSync(ctx);
+      const part = await runFullSync(ctx, { deadline: options.deadline, resume: plan?.resume ?? null, history: plan?.stepMs ?? {}, onStep });
+      counts = part.counts;
+      unfinished = part.progress;
     } else {
       try {
         counts = await runIncrementalSync(
@@ -168,10 +530,26 @@ export async function runSyncForConnection(
         );
       } catch (cdcErr) {
         if (isReconnectError(cdcErr)) throw cdcErr;
+        // Recorded as a failed sync, which it is; the nightly sync retries it.
+        if (options.incrementalOnly) throw new FullSyncNotAllowedError("change_feed_failed");
+        if (options.deferFullSync) {
+          // Nothing was written. The next nightly run does the full read in
+          // its full-sync slot; until then the company shows as it was.
+          await prisma.syncRun.update({
+            where: { id: syncRun.id },
+            data: { status: "error", finishedAt: new Date(), errorMessage: "Left for a full sync: QuickBooks' list of recent changes couldn't be read in full." },
+          });
+          await handBack({ fullSyncContinueAt: new Date() });
+          handedBack = true;
+          throw new FullSyncNotAllowedError("change_feed_failed");
+        }
         // CDC itself failing is rare; a full read is the safe fallback.
         mode = "full";
         await prisma.syncRun.update({ where: { id: syncRun.id }, data: { mode } });
-        counts = await runFullSync(ctx);
+        plan = await planFullSync(connection, { fresh: true });
+        const part = await runFullSync(ctx, { deadline: options.deadline, resume: null, history: plan.stepMs, onStep });
+        counts = part.counts;
+        unfinished = part.progress;
       }
     }
 
@@ -184,6 +562,35 @@ export async function runSyncForConnection(
       }
     } catch {
       // Non-fatal: the dashboard falls back to a generic label.
+    }
+
+    if (unfinished) {
+      // Stopped partway, for want of time. Nothing about the company is
+      // marked synced (lastSyncedAt, lastFullSyncAt and syncVersion wait for
+      // the run that finishes), and the next nightly run carries on.
+      const stoppedAt = new Date();
+      const stuck = options.deadline != null && fullSyncStuck([...(plan?.tries ?? []), { status: "partial", errorMessage: null }]);
+      await prisma.syncRun.update({
+        where: { id: syncRun.id },
+        data: {
+          status: "partial",
+          finishedAt: stoppedAt,
+          entitiesUpdated: { ...counts, fullSyncProgress: unfinished } as unknown as Prisma.InputJsonValue,
+        },
+      });
+      await prisma.quickBooksConnection.update({
+        where: { id: connection.id },
+        data: stuck
+          ? {
+              lastSyncStatus: "error",
+              lastSyncError: FULL_SYNC_TOO_LONG_MESSAGE,
+              lastSyncAttemptAt: stoppedAt,
+              fullSyncContinueAt: new Date(stoppedAt.getTime() + DAY_MS),
+            }
+          : { lastSyncStatus: "success", lastSyncError: null, lastSyncAttemptAt: stoppedAt, fullSyncContinueAt: stoppedAt },
+      });
+      const remaining = FULL_SYNC_STEPS.filter((step) => !unfinished!.done.includes(step));
+      return { ok: true, mode, unfinished: true, remaining, ...counts };
     }
 
     const now = new Date();
@@ -210,6 +617,16 @@ export async function runSyncForConnection(
         recordFull = false;
       }
     }
+    // A full sync of a company stored under older rules for costs and revenue
+    // can rewrite its figures without anything happening in QuickBooks.
+    // Marked (as of the end of the rewrite) so the brief and alerts don't
+    // report the difference as a change on the jobs, and only when figures
+    // really moved: marking every upgrade would stop tracked pricing changes
+    // and week-over-week comparisons for companies whose figures came out the
+    // same. A version that only adds fields (invoice numbers, due dates)
+    // changes no figures. Not on a company's first sync: nothing was stored.
+    const rebuiltUnderNewRules =
+      mode === "full" && connection.syncVersion < COST_SYNC_VERSION && connection.lastSyncedAt != null && rebuildChangedFigures(counts);
     await prisma.quickBooksConnection.update({
       where: { id: connection.id },
       data: {
@@ -218,6 +635,7 @@ export async function runSyncForConnection(
         lastSyncError: null,
         lastSyncAttemptAt: now,
         lastSyncEntitiesUpdated: counts,
+        ...(rebuiltUnderNewRules ? { basisChangedAt: now } : {}),
       },
     });
     if (recordFull) {
@@ -231,7 +649,13 @@ export async function runSyncForConnection(
         data: { lastFullSyncAt: now, syncVersion: SYNC_VERSION, fullSyncCutShortAt: null },
       });
     }
+    if (mode === "full") {
+      // Every step is done: nothing is owed any more, whether or not this
+      // counts as the full sync (see recordFull).
+      await prisma.quickBooksConnection.update({ where: { id: connection.id }, data: { fullSyncContinueAt: null } });
+    }
   } catch (err) {
+    if (handedBack) throw err;
     const message = err instanceof Error ? err.message : "Sync failed.";
     await prisma.syncRun.update({
       where: { id: syncRun.id },
@@ -241,6 +665,16 @@ export async function runSyncForConnection(
       where: { id: connection.id },
       data: { lastSyncStatus: "error", lastSyncError: message, lastSyncAttemptAt: new Date() },
     });
+    if (mode === "full") {
+      // A full sync being carried on is retried a couple of hours later, like
+      // any failed sync, not on the very next run (a day later if it's
+      // already down to once a day).
+      const retryAt = new Date(Date.now() + RETRY_FAILED_FULL_SYNC_MS);
+      await prisma.quickBooksConnection.updateMany({
+        where: { id: connection.id, fullSyncContinueAt: { not: null, lt: retryAt } },
+        data: { fullSyncContinueAt: retryAt },
+      });
+    }
     throw err;
   }
 
@@ -374,10 +808,28 @@ interface SyncCtx {
   realmId: string;
   accessToken: string;
   jobSource: JobSource;
-  /** First sync: switch to one-customer-per-job (or classes) when there are no projects. */
+  /**
+   * First sync, with no job setup confirmed by the contractor: switch to
+   * one customer per job when there are no projects. Classes are never
+   * chosen automatically; the dashboard asks.
+   */
   autoDetectSource: boolean;
   laborFromTimeEntries: boolean;
   startedAt: Date;
+  /**
+   * When the company's last finished sync started (its lastSyncedAt before
+   * this sync). A transaction QuickBooks last changed before then was read
+   * by that sync, so rows new on it now come from new rules, not new work
+   * (see Writer.txnUnchangedSinceLastSync).
+   */
+  previousSyncAt?: Date | null;
+  /**
+   * Set by an incremental sync that gave a parent customer or class its
+   * first job or a second one: costs tagged to the parent must move onto
+   * the new job or back off the old one, which only a full sync does (see
+   * parentsNeedingFullSync).
+   */
+  fullSyncNeeded?: boolean;
 }
 
 interface ExistingCost {
@@ -404,6 +856,8 @@ interface ExistingRevenue {
   qboSourceType: string;
   qboInvoiceId: string;
   openBalance: number | null;
+  docNumber: string | null;
+  dueDate: number | null;
 }
 
 interface Tallies {
@@ -434,6 +888,26 @@ const newTallies = (): Tallies => ({
   unresolvedSamples: [],
 });
 
+/**
+ * Whether a row as this sync read it changes a job's figures, next to the row
+ * stored: a different amount or a different job. A memo, an invoice number
+ * or a due date filled in for the first time changes no job's figures.
+ */
+export function figuresDiffer(stored: { jobId: string; amount: number }, next: { jobId: string; amount: number }): boolean {
+  return stored.jobId !== next.jobId || Math.abs(stored.amount - next.amount) >= 0.005;
+}
+
+/**
+ * Whether a full sync changed any job's figures: stored rows given another
+ * amount or job, rows added to a transaction that already had rows stored,
+ * or rows removed. Counts from a sync that doesn't report figureRowsChanged
+ * are taken to have changed them, the safe side for the brief and alerts.
+ */
+export function rebuildChangedFigures(counts: Record<string, any>): boolean {
+  if (typeof counts.figureRowsChanged !== "number") return true;
+  return counts.figureRowsChanged > 0 || Number(counts.costRowsRemoved ?? 0) > 0 || Number(counts.revenueRowsRemoved ?? 0) > 0;
+}
+
 /** Collects the writes a sync decides on, then applies them in bulk. */
 class Writer {
   private costCreates: any[] = [];
@@ -442,11 +916,30 @@ class Writer {
   revenueUpdates = 0;
   seenCost = new Set<string>();
   seenRevenue = new Set<string>();
+  /**
+   * Rows whose amount or job this sync changed, plus new rows on a
+   * transaction that already had rows stored (a journal entry's credit line
+   * read for the first time under new rules). See rebuildChangedFigures.
+   */
+  figureChanges = 0;
+  /**
+   * Set by the full sync for each transaction before it's processed: true
+   * when QuickBooks last changed it before the last finished sync, so a row
+   * new on it now comes from new rules (a supplier refund deposited to a
+   * cost account, a refund check stored as revenue, rows put back after the
+   * job setup changed), and counts as a figure change like a row new on a
+   * transaction that had rows stored.
+   */
+  txnUnchangedSinceLastSync = false;
+  private readonly storedTxns = new Set<string>();
 
   constructor(
     private readonly existingCost: Map<string, ExistingCost>,
     private readonly existingRevenue: Map<string, ExistingRevenue>
-  ) {}
+  ) {
+    for (const r of existingCost.values()) this.storedTxns.add(`${r.qboSourceType}:${r.qboSourceId}`);
+    for (const r of existingRevenue.values()) this.storedTxns.add(`${r.qboSourceType}:${r.qboInvoiceId}`);
+  }
 
   async cost(row: {
     id: string;
@@ -464,10 +957,12 @@ class Writer {
     this.seenCost.add(row.id);
     const ex = this.existingCost.get(row.id);
     if (!ex) {
+      if (this.txnUnchangedSinceLastSync || this.storedTxns.has(`${row.qboSourceType}:${row.qboSourceId}`)) this.figureChanges++;
       this.costCreates.push(row);
       if (this.costCreates.length >= 500) await this.flush();
       return;
     }
+    if (figuresDiffer(ex, row)) this.figureChanges++;
     const changed =
       ex.jobId !== row.jobId ||
       Math.abs(ex.amount - row.amount) >= 0.005 ||
@@ -504,21 +999,28 @@ class Writer {
     status: string;
     txnDate: Date;
     openBalance?: number | null;
+    docNumber?: string | null;
+    dueDate?: Date | null;
   }) {
     this.seenRevenue.add(row.id);
     const ex = this.existingRevenue.get(row.id);
     if (!ex) {
+      if (this.txnUnchangedSinceLastSync || this.storedTxns.has(`${row.qboSourceType}:${row.qboInvoiceId}`)) this.figureChanges++;
       this.revenueCreates.push(row);
       if (this.revenueCreates.length >= 500) await this.flush();
       return;
     }
+    if (figuresDiffer(ex, row)) this.figureChanges++;
     const changed =
       ex.jobId !== row.jobId ||
       Math.abs(ex.amount - row.amount) >= 0.005 ||
       Math.abs((ex.taxAmount ?? 0) - row.taxAmount) >= 0.005 ||
       ex.status !== row.status ||
       ex.txnDate !== row.txnDate.getTime() ||
-      (ex.openBalance ?? null) !== (row.openBalance ?? null);
+      (ex.openBalance ?? null) !== (row.openBalance ?? null) ||
+      // Rows stored before these were kept get them on the next full sync.
+      (ex.docNumber ?? null) !== (row.docNumber ?? null) ||
+      (ex.dueDate ?? null) !== (row.dueDate?.getTime() ?? null);
     if (!changed) return;
     this.revenueUpdates++;
     await prisma.invoiceSummary.update({
@@ -530,6 +1032,8 @@ class Writer {
         status: row.status,
         txnDate: row.txnDate,
         openBalance: row.openBalance ?? null,
+        docNumber: row.docNumber ?? null,
+        dueDate: row.dueDate ?? null,
       },
     });
   }
@@ -584,19 +1088,24 @@ async function deleteRevenueRows(ids: string[]): Promise<number> {
 }
 
 /**
- * Stored rows to diff against. All of them for a full sync; for an
+ * Stored rows to diff against. For a full sync, all of them of the source
+ * types in `onlyTypes` (each step of a full sync loads its own type); for an
  * incremental one, only those of the transactions in `onlyTxns` (source
  * type -> QuickBooks ids).
  */
-async function loadExisting(connectionId: string, onlyTxns?: Map<string, string[]>) {
+async function loadExisting(connectionId: string, onlyTxns?: Map<string, string[]>, onlyTypes?: string[]) {
   // A journal entry can carry both cost and income lines, so its ids are
   // looked up on both sides.
   const costFilter = onlyTxns
     ? [...onlyTxns].filter(([t]) => COST_ROW_TYPES.has(t)).map(([t, ids]) => ({ qboSourceType: t, qboSourceId: { in: ids } }))
-    : null;
+    : onlyTypes
+      ? onlyTypes.filter((t) => COST_ROW_TYPES.has(t)).map((t) => ({ qboSourceType: t }))
+      : null;
   const revenueFilter = onlyTxns
     ? [...onlyTxns].filter(([t]) => REVENUE_ROW_TYPES.has(t)).map(([t, ids]) => ({ qboSourceType: t, qboInvoiceId: { in: ids } }))
-    : null;
+    : onlyTypes
+      ? onlyTypes.filter((t) => REVENUE_ROW_TYPES.has(t)).map((t) => ({ qboSourceType: t }))
+      : null;
   const [costRows, revenueRows] = await Promise.all([
     costFilter && costFilter.length === 0 ? Promise.resolve([]) : prisma.costEntry.findMany({
       where: { job: { connectionId }, ...(costFilter ? { OR: costFilter } : {}) },
@@ -607,7 +1116,10 @@ async function loadExisting(connectionId: string, onlyTxns?: Map<string, string[
     }),
     revenueFilter && revenueFilter.length === 0 ? Promise.resolve([]) : prisma.invoiceSummary.findMany({
       where: { job: { connectionId }, ...(revenueFilter ? { OR: revenueFilter } : {}) },
-      select: { id: true, jobId: true, amount: true, taxAmount: true, status: true, txnDate: true, qboSourceType: true, qboInvoiceId: true, openBalance: true },
+      select: {
+        id: true, jobId: true, amount: true, taxAmount: true, status: true, txnDate: true, qboSourceType: true, qboInvoiceId: true,
+        openBalance: true, docNumber: true, dueDate: true,
+      },
     }),
   ]);
   const existingCost = new Map<string, ExistingCost>();
@@ -622,6 +1134,7 @@ async function loadExisting(connectionId: string, onlyTxns?: Map<string, string[
       taxAmount: r.taxAmount == null ? null : Number(r.taxAmount),
       txnDate: r.txnDate.getTime(),
       openBalance: r.openBalance == null ? null : Number(r.openBalance),
+      dueDate: r.dueDate == null ? null : r.dueDate.getTime(),
     });
   }
   return { existingCost, existingRevenue };
@@ -756,6 +1269,23 @@ async function upsertJobs(
     )
   ).filter((c) => fullList || ctx.jobSource === "projects" || !knownParents.has(c.qboId) || existingIds.has(c.qboId));
 
+  // A full sync re-matches every cost itself; an incremental one only reads
+  // what changed, so it asks for a full sync when costs tagged to a parent
+  // now belong on a different job: the parent's first job (costs tagged to
+  // the customer before the project existed), or its second (costs that were
+  // on its only job). A parent customer created since the last sync is left
+  // out: every transaction naming it is in this sync's changes, matched
+  // against the new job below, so a full sync would find nothing to move.
+  if (!fullList) {
+    const live = existing.filter((j) => j.missingSince == null);
+    if (parentsNeedingFullSync(live, candidates).length > 0) {
+      const last = await prisma.quickBooksConnection.findUnique({ where: { id: ctx.connectionId }, select: { lastSyncedAt: true } });
+      // The same point the change list was read from (see runSyncForConnection).
+      const changedSince = last?.lastSyncedAt ? new Date(last.lastSyncedAt.getTime() - CDC_OVERLAP_MS) : null;
+      if (parentsNeedingFullSync(live, candidates, customersCreatedSince(customers, changedSince)).length > 0) ctx.fullSyncNeeded = true;
+    }
+  }
+
   for (const c of candidates) {
     const status = c.active ? "open" : "closed";
     const ex = byQboId.get(c.qboId);
@@ -849,6 +1379,8 @@ interface Processor {
   writer: Writer;
   tallies: Tallies;
   windowStart: number;
+  /** Each untagged job-cost line the tallies count, for Data Health's fix list. */
+  untagged: UntaggedCostCollector;
 }
 
 /**
@@ -885,10 +1417,11 @@ async function processExpenseTxn(p: Processor, txn: any, sourceType: ExpenseSour
       if (!inWindow(p, txnDate)) continue;
       // Journal entries without a customer are usually company-wide
       // postings (a payroll summary, an allocation), not a job cost someone
-      // forgot to tag, so they count with overhead.
-      if (line.isJobCostAccount && sourceType !== "JournalEntry") {
+      // forgot to tag, so they count with overhead (see isUntaggedJobCost).
+      if (isUntaggedJobCost(line, sourceType)) {
         p.tallies.untaggedJobCostCount++;
         p.tallies.untaggedJobCostAmount += line.amount;
+        p.untagged.add(sourceType, txn, line, txnDate);
       } else {
         p.tallies.untaggedOverheadCount++;
         p.tallies.untaggedOverheadAmount += line.amount;
@@ -943,7 +1476,7 @@ async function processTimeActivity(p: Processor, ta: any) {
     p.tallies.costsMatchedViaParentCount++;
     p.tallies.costsMatchedViaParentAmount += result.amount;
   }
-  // Hours and who, never the pay rate: the job page is not the place to
+  // Hours and who, never the cost rate: the job page is not the place to
   // publish what each employee earns.
   const who = ta.EmployeeRef?.name ? `${ta.EmployeeRef.name}, ` : "";
   await p.writer.cost({
@@ -952,7 +1485,7 @@ async function processTimeActivity(p: Processor, ta: any) {
     qboSourceType: "TimeActivity",
     qboSourceId: txnId,
     category: result.category,
-    accountName: "Time entries (pay rate)",
+    accountName: "Time entries (cost rate)",
     description: ta.Description ?? `${who}${round2(result.hours)} h`,
     amount: result.amount,
     txnDate,
@@ -980,6 +1513,8 @@ async function processRevenueTxn(p: Processor, txn: any, sourceType: RevenueSour
         status: r.status,
         txnDate: r.txnDate,
         openBalance: part.openBalance,
+        docNumber: part.docNumber,
+        dueDate: part.dueDate,
       });
     }
     return;
@@ -997,15 +1532,26 @@ async function processRevenueTxn(p: Processor, txn: any, sourceType: RevenueSour
     status: r.status,
     txnDate: r.txnDate,
     openBalance: r.openBalance,
+    docNumber: r.docNumber,
+    dueDate: r.dueDate,
   });
 }
 
-/** Income recorded line by line without an invoice: bank deposits and journal entries. */
+/**
+ * Income recorded line by line without an invoice: bank deposits, journal
+ * entries, and income lines on checks, bills and vendor credits (a refund
+ * paid to a customer, which is negative).
+ */
 async function processLineRevenue(p: Processor, txn: any, sourceType: LineRevenueSourceType) {
   if (txn?.Id == null) return;
   const txnId = String(txn.Id);
   const byClass = p.ctx.jobSource === "classes";
-  const lines = sourceType === "Deposit" ? depositRevenueLines(txn, p.lookups, byClass) : journalRevenueLines(txn, p.lookups, byClass);
+  const lines =
+    sourceType === "Deposit"
+      ? depositRevenueLines(txn, p.lookups, byClass)
+      : sourceType === "JournalEntry"
+        ? journalRevenueLines(txn, p.lookups, byClass)
+        : expenseRevenueLines(txn, sourceType, p.lookups, byClass);
   for (const l of lines) {
     if (!l.txnDate) continue;
     const key = jobKey(p, l.customerQboId, l.classQboId);
@@ -1021,6 +1567,44 @@ async function processLineRevenue(p: Processor, txn: any, sourceType: LineRevenu
       taxAmount: 0,
       status: "paid",
       txnDate: l.txnDate,
+    });
+  }
+}
+
+/**
+ * Supplier refunds and other money deposited back against a cost account
+ * for a job: stored as negative cost rows. A line that names no job is left
+ * alone here (it isn't a cost that was missed, so it isn't counted as
+ * untagged either).
+ */
+async function processDepositCosts(p: Processor, txn: any) {
+  if (txn?.Id == null) return;
+  const txnId = String(txn.Id);
+  const txnDate = qboDate(txn.TxnDate);
+  if (!txnDate) return;
+  for (const line of depositCostLines(txn, p.lookups)) {
+    const key = jobKey(p, line.customerQboId, line.classQboId);
+    if (!key) continue;
+    const resolved = resolveJob(p.index, key);
+    if (!resolved) {
+      noteUnresolved(p, "Deposit", txnId, key, line.customerName, line.amount, txnDate);
+      continue;
+    }
+    if (resolved.method === "parent_customer_fallback") {
+      p.tallies.costsMatchedViaParentCount++;
+      p.tallies.costsMatchedViaParentAmount += line.amount;
+    }
+    await p.writer.cost({
+      id: costEntryId(p.ctx.connectionId, "Deposit", txnId, line.lineId),
+      jobId: resolved.jobId,
+      qboSourceType: "Deposit",
+      qboSourceId: txnId,
+      category: line.category,
+      accountName: line.accountName,
+      description: line.description,
+      amount: line.amount,
+      txnDate,
+      attributionMethod: resolved.method,
     });
   }
 }
@@ -1142,10 +1726,291 @@ async function applyEstimates(ctx: SyncCtx, estimates: any[], full: boolean, loo
 // Full sync
 // ---------------------------------------------------------------------------
 
-async function runFullSync(ctx: SyncCtx): Promise<Record<string, any>> {
-  const errors: Record<string, string> = {};
-  const lookups = await loadLookups(ctx);
+interface FullSyncPlan {
+  /** Where an earlier run of this full sync got to, or null to start from the first step. */
+  resume: FullSyncProgress | null;
+  /** How long each step took in the last finished full sync. */
+  stepMs: Record<string, number>;
+  /** This full sync's earlier runs that didn't finish it (see fullSyncStuck). */
+  tries: { status: string; errorMessage: string | null }[];
+}
 
+/** What a full sync carries on from, and how it has gone so far. Read before this run's SyncRun is created. */
+async function planFullSync(
+  connection: { id: string; jobSource: string | null; laborFromTimeEntries: boolean; rebuildRequestedAt: Date | null; lastSyncedAt: Date | null },
+  opts: { fresh: boolean; maxAgeMs?: number }
+): Promise<FullSyncPlan> {
+  const lastFinished = await prisma.syncRun.findFirst({
+    where: { connectionId: connection.id, mode: "full", status: "success" },
+    orderBy: { startedAt: "desc" },
+    select: { startedAt: true, entitiesUpdated: true },
+  });
+  const timed = (lastFinished?.entitiesUpdated as Record<string, any> | null)?.stepMs;
+  const stepMs: Record<string, number> = {};
+  if (timed && typeof timed === "object") {
+    for (const [step, ms] of Object.entries(timed)) if (typeof ms === "number" && Number.isFinite(ms)) stepMs[step] = ms;
+  }
+
+  // The newest run that got anywhere: carried on from, unless it finished.
+  // One that stopped partway, failed, or was stopped by the platform keeps
+  // the progress of the steps it finished (see onStep below); one that
+  // failed before finishing a step has none and is passed over.
+  let stored: unknown = null;
+  let storedRunFinishedAt: Date | null = null;
+  if (!opts.fresh) {
+    const recent = await prisma.syncRun.findMany({
+      where: { connectionId: connection.id, mode: "full", status: { in: ["partial", "success", "error"] } },
+      orderBy: { startedAt: "desc" },
+      take: 10,
+      select: { status: true, entitiesUpdated: true, finishedAt: true },
+    });
+    for (const run of recent) {
+      if (run.status === "success") break;
+      const progress = (run.entitiesUpdated as Record<string, any> | null)?.fullSyncProgress;
+      if (progress) {
+        stored = progress;
+        storedRunFinishedAt = run.finishedAt ?? null;
+        break;
+      }
+    }
+  }
+  let resume = usableFullSyncProgress(stored, connection);
+  // maxAgeMs (Sync now's resumeWithinMs) counts from when the progress was
+  // last saved, not from when the whole read began: a press an hour into a
+  // read that's still moving carries on with it.
+  if (resume && opts.maxAgeMs != null) {
+    const saved = Date.parse(resume.savedAt ?? "");
+    const lastMoved = Number.isFinite(saved) ? saved : storedRunFinishedAt?.getTime() ?? Date.parse(resume.startedAt);
+    if (Date.now() - lastMoved > opts.maxAgeMs) resume = null;
+  }
+  // The latest timings: this read's own (how long its lookups take now)
+  // over the last finished full sync's.
+  if (resume) Object.assign(stepMs, resume.stepMs);
+
+  // Runs since the last finished full sync, or since Settings asked for a
+  // rebuild, which starts the count again.
+  let since = lastFinished?.startedAt ?? null;
+  if (connection.rebuildRequestedAt && (!since || connection.rebuildRequestedAt > since)) since = connection.rebuildRequestedAt;
+  const tries = await prisma.syncRun.findMany({
+    where: { connectionId: connection.id, mode: "full", ...(since ? { startedAt: { gt: since } } : {}) },
+    select: { status: true, errorMessage: true },
+  });
+  return { resume, stepMs, tries };
+}
+
+/**
+ * Reads the company's whole QuickBooks history, one step at a time (see
+ * FULL_SYNC_STEPS). Each step reads its type in full, then brings the stored
+ * rows of that type exactly in step with it, removing what QuickBooks no
+ * longer returns.
+ *
+ * With a deadline it stops before a step that wouldn't finish in time, and
+ * returns its progress for the next run to carry on from (`resume`). Every
+ * run does at least one step, so each makes progress. `onStep` is handed the
+ * progress after each step, so a run the platform stops at its time limit
+ * still leaves the steps it finished for the next run.
+ */
+async function runFullSync(
+  ctx: SyncCtx,
+  opts: {
+    deadline?: number;
+    resume?: FullSyncProgress | null;
+    history?: Record<string, number>;
+    onStep?: (progress: FullSyncProgress, counts: Record<string, any>) => Promise<void>;
+  } = {}
+): Promise<{ counts: Record<string, any>; progress: FullSyncProgress | null }> {
+  const resume = opts.resume ?? null;
+  const done = new Set(resume?.done ?? []);
+  // A step whose type QuickBooks failed to send is done too, as it was when
+  // a full sync was a single run: its stored rows are kept, and the error
+  // decides below whether this counts as the full sync (see recordFull).
+  const errors: Record<string, string> = { ...(resume?.errors ?? {}) };
+  const fetched: Record<string, number> = { ...(resume?.fetched ?? {}) };
+  const stepMs: Record<string, number> = { ...(resume?.stepMs ?? {}) };
+  const totals: SyncTotals = { ...emptyTotals(), ...(resume?.totals ?? {}) };
+  let jobCount = resume?.jobs ?? 0;
+
+  const lookupsStarted = Date.now();
+  const lookups = await loadLookups(ctx);
+  // Timed like a step, so a run can tell whether its first step fits (see fullSyncFirstStepFits).
+  stepMs.Lookups = Date.now() - lookupsStarted;
+  const tallies = newTallies();
+  const p: Processor = {
+    ctx,
+    lookups,
+    // Set once the jobs are known: by the Jobs step, or below when an earlier run did it.
+    index: null as unknown as JobIndex,
+    writer: new Writer(new Map(), new Map()),
+    tallies,
+    windowStart: ctx.startedAt.getTime() - COUNTER_WINDOW_DAYS * 86_400_000,
+    untagged: new UntaggedCostCollector(ctx.connectionId),
+  };
+  if (done.has("Jobs")) p.index = await loadJobIndex(ctx.connectionId);
+
+  /** Reads one type's stored rows, then keeps them exactly in step with what QuickBooks sent. */
+  const syncType = async (type: string, rows: any[], process: (txn: any) => Promise<void>, sweep: { cost: boolean; revenue: boolean }) => {
+    const { existingCost, existingRevenue } = await loadExisting(ctx.connectionId, undefined, [type]);
+    const writer = new Writer(existingCost, existingRevenue);
+    p.writer = writer;
+    const since = ctx.previousSyncAt?.getTime();
+    for (const txn of rows) {
+      // No LastUpdatedTime: taken as unchanged, the safe side for the brief
+      // and alerts (see rebuildChangedFigures).
+      const updated = Date.parse(txn?.MetaData?.LastUpdatedTime ?? "");
+      writer.txnUnchangedSinceLastSync = since != null && (!Number.isFinite(updated) || updated < since);
+      await process(txn);
+    }
+    writer.txnUnchangedSinceLastSync = false;
+    await writer.flush();
+    // Everything stored for this type that QuickBooks no longer returns:
+    // deleted transactions, voided ones, lines moved to a job-less customer,
+    // and rows stored under the previous id scheme.
+    const only = new Set([type]);
+    if (sweep.cost) totals.costRowsRemoved += await deleteCostRows(writer.unseenCost(only));
+    if (sweep.revenue) totals.revenueRowsRemoved += await deleteRevenueRows(writer.unseenRevenue(only));
+    totals.costRowsWritten += writer.seenCost.size;
+    totals.costRowsUpdated += writer.costUpdates;
+    totals.revenueRowsUpdated += writer.revenueUpdates;
+    totals.figureRowsChanged += writer.figureChanges;
+    // Data Health's list of job costs not on any job: this type's rows
+    // become what this read found. Other types keep theirs until read.
+    if ((EXPENSE_TYPES as string[]).includes(type)) {
+      await replaceUntaggedCosts(
+        ctx.connectionId,
+        p.untagged.rows().filter((r) => r.qboSourceType === type),
+        FULL_SYNC_STEPS.filter((s) => s !== type)
+      );
+    }
+  };
+  const read = (type: string) => qboQueryAll(ctx.realmId, ctx.accessToken, `SELECT * FROM ${type}`, type);
+  const readOrNote = (type: string) => runStep(type, errors, () => read(type), null as any[] | null);
+
+  const steps: Record<string, () => Promise<void>> = {
+    Jobs: async () => {
+      jobCount = await syncJobs(ctx);
+      p.index = await loadJobIndex(ctx.connectionId);
+    },
+    TimeActivity: async () => {
+      if (!ctx.laborFromTimeEntries) {
+        // Turned off in Settings: every stored time-based cost goes.
+        await syncType("TimeActivity", [], async () => {}, { cost: true, revenue: false });
+        return;
+      }
+      const rows = await readOrNote("TimeActivity");
+      if (rows == null) return;
+      fetched.TimeActivity = rows.length;
+      await syncType("TimeActivity", rows, (ta) => processTimeActivity(p, ta), { cost: true, revenue: false });
+    },
+    Deposit: async () => {
+      const rows = await readOrNote("Deposit");
+      if (rows == null) return;
+      fetched.Deposit = rows.length;
+      await syncType(
+        "Deposit",
+        rows,
+        async (txn) => {
+          await processLineRevenue(p, txn, "Deposit");
+          await processDepositCosts(p, txn);
+        },
+        { cost: true, revenue: true }
+      );
+    },
+    Estimate: async () => {
+      const rows = await readOrNote("Estimate");
+      if (rows == null) return;
+      fetched.Estimate = rows.length;
+      await applyEstimates(ctx, rows, true, lookups);
+    },
+  };
+  // Purchase is the backbone of job costing, and Invoice of revenue: if
+  // either can't be read, the sync genuinely failed and says so.
+  for (const type of EXPENSE_TYPES) {
+    steps[type] = async () => {
+      const rows = type === "Purchase" ? await read(type) : await readOrNote(type);
+      if (rows == null) return;
+      fetched[type] = rows.length;
+      await syncType(
+        type,
+        rows,
+        async (txn) => {
+          await processExpenseTxn(p, txn, type);
+          // Income lines on the same transaction: a journal entry's, or a
+          // refund check to a customer.
+          await processLineRevenue(p, txn, type);
+        },
+        { cost: true, revenue: true }
+      );
+    };
+  }
+  for (const type of REVENUE_TYPES) {
+    steps[type] = async () => {
+      const rows = type === "Invoice" ? await read(type) : await readOrNote(type);
+      if (rows == null) return;
+      fetched[type] = rows.length;
+      await syncType(type, rows, (txn) => processRevenueTxn(p, txn, type), { cost: false, revenue: true });
+    };
+  }
+
+  const counts = (): Record<string, any> => {
+    const parts = (resume?.parts ?? 0) + 1;
+    return {
+      jobs: jobCount,
+      jobSource: ctx.jobSource,
+      ...fetched,
+      purchases: fetched.Purchase ?? 0,
+      bills: fetched.Bill ?? 0,
+      timeActivities: fetched.TimeActivity ?? 0,
+      invoices: fetched.Invoice ?? 0,
+      estimates: fetched.Estimate ?? 0,
+      costRowsWritten: totals.costRowsWritten,
+      costRowsUpdated: totals.costRowsUpdated,
+      costRowsRemoved: totals.costRowsRemoved,
+      revenueRowsUpdated: totals.revenueRowsUpdated,
+      revenueRowsRemoved: totals.revenueRowsRemoved,
+      // Read by rebuildChangedFigures: whether this sync changed job figures.
+      figureRowsChanged: totals.figureRowsChanged,
+      countersWindowDays: COUNTER_WINDOW_DAYS,
+      ...roundTallies(resume ? addTallies(resume.tallies, tallies) : tallies),
+      // How long each step took, so the next full sync knows what fits in its time.
+      stepMs: { ...stepMs },
+      ...(parts > 1 ? { fullSyncRuns: parts } : {}),
+      ...(Object.keys(errors).length > 0 ? { partialErrors: { ...errors } } : {}),
+    };
+  };
+  const progress = (): FullSyncProgress => ({
+    startedAt: ctx.startedAt.toISOString(),
+    version: SYNC_VERSION,
+    jobSource: ctx.jobSource,
+    laborFromTimeEntries: ctx.laborFromTimeEntries,
+    done: FULL_SYNC_STEPS.filter((s) => done.has(s)),
+    parts: (resume?.parts ?? 0) + 1,
+    jobs: jobCount,
+    fetched: { ...fetched },
+    tallies: resume ? addTallies(resume.tallies, tallies) : { ...tallies, unresolvedSamples: [...tallies.unresolvedSamples] },
+    totals: { ...totals },
+    errors: { ...errors },
+    stepMs: { ...stepMs },
+    savedAt: new Date().toISOString(),
+  });
+
+  let ranOne = false;
+  for (const step of FULL_SYNC_STEPS) {
+    if (done.has(step)) continue;
+    if (ranOne && !fullSyncStepFits(step, opts.deadline, opts.history ?? {})) break;
+    const started = Date.now();
+    await steps[step]();
+    stepMs[step] = Date.now() - started;
+    done.add(step);
+    ranOne = true;
+    if (opts.onStep && FULL_SYNC_STEPS.some((s) => !done.has(s))) await opts.onStep(progress(), counts());
+  }
+
+  const finished = FULL_SYNC_STEPS.every((s) => done.has(s));
+  return { counts: counts(), progress: finished ? null : progress() };
+}
+
+/** A full sync's first step: every job, from the customer list or the class list. Returns how many there are. */
+async function syncJobs(ctx: SyncCtx): Promise<number> {
   // SELECT * (composite fields such as ParentRef and Line come back empty
   // when named in a column list) and inactive records too: QuickBooks'
   // query endpoint returns only active records unless asked, and making a
@@ -1164,7 +2029,6 @@ async function runFullSync(ctx: SyncCtx): Promise<Record<string, any>> {
     }
   };
 
-  let jobCount: number;
   if (ctx.jobSource === "classes") {
     // Each QuickBooks Class is a job (sub-classes, when a class has them).
     const allClasses = await qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM Class WHERE Active IN (true, false)", "Class");
@@ -1175,112 +2039,25 @@ async function runFullSync(ctx: SyncCtx): Promise<Record<string, any>> {
       );
     }
     const complete = await listIsComplete("Class", allClasses.length);
-    jobCount = await upsertJobs(ctx, [], true, complete, (keep) => selectJobClasses(allClasses, keep));
-  } else {
-    const allCustomers = await qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM Customer WHERE Active IN (true, false)", "Customer");
-    const customerListComplete = await listIsComplete("Customer", allCustomers.length);
-    if (ctx.autoDetectSource && ctx.jobSource === "projects" && !allCustomers.some((c: any) => c?.Job === true) && allCustomers.length > 0) {
-      // No projects or sub-customers at all: this contractor makes one
-      // customer per job. Recorded so Settings shows it and can change it.
-      // (A company that tracks jobs by Class is asked on the dashboard,
-      // since classes are just as often used for divisions or phases.)
-      ctx.jobSource = "customers";
-      await prisma.quickBooksConnection.update({ where: { id: ctx.connectionId }, data: { jobSource: "customers" } });
-    }
-    jobCount = await upsertJobs(ctx, allCustomers, true, customerListComplete);
+    return upsertJobs(ctx, [], true, complete, (keep) => selectJobClasses(allClasses, keep));
   }
-  const index = await loadJobIndex(ctx.connectionId);
-
-  const { existingCost, existingRevenue } = await loadExisting(ctx.connectionId);
-  const writer = new Writer(existingCost, existingRevenue);
-  const tallies = newTallies();
-  const p: Processor = { ctx, lookups, index, writer, tallies, windowStart: ctx.startedAt.getTime() - COUNTER_WINDOW_DAYS * 86_400_000 };
-  const fetched: Record<string, number> = {};
-  const sweepCost = new Set<string>();
-  const sweepRevenue = new Set<string>();
-
-  // Purchase is the backbone of job costing: if it cannot be read, the
-  // sync genuinely failed and says so.
-  for (const type of EXPENSE_TYPES) {
-    const query = `SELECT * FROM ${type}`;
-    const rows = type === "Purchase"
-      ? await qboQueryAll(ctx.realmId, ctx.accessToken, query, type)
-      : await runStep(type, errors, () => qboQueryAll(ctx.realmId, ctx.accessToken, query, type), null as any[] | null);
-    if (rows == null) continue;
-    fetched[type] = rows.length;
-    for (const txn of rows) {
-      await processExpenseTxn(p, txn, type);
-      if (type === "JournalEntry") await processLineRevenue(p, txn, "JournalEntry");
-    }
-    sweepCost.add(type);
-    if (type === "JournalEntry") sweepRevenue.add("JournalEntry");
+  const allCustomers = await qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM Customer WHERE Active IN (true, false)", "Customer");
+  const customerListComplete = await listIsComplete("Customer", allCustomers.length);
+  if (ctx.autoDetectSource && ctx.jobSource === "projects" && !allCustomers.some((c: any) => c?.Job === true) && allCustomers.length > 0) {
+    // No projects or sub-customers at all: this contractor makes one
+    // customer per job. Recorded so Settings shows it and can change it.
+    // (A company that tracks jobs by Class is asked on the dashboard,
+    // since classes are just as often used for divisions or phases.)
+    // Only while nothing has been confirmed: a choice made in Settings
+    // since this sync started wins, and this sync's rows are rebuilt by
+    // the full sync that choice asked for.
+    const switched = await prisma.quickBooksConnection.updateMany({
+      where: { id: ctx.connectionId, jobSource: "projects", jobSourceConfirmedAt: null },
+      data: { jobSource: "customers" },
+    });
+    if (switched.count === 1) ctx.jobSource = "customers";
   }
-
-  if (ctx.laborFromTimeEntries) {
-    const rows = await runStep("TimeActivity", errors, () =>
-      qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM TimeActivity", "TimeActivity"), null as any[] | null);
-    if (rows != null) {
-      fetched.TimeActivity = rows.length;
-      for (const ta of rows) await processTimeActivity(p, ta);
-      sweepCost.add("TimeActivity");
-    }
-  } else {
-    // Turned off in Settings: every stored time-based cost goes.
-    sweepCost.add("TimeActivity");
-  }
-
-  for (const type of REVENUE_TYPES) {
-    const query = `SELECT * FROM ${type}`;
-    const rows = type === "Invoice"
-      ? await qboQueryAll(ctx.realmId, ctx.accessToken, query, type)
-      : await runStep(type, errors, () => qboQueryAll(ctx.realmId, ctx.accessToken, query, type), null as any[] | null);
-    if (rows == null) continue;
-    fetched[type] = rows.length;
-    for (const txn of rows) await processRevenueTxn(p, txn, type);
-    sweepRevenue.add(type);
-  }
-
-  const deposits = await runStep("Deposit", errors, () =>
-    qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM Deposit", "Deposit"), null as any[] | null);
-  if (deposits != null) {
-    fetched.Deposit = deposits.length;
-    for (const txn of deposits) await processLineRevenue(p, txn, "Deposit");
-    sweepRevenue.add("Deposit");
-  }
-
-  await writer.flush();
-
-  // Everything stored for a successfully read type that QuickBooks no
-  // longer returns: deleted transactions, voided ones, lines moved to a
-  // job-less customer, and rows stored under the previous id scheme.
-  const removedCosts = await deleteCostRows(writer.unseenCost(sweepCost));
-  const removedRevenue = await deleteRevenueRows(writer.unseenRevenue(sweepRevenue));
-
-  const estimates = await runStep("Estimate", errors, () =>
-    qboQueryAll(ctx.realmId, ctx.accessToken, "SELECT * FROM Estimate", "Estimate"), null as any[] | null);
-  if (estimates != null) {
-    fetched.Estimate = estimates.length;
-    await applyEstimates(ctx, estimates, true, lookups);
-  }
-
-  return {
-    jobs: jobCount,
-    jobSource: ctx.jobSource,
-    ...fetched,
-    purchases: fetched.Purchase ?? 0,
-    bills: fetched.Bill ?? 0,
-    timeActivities: fetched.TimeActivity ?? 0,
-    invoices: fetched.Invoice ?? 0,
-    estimates: fetched.Estimate ?? 0,
-    costRowsWritten: writer.seenCost.size,
-    costRowsUpdated: writer.costUpdates,
-    costRowsRemoved: removedCosts,
-    revenueRowsUpdated: writer.revenueUpdates,
-    revenueRowsRemoved: removedRevenue,
-    countersWindowDays: COUNTER_WINDOW_DAYS,
-    ...roundTallies(tallies),
-    ...(Object.keys(errors).length > 0 ? { partialErrors: errors } : {}),
-  };
+  return upsertJobs(ctx, allCustomers, true, customerListComplete);
 }
 
 function roundTallies(t: Tallies) {
@@ -1296,6 +2073,32 @@ function roundTallies(t: Tallies) {
 // ---------------------------------------------------------------------------
 // Incremental sync (Change Data Capture)
 // ---------------------------------------------------------------------------
+
+/**
+ * Makes the next sync a full one, for a reason that is not a change of
+ * basis: QuickBooks itself changed in a way only a full read can follow.
+ *
+ * Clearing lastFullSyncAt is what makes a sync full. It is not a Settings
+ * rebuild, so rebuildRequestedAt isn't set; a finished rebuild's request
+ * date is cleared instead, because with lastFullSyncAt empty it would read as
+ * a rebuild still waiting, which the brief and alerts treat as a change of
+ * basis (rebuildPending in weekOverWeek.ts). A rebuild that really is still
+ * waiting already makes the next sync full, so it is left alone.
+ */
+async function requestFullSync(connectionId: string): Promise<void> {
+  const c = await prisma.quickBooksConnection.findUnique({
+    where: { id: connectionId },
+    select: { rebuildRequestedAt: true, lastFullSyncAt: true },
+  });
+  if (!c) return;
+  const rebuildWaiting = c.rebuildRequestedAt != null && (c.lastFullSyncAt == null || c.lastFullSyncAt < c.rebuildRequestedAt);
+  if (rebuildWaiting) return;
+  await prisma.quickBooksConnection.updateMany({
+    // Unless Settings asked for a rebuild in the meantime, which does the same.
+    where: { id: connectionId, rebuildRequestedAt: c.rebuildRequestedAt },
+    data: { lastFullSyncAt: null, rebuildRequestedAt: null },
+  });
+}
 
 async function runIncrementalSync(ctx: SyncCtx, changedSince: Date): Promise<Record<string, any>> {
   const errors: Record<string, string> = {};
@@ -1333,7 +2136,10 @@ async function runIncrementalSync(ctx: SyncCtx, changedSince: Date): Promise<Rec
   const { existingCost, existingRevenue } = await loadExisting(ctx.connectionId, changedIds);
   const writer = new Writer(existingCost, existingRevenue);
   const tallies = newTallies();
-  const p: Processor = { ctx, lookups, index, writer, tallies, windowStart: ctx.startedAt.getTime() - COUNTER_WINDOW_DAYS * 86_400_000 };
+  const p: Processor = {
+    ctx, lookups, index, writer, tallies, windowStart: ctx.startedAt.getTime() - COUNTER_WINDOW_DAYS * 86_400_000,
+    untagged: new UntaggedCostCollector(ctx.connectionId),
+  };
 
   // Every transaction CDC reports is re-read in full, so for each one the
   // stored rows can be made to match exactly: lines added, changed, moved
@@ -1349,10 +2155,11 @@ async function runIncrementalSync(ctx: SyncCtx, changedSince: Date): Promise<Rec
     for (const txn of rows) {
       if (txn?.Id == null) continue;
       touch(touchedCost, type, String(txn.Id));
-      if (type === "JournalEntry") touch(touchedRevenue, "JournalEntry", String(txn.Id));
+      // Every expense type can carry income lines too (see processLineRevenue).
+      touch(touchedRevenue, type, String(txn.Id));
       if (txn.status !== "Deleted") {
         await processExpenseTxn(p, txn, type);
-        if (type === "JournalEntry") await processLineRevenue(p, txn, "JournalEntry");
+        await processLineRevenue(p, txn, type);
       }
     }
   }
@@ -1377,7 +2184,11 @@ async function runIncrementalSync(ctx: SyncCtx, changedSince: Date): Promise<Rec
   for (const txn of depositRows) {
     if (txn?.Id == null) continue;
     touch(touchedRevenue, "Deposit", String(txn.Id));
-    if (txn.status !== "Deleted") await processLineRevenue(p, txn, "Deposit");
+    touch(touchedCost, "Deposit", String(txn.Id));
+    if (txn.status !== "Deleted") {
+      await processLineRevenue(p, txn, "Deposit");
+      await processDepositCosts(p, txn);
+    }
   }
   await writer.flush();
 
@@ -1389,14 +2200,23 @@ async function runIncrementalSync(ctx: SyncCtx, changedSince: Date): Promise<Rec
   const removedRevenue = await deleteRevenueRows(
     writer.unseenRevenue(revenueTypes, (r) => touchedRevenue.get(r.qboSourceType)?.has(r.qboInvoiceId) ?? false)
   );
+  // Same for the list of job costs not on any job: each re-read transaction's
+  // lines are replaced, which drops the ones now on a job and deleted ones.
+  await replaceUntaggedCostsForTxns(ctx.connectionId, p.untagged.rows(), touchedCost);
 
   const estimates = byEntity("Estimate");
   counts.Estimate = estimates.length;
   if (estimates.length) await applyEstimates(ctx, estimates, false, lookups);
 
+  // A parent customer or class gained its first job or a second one: the
+  // next sync is a full one, so costs tagged to the parent move onto the new
+  // job, or back off its former only job, within a day, not 30.
+  if (ctx.fullSyncNeeded) await requestFullSync(ctx.connectionId);
+
   return {
     jobs: jobCount,
     jobSource: ctx.jobSource,
+    ...(ctx.fullSyncNeeded ? { fullSyncRequested: true } : {}),
     ...counts,
     purchases: counts.Purchase ?? 0,
     bills: counts.Bill ?? 0,

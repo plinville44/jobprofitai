@@ -18,7 +18,19 @@ let creditShouldFail = false;
 // cover: the credit succeeded, the database write after it did not, and the
 // retry arrives more than 24 hours later.
 let existingCreditByRewardId: Record<string, { id: string }> = {};
+// What each referred customer has paid for their subscription, by Stripe
+// customer id. Unlisted customers have paid plenty, first month and a
+// renewal, so the reward cap and the renewal rule only bite in the tests
+// about them.
+type Paid = { revenueCents: number; paidInvoices: number; paidRenewals: number };
+const paidHistory = (revenueCents: number, paidInvoices = 2, paidRenewals = 1): Paid => ({ revenueCents, paidInvoices, paidRenewals });
+let paidByCustomer: Record<string, Paid> = {};
+let paidLookups: string[] = [];
 vi.mock("@/lib/stripe/billing", () => ({
+  paidSubscriptionHistory: vi.fn(async (customerId: string) => {
+    paidLookups.push(customerId);
+    return paidByCustomer[customerId] ?? paidHistory(1_000_000);
+  }),
   applyCustomerCredit: vi.fn(async (params: any) => {
     if (creditShouldFail) throw new Error("stripe unavailable");
     creditCalls.push({
@@ -35,6 +47,7 @@ vi.mock("@/lib/stripe/billing", () => ({
 
 import {
   attributeReferral,
+  cappedRewardCents,
   disqualifyReferral,
   getOrCreateCustomerReferralCode,
   getReferralSummary,
@@ -42,6 +55,7 @@ import {
   normalizeCode,
   qualifyDueReferrals,
   referralUrl,
+  renewalPaid,
 } from "../referrals";
 
 const NOW = new Date("2026-06-01T12:00:00Z");
@@ -55,7 +69,8 @@ async function makeUser(id: string, plan = "profit_intelligence", status = "acti
       status,
       plan,
       stripeCustomerId: status === "active" ? `cus_${id}` : null,
-      // Past a first renewal by default: the period ends 20 days from NOW.
+      // The period ends 20 days from NOW. Whether the renewal was paid comes
+      // from the paid invoices (paidByCustomer), not from this.
       currentPeriodEnd: new Date(NOW.getTime() + 20 * DAY),
     },
   });
@@ -66,6 +81,8 @@ beforeEach(() => {
   creditCalls.length = 0;
   creditShouldFail = false;
   existingCreditByRewardId = {};
+  paidByCustomer = {};
+  paidLookups = [];
   process.env.APP_URL = "https://jobprofitai.com";
 });
 
@@ -193,15 +210,39 @@ describe("reward qualification", () => {
     expect(await qualifyDueReferrals(NOW)).toHaveLength(0);
     const referral = await fake.client.referral.findFirst({ where: { referredUserId: "bob" } });
     expect(referral?.status).toBe("paid");
-    // Not set to cancel, but its first renewal hasn't come round yet.
-    await fake.client.subscription.update({
-      where: { userId: "bob" },
-      data: { cancelAtPeriodEnd: false, currentPeriodEnd: new Date(NOW.getTime() - 31 * DAY + 30 * DAY) },
-    });
+    // Not set to cancel, but only its first month is paid.
+    await fake.client.subscription.update({ where: { userId: "bob" }, data: { cancelAtPeriodEnd: false } });
+    paidByCustomer.cus_bob = paidHistory(14_900, 1, 0);
     expect(await qualifyDueReferrals(NOW)).toHaveLength(0);
-    // Once the renewal is paid, it qualifies.
+    // Once the renewal is paid, it qualifies, capped at the two months paid.
+    paidByCustomer.cus_bob = paidHistory(29_800);
+    const results = await qualifyDueReferrals(NOW);
+    expect(results).toHaveLength(1);
+    expect(results[0].amountCents).toBe(29_800);
+  });
+
+  it("does not count a renewal Stripe has billed but not yet collected", async () => {
+    // Stripe moves the period end when it creates the renewal invoice, about
+    // an hour before charging the card. The period end looks renewed; the
+    // paid invoices don't, so nothing is credited on a renewal that then fails.
+    await setUpConvertedReferral("profit_intelligence", 31);
     await fake.client.subscription.update({ where: { userId: "bob" }, data: { currentPeriodEnd: new Date(NOW.getTime() + 29 * DAY) } });
-    expect(await qualifyDueReferrals(NOW)).toHaveLength(1);
+    paidByCustomer.cus_bob = paidHistory(14_900, 1, 0);
+    expect(await qualifyDueReferrals(NOW)).toHaveLength(0);
+    expect(creditCalls).toHaveLength(0);
+    // Two paid invoices that are the first month and a mid-month plan change
+    // are not a renewal either.
+    paidByCustomer.cus_bob = paidHistory(20_000, 2, 0);
+    expect(await qualifyDueReferrals(NOW)).toHaveLength(0);
+    const referral = await fake.client.referral.findFirst({ where: { referredUserId: "bob" } });
+    expect(referral?.status).toBe("paid");
+  });
+
+  it("qualifies on a paid renewal with a pure rule", () => {
+    expect(renewalPaid({ paidInvoices: 2, paidRenewals: 1 })).toBe(true);
+    expect(renewalPaid({ paidInvoices: 1, paidRenewals: 1 })).toBe(false);
+    expect(renewalPaid({ paidInvoices: 2, paidRenewals: 0 })).toBe(false);
+    expect(renewalPaid({ paidInvoices: 0, paidRenewals: 0 })).toBe(false);
   });
 
   it("sizes the reward from the referrer's own plan", async () => {
@@ -211,6 +252,50 @@ describe("reward qualification", () => {
 
     expect(results[0].amountCents).toBe(29_900);
     expect(creditCalls[0].amountCents).toBe(29_900);
+  });
+
+  it("caps the reward at what the referred account actually paid", async () => {
+    // A $149 account that renewed once has paid $298. A Firm referrer's month
+    // is $316 (the 4-company minimum), so the uncapped reward made money.
+    await setUpConvertedReferral("firm", 31);
+    paidByCustomer.cus_bob = paidHistory(29_800);
+
+    const results = await qualifyDueReferrals(NOW);
+
+    expect(paidLookups).toEqual(["cus_bob"]);
+    expect(results).toHaveLength(1);
+    expect(results[0].amountCents).toBe(29_800);
+    expect(creditCalls[0].amountCents).toBe(29_800);
+    const reward = (await fake.client.referralReward.findMany())[0];
+    expect(reward.amountCents).toBe(29_800);
+  });
+
+  it("pays the full month when the referred account paid more than that", async () => {
+    await setUpConvertedReferral("firm", 31);
+    paidByCustomer.cus_bob = paidHistory(59_800);
+
+    const results = await qualifyDueReferrals(NOW);
+
+    expect(results[0].amountCents).toBe(31_600);
+  });
+
+  it("ends a referral whose account paid nothing, rather than rewarding $0", async () => {
+    await setUpConvertedReferral("profit_intelligence", 31);
+    paidByCustomer.cus_bob = paidHistory(0, 0, 0);
+
+    const results = await qualifyDueReferrals(NOW);
+
+    expect(results).toHaveLength(0);
+    expect(await fake.client.referralReward.count()).toBe(0);
+    expect(creditCalls).toHaveLength(0);
+    const referral = await fake.client.referral.findUnique({ where: { referredUserId: "bob" } });
+    expect(referral.status).toBe("disqualified");
+  });
+
+  it("caps with a pure rule: the smaller of the month and what was paid, never below zero", () => {
+    expect(cappedRewardCents(31_600, 29_800)).toBe(29_800);
+    expect(cappedRewardCents(14_900, 29_800)).toBe(14_900);
+    expect(cappedRewardCents(14_900, -50)).toBe(0);
   });
 
   it("issues one reward per referral, no matter how often qualification runs", async () => {
@@ -325,7 +410,8 @@ describe("reward qualification", () => {
     expect(referral.qualifiedAt).toBeFalsy();
 
     // And once the retries succeed, the same referral qualifies normally.
-    await fake.client.subscription.update({ where: { userId: "bob" }, data: { status: "active" } });
+    // (A paying account always has its Stripe customer id on file.)
+    await fake.client.subscription.update({ where: { userId: "bob" }, data: { status: "active", stripeCustomerId: "cus_bob" } });
     const later = await qualifyDueReferrals(NOW);
     expect(later).toHaveLength(1);
     expect(later[0].creditApplied).toBe(true);

@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { firmBillableCompanies } from "@/lib/plans";
+import { PLANS, firmBillableCompanies } from "@/lib/plans";
 import { needsReconnect } from "@/lib/quickbooks";
 import { getStripe, priceIdForPlan } from "./client";
 
@@ -41,13 +41,17 @@ export function isBillableCompany(
   return now.getTime() - since <= RECONNECT_GRACE_DAYS * 86_400_000;
 }
 
-/** Companies a Firm account is billed for right now (before the minimum). */
+/**
+ * Companies a Firm account is billed for right now (before the minimum).
+ * Never more than the plan covers: companies past that are paused and not
+ * synced (src/lib/planLimits.ts), so they aren't billed either.
+ */
 export async function billableCompanyCount(ownerId: string, now = new Date()): Promise<number> {
   const companies = await prisma.quickBooksConnection.findMany({
     where: { userId: ownerId, disconnectedAt: null },
     select: { disconnectedAt: true, lastSyncError: true, lastSyncedAt: true, connectedAt: true },
   });
-  return companies.filter((c) => isBillableCompany(c, now)).length;
+  return Math.min(companies.filter((c) => isBillableCompany(c, now)).length, PLANS.firm.limits.maxConnections);
 }
 
 /** The quantity to set, or null when it's already right. Pure, for tests. */

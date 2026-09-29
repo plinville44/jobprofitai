@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeWeekOverWeek, renderWeekOverWeek } from "../weekOverWeek";
+import { basisCutoff, computeWeekOverWeek, rebuildPending, renderWeekOverWeek } from "../weekOverWeek";
 import { cleanDigestText, withoutOpenJobUnderspend } from "../digestText";
 import type { ConnectionMetrics, JobMetrics } from "../profitability";
 
@@ -146,7 +146,7 @@ describe("renderWeekOverWeek", () => {
     );
     expect(text).toContain("- Ruiz Kitchen: Marked completed. Finished at 21.1% margin.");
     // House style: no em or en dashes anywhere in the section.
-    expect(text).not.toMatch(/[–—]/);
+    expect(text).not.toMatch(/[\u2013\u2014]/);
   });
 
   it("says so plainly when nothing moved", () => {
@@ -173,10 +173,10 @@ describe("cleanDigestText", () => {
   });
 
   it("replaces dashes used as punctuation", () => {
-    expect(cleanDigestText("Torres Kitchen ran over – by $6,600 — again.")).toBe(
+    expect(cleanDigestText("Torres Kitchen ran over \u2013 by $6,600 \u2014 again.")).toBe(
       "Torres Kitchen ran over, by $6,600, again."
     );
-    expect(cleanDigestText("Jan–Mar")).toBe("Jan-Mar");
+    expect(cleanDigestText("Jan\u2013Mar")).toBe("Jan-Mar");
   });
 
   it("leaves ordinary text alone", () => {
@@ -219,5 +219,62 @@ describe("after a labor burden change", () => {
     expect(renderWeekOverWeek(r)).toContain("labor burden setting changed");
     // A snapshot saved after the change is compared as usual.
     expect(computeWeekOverWeek({ ...stored, createdAt: new Date("2026-09-19T00:00:00Z") }, after, new Date("2026-09-18T00:00:00Z")).noComparisonReason).toBeNull();
+  });
+});
+
+describe("after other changes of basis", () => {
+  const before = metrics([job("a", "Smith Kitchen", 10_000, 6_000, 8_000)]);
+  const after = metrics([job("a", "Smith Kitchen", 10_000, 3_500, 8_000)]);
+  const stored = (extra: Record<string, unknown> = {}, createdAt = new Date("2026-09-15T00:00:00Z")) => ({
+    weekStarting: LAST_WEEK,
+    metrics: { ...asStored(before), ...extra },
+    createdAt,
+  });
+
+  it("doesn't compare across a change of job setup, time-entry labor or a rebuild", () => {
+    const r = computeWeekOverWeek(stored(), after, { basisChangedAt: new Date("2026-09-18T00:00:00Z") });
+    expect(r.noComparisonReason).toBe("basis_changed");
+    expect(r.basisChange).toBe("setup");
+    expect(r.costAdded).toBe(0);
+    const text = renderWeekOverWeek(r);
+    expect(text).toContain("How this company's figures are worked out changed");
+    expect(text).not.toContain("labor burden");
+    expect(text).not.toMatch(/[\u2013\u2014]/);
+  });
+
+  it("uses the later of the burden date and the other one", () => {
+    const burdenLater = { laborBurdenSetAt: new Date("2026-09-19T00:00:00Z"), basisChangedAt: new Date("2026-09-18T00:00:00Z") };
+    expect(computeWeekOverWeek(stored(), after, burdenLater).basisChange).toBe("labor_burden");
+    const setupLater = { laborBurdenSetAt: new Date("2026-09-17T00:00:00Z"), basisChangedAt: new Date("2026-09-18T00:00:00Z") };
+    expect(computeWeekOverWeek(stored(), after, setupLater).basisChange).toBe("setup");
+    expect(basisCutoff(setupLater)).toEqual(new Date("2026-09-18T00:00:00Z"));
+    expect(basisCutoff({ laborBurdenSetAt: null, basisChangedAt: null })).toBeNull();
+    // Both before the snapshot: compared as usual.
+    expect(computeWeekOverWeek(stored(), after, { laborBurdenSetAt: new Date("2026-09-01T00:00:00Z"), basisChangedAt: new Date("2026-09-02T00:00:00Z") }).noComparisonReason).toBeNull();
+  });
+
+  it("doesn't compare with a snapshot stored under another sync version", () => {
+    expect(computeWeekOverWeek(stored({ syncVersion: 5 }), after, { syncVersion: 6 }).noComparisonReason).toBe("basis_changed");
+    expect(computeWeekOverWeek(stored({ syncVersion: 6 }), after, { syncVersion: 6 }).noComparisonReason).toBeNull();
+  });
+
+  it("doesn't compare with a brief built while a rebuild was waiting for its sync", () => {
+    const r = computeWeekOverWeek(stored({ basisPending: true }), after, { syncVersion: 6 });
+    expect(r.noComparisonReason).toBe("basis_changed");
+    expect(r.basisChange).toBe("setup");
+  });
+
+  it("goes by when the figures were worked out, not when the row was first saved", () => {
+    // Previewed Monday 7am, burden changed at 7:30, sent (rebuilt) at 8am.
+    const row = stored({ builtAt: "2026-09-15T08:00:00.000Z" }, new Date("2026-09-15T07:00:00Z"));
+    expect(computeWeekOverWeek(row, after, { laborBurdenSetAt: new Date("2026-09-15T07:30:00Z") }).noComparisonReason).toBeNull();
+  });
+
+  it("knows when a rebuild Settings asked for hasn't synced yet", () => {
+    const asked = new Date("2026-09-20T00:00:00Z");
+    expect(rebuildPending({ rebuildRequestedAt: null, lastFullSyncAt: null })).toBe(false);
+    expect(rebuildPending({ rebuildRequestedAt: asked, lastFullSyncAt: null })).toBe(true);
+    expect(rebuildPending({ rebuildRequestedAt: asked, lastFullSyncAt: new Date("2026-09-19T00:00:00Z") })).toBe(true);
+    expect(rebuildPending({ rebuildRequestedAt: asked, lastFullSyncAt: new Date("2026-09-21T00:00:00Z") })).toBe(false);
   });
 });

@@ -112,7 +112,12 @@ export default async function JobsPage(props: {
     return (
       <main>
         <h1 className="text-2xl font-bold text-navy">Jobs</h1>
-        <p className="mt-4 text-gray-600">Connect QuickBooks from the Dashboard to see your jobs here.</p>
+        <p className="mt-4 text-gray-600">
+          {/* A client's login can't connect anything; say who can. */}
+          {viewOnly
+            ? "There's no company to show on this login right now. Ask your bookkeeper to check the QuickBooks connection and your access."
+            : "Connect QuickBooks from the Dashboard to see your jobs here."}
+        </p>
       </main>
     );
   }
@@ -184,14 +189,22 @@ export default async function JobsPage(props: {
            and it has an answer. */
         <div className="mt-8 text-sm text-gray-500">
           {statusFilter === "closed" ? (
-            <p>
-              No jobs are marked completed yet. QuickBooks doesn&apos;t tell us when a project
-              wraps up, so that&apos;s a call you make here:{" "}
-              <Link href={linkWithParams({ status: "open" })} className="text-brand hover:underline">
-                open the Active tab
-              </Link>
-              , tick the finished ones and use Mark completed.
-            </p>
+            viewOnly ? (
+              /* A client's view-only login has no Mark completed button. */
+              <p>
+                No jobs are marked completed yet. QuickBooks doesn&apos;t tell us when a project wraps up, so your
+                bookkeeper marks finished jobs here.
+              </p>
+            ) : (
+              <p>
+                No jobs are marked completed yet. QuickBooks doesn&apos;t tell us when a project
+                wraps up, so that&apos;s a call you make here:{" "}
+                <Link href={linkWithParams({ status: "open" })} className="text-brand hover:underline">
+                  open the Active tab
+                </Link>
+                , tick the finished ones and use Mark completed.
+              </p>
+            )
           ) : statusFilter === "open" ? (
             <p>
               No active jobs. Everything you have is marked completed, which you can see on the{" "}
@@ -200,6 +213,8 @@ export default async function JobsPage(props: {
               </Link>
               .
             </p>
+          ) : viewOnly ? (
+            <p>No jobs have come through from QuickBooks yet. Your bookkeeper manages the connection.</p>
           ) : (
             <p>
               No jobs have synced from QuickBooks yet. JobProfitAI reads your QuickBooks Projects or

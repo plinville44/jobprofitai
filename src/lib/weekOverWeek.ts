@@ -50,6 +50,8 @@ export interface WeekOverWeekReport {
   comparedToWeekStarting: Date | null;
   /** Why there is no comparison, when there isn't one. */
   noComparisonReason: "first_brief" | "unreadable_snapshot" | "basis_changed" | null;
+  /** With "basis_changed": what changed, so the brief can say it plainly. */
+  basisChange?: BasisChange | null;
   revenueAdded: number;
   costAdded: number;
   marginBefore: number | null;
@@ -133,15 +135,95 @@ function snapshotFromCurrent(current: ConnectionMetrics): Snapshot {
 
 const isOverBudget = (pct: number | null) => pct != null && pct > OVER_BUDGET_PCT;
 
+// --- Basis changes ------------------------------------------------------
+//
+// A stored snapshot can only be compared with today's figures when both
+// were worked out on the same terms. Four things change the terms without
+// anything happening on the jobs, and every comparison with an earlier
+// week (the "What changed" section, the "new margin risk" headline, the
+// alert baseline) uses the same rule, here, for all of them:
+//   - the labor burden setting (laborBurdenSetAt);
+//   - how jobs are set up, time-entry labor turned on or off, or a full
+//     sync that rebuilt the rows under a new sync version (basisChangedAt);
+//   - a brief built while such a rebuild was still waiting for its sync
+//     (stored with basisPending, since its figures are the old ones);
+//   - the sync version itself, stored with each snapshot from now on.
+
+export type BasisChange = "labor_burden" | "setup";
+
+export interface BasisInfo {
+  laborBurdenSetAt?: Date | null;
+  basisChangedAt?: Date | null;
+  /** The connection's sync version now. */
+  syncVersion?: number | null;
+}
+
+/** The later of the two dates that end comparisons, or null. For code that filters old snapshots by date. */
+export function basisCutoff(c: { laborBurdenSetAt?: Date | null; basisChangedAt?: Date | null }): Date | null {
+  const a = c.laborBurdenSetAt ?? null;
+  const b = c.basisChangedAt ?? null;
+  if (!a) return b;
+  if (!b) return a;
+  return a > b ? a : b;
+}
+
+/**
+ * A job rebuild that Settings asked for and no full sync has done yet: the
+ * stored rows are still the old ones, whatever the settings now say.
+ */
+export function rebuildPending(c: { rebuildRequestedAt?: Date | null; lastFullSyncAt?: Date | null }): boolean {
+  if (!c.rebuildRequestedAt) return false;
+  return !c.lastFullSyncAt || c.lastFullSyncAt < c.rebuildRequestedAt;
+}
+
+function storedField(metrics: unknown, key: string): unknown {
+  return metrics && typeof metrics === "object" ? (metrics as Record<string, unknown>)[key] : undefined;
+}
+
+/** When a snapshot's figures were worked out: stored with it since this change, otherwise its row's creation. */
+function snapshotTime(prior: { metrics: unknown; createdAt?: Date | null }): Date | null {
+  const built = storedField(prior.metrics, "builtAt");
+  if (typeof built === "string") {
+    const d = new Date(built);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return prior.createdAt ?? null;
+}
+
+/**
+ * Whether a stored snapshot was worked out on other terms than today's
+ * figures, and why. Null means it can be compared.
+ */
+export function basisChangeSince(
+  prior: { metrics: unknown; createdAt?: Date | null },
+  basis: BasisInfo | null
+): BasisChange | null {
+  if (storedField(prior.metrics, "basisPending") === true) return "setup";
+  const at = snapshotTime(prior);
+  // Snapshots stored before this was added carry no version; for those,
+  // the date the sync set when it rebuilt the rows (basisChangedAt) decides.
+  const storedVersion = storedField(prior.metrics, "syncVersion");
+  const version = basis?.syncVersion ?? null;
+  if (version != null && typeof storedVersion === "number" && storedVersion !== version) return "setup";
+  if (!at || !basis) return null;
+  const burden = basis.laborBurdenSetAt && at < basis.laborBurdenSetAt ? basis.laborBurdenSetAt : null;
+  const setup = basis.basisChangedAt && at < basis.basisChangedAt ? basis.basisChangedAt : null;
+  if (burden && setup) return burden > setup ? "labor_burden" : "setup";
+  if (burden) return "labor_burden";
+  if (setup) return "setup";
+  return null;
+}
+
 export function computeWeekOverWeek(
   prior: { weekStarting: Date; metrics: unknown; createdAt?: Date } | null,
   current: ConnectionMetrics,
   /**
-   * When the labor burden setting last changed. A snapshot saved before it
-   * was worked out on other terms, and comparing with it would report every
-   * job with time entries as having new costs and a falling margin.
+   * What decides whether the snapshot was worked out on the same terms (see
+   * basisChangeSince). A plain date is the labor burden's change date. A
+   * snapshot from before a change would otherwise report every job with
+   * time entries as having new costs and a falling margin.
    */
-  basisChangedAt: Date | null = null
+  basis: Date | BasisInfo | null = null
 ): WeekOverWeekReport {
   const now = snapshotFromCurrent(current);
   const empty = {
@@ -156,8 +238,9 @@ export function computeWeekOverWeek(
   if (!prior) {
     return { ...empty, comparedToWeekStarting: null, noComparisonReason: "first_brief" };
   }
-  if (basisChangedAt && prior.createdAt && prior.createdAt < basisChangedAt) {
-    return { ...empty, comparedToWeekStarting: null, noComparisonReason: "basis_changed" };
+  const basisChange = basisChangeSince(prior, basis instanceof Date ? { laborBurdenSetAt: basis } : basis);
+  if (basisChange) {
+    return { ...empty, comparedToWeekStarting: null, noComparisonReason: "basis_changed", basisChange };
   }
   const before = readSnapshot(prior.metrics);
   if (!before) {
@@ -350,9 +433,15 @@ export function jobChangeSentence(c: JobChange): string {
  * <pre> for HTML clients), so anything richer would arrive as symbols.
  */
 /** Why there's no "what changed" section this week, in a sentence. */
-export function noComparisonMessage(reason: WeekOverWeekReport["noComparisonReason"]): string {
+export function noComparisonMessage(
+  reason: WeekOverWeekReport["noComparisonReason"],
+  basisChange: BasisChange | null = "labor_burden"
+): string {
   if (reason === "first_brief") {
     return "This is the first Weekly Profit Brief for this company, so there is nothing to compare against yet. From next week, this section lists what moved in your books since the previous brief.";
+  }
+  if (reason === "basis_changed" && basisChange === "setup") {
+    return "How this company's figures are worked out changed since the last brief (how jobs are set up, whether labor comes from time entries, or an update to how JobProfitAI reads QuickBooks). This week's costs and margins aren't measured the same way as last week's, so they aren't compared. Next week's brief will compare against this one.";
   }
   if (reason === "basis_changed") {
     return "Your labor burden setting changed since the last brief, so this week's costs and margins aren't measured the same way as last week's and aren't compared. Next week's brief will compare against this one.";
@@ -362,7 +451,7 @@ export function noComparisonMessage(reason: WeekOverWeekReport["noComparisonReas
 
 export function renderWeekOverWeek(report: WeekOverWeekReport): string {
   if (report.noComparisonReason || !report.comparedToWeekStarting) {
-    return ["WHAT CHANGED SINCE LAST WEEK", noComparisonMessage(report.noComparisonReason)].join("\n");
+    return ["WHAT CHANGED SINCE LAST WEEK", noComparisonMessage(report.noComparisonReason, report.basisChange ?? "labor_burden")].join("\n");
   }
 
   const since = formatShortDate(report.comparedToWeekStarting);
@@ -410,6 +499,7 @@ export function weekOverWeekForModel(report: WeekOverWeekReport) {
   return {
     comparedToWeekStarting: report.comparedToWeekStarting?.toISOString().slice(0, 10) ?? null,
     noComparisonReason: report.noComparisonReason,
+    basisChange: report.basisChange ?? null,
     revenueAddedSinceLastBrief: Math.round(report.revenueAdded),
     costAddedSinceLastBrief: Math.round(report.costAdded),
     blendedMarginBefore: report.marginBefore,

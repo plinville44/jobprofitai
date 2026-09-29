@@ -5,7 +5,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { prisma } from "./prisma";
 import { createSession, hashPassword } from "./auth";
 import { accountFor, ACTIVE_COMPANY_COOKIE } from "./account";
-import { attachCompany } from "./connectCompany";
+import { attachCompany, OWNER_ONLY_CONNECT_NOTICE } from "./connectCompany";
 import { hashRealmId, legacyHashRealmId } from "./crypto";
 import { newTrialSubscriptionData } from "./trial";
 import { attributeSignupReferral } from "./signupReferral";
@@ -255,12 +255,16 @@ export async function handleIntuitFlow(
     await discardGrant(realmId!, tokens.refresh_token);
     return NextResponse.redirect(appUrl("/dashboard?qbo_error=view_only"));
   }
-  const result = await attachCompany({ ownerId: account.ownerId, realmId: realmId!, tokens });
+  // The role goes along so a Firm team member can't add a billed company
+  // this way either, same as through Settings (see attachCompany).
+  const result = await attachCompany({ ownerId: account.ownerId, realmId: realmId!, tokens, actorRole: account.role });
   if (!result.ok) {
     const target =
       result.code === "already_connected" || result.code === "verify_failed"
         ? `/dashboard?qbo_error=${result.code}`
-        : `/dashboard/billing?limit=${result.code}`;
+        : result.code === "owner_only"
+          ? `/dashboard/settings?notice=${OWNER_ONLY_CONNECT_NOTICE}`
+          : `/dashboard/billing?limit=${result.code}`;
     return NextResponse.redirect(appUrl(target));
   }
   const res = NextResponse.redirect(appUrl("/dashboard?qbo_connected=1"));

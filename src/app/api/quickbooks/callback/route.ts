@@ -3,7 +3,7 @@ import { jwtVerify } from "jose";
 import { getSession } from "@/lib/auth";
 import { accountFor, ACTIVE_COMPANY_COOKIE } from "@/lib/account";
 import { exchangeCodeForTokens } from "@/lib/quickbooks";
-import { attachCompany } from "@/lib/connectCompany";
+import { attachCompany, OWNER_ONLY_CONNECT_NOTICE } from "@/lib/connectCompany";
 import { handleIntuitFlow } from "@/lib/intuitSignIn";
 
 // Token exchange, company lookups and a revoke can all happen here.
@@ -85,12 +85,14 @@ async function handleConnect(payload: Record<string, unknown>, code: string, rea
     return NextResponse.redirect(appUrl("/dashboard?qbo_error=token_exchange_failed"));
   }
 
-  const result = await attachCompany({ ownerId, realmId, tokens, reconnectId });
+  const result = await attachCompany({ ownerId, realmId, tokens, reconnectId, actorRole: account.role });
   if (!result.ok) {
     const target =
       result.code === "already_connected" || result.code === "verify_failed"
         ? `/dashboard?qbo_error=${result.code}`
-        : `/dashboard/billing?limit=${result.code}`;
+        : result.code === "owner_only"
+          ? `/dashboard/settings?notice=${OWNER_ONLY_CONNECT_NOTICE}`
+          : `/dashboard/billing?limit=${result.code}`;
     return NextResponse.redirect(appUrl(target));
   }
 

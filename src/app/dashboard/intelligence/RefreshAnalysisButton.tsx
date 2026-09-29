@@ -30,7 +30,7 @@ export default function RefreshAnalysisButton({ connectionId }: { connectionId: 
         setStatus(`Failed: ${data?.error ?? `Server returned status ${res.status}.`}`);
       }
     } catch (err) {
-      setStatus(`Failed: ${err instanceof Error ? err.message : "Network error - please try again."}`);
+      setStatus(`Failed: ${err instanceof Error ? err.message : "Network error. Please try again."}`);
     }
     setBusy(false);
   }

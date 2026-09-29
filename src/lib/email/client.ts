@@ -47,7 +47,29 @@ export interface SendEmailResult {
   error?: string;
   /** True when email isn't configured in this environment (not a failure). */
   skipped?: boolean;
+  /**
+   * True when the failure was on the sending side (the provider down, busy
+   * or over a quota, or the network), so sending again later can work and
+   * the failure says nothing about the address. False for a rejected
+   * message or address. The weekly brief doesn't count these against a
+   * company's attempts.
+   */
+  transient?: boolean;
 }
+
+/**
+ * Resend error names that mean "try again later" rather than "this message
+ * or address was refused". Names from Resend's API documentation; which
+ * ones Resend actually returns in each case is not verified here.
+ */
+const TRANSIENT_ERRORS = new Set([
+  "rate_limit_exceeded",
+  "daily_quota_exceeded",
+  "monthly_quota_exceeded",
+  "application_error",
+  "internal_server_error",
+  "concurrent_idempotent_requests",
+]);
 
 /**
  * Low-level send. Never throws - callers get a result object, because a
@@ -92,13 +114,14 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
       // Message only - never the whole provider error object, which can echo
       // request contents back into logs.
       console.error(`email: send failed for "${input.subject}": ${error.message}`);
-      return { ok: false, error: error.message };
+      return { ok: false, error: error.message, transient: error.name != null && TRANSIENT_ERRORS.has(error.name) };
     }
     return { ok: true, id: data?.id };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown email error";
     console.error(`email: send threw for "${input.subject}": ${message}`);
-    return { ok: false, error: message };
+    // Thrown rather than returned: the request didn't get an answer.
+    return { ok: false, error: message, transient: true };
   }
 }
 
@@ -180,6 +203,77 @@ export async function sendLifecycleEmail(input: LifecycleEmailInput): Promise<Se
   });
 
   return result;
+}
+
+export interface KeyedEmailResult extends SendEmailResult {
+  /** Keys this address already had: sent before, or being sent by another run. */
+  alreadySent: string[];
+  /** Keys this call sent. Empty unless the send worked. */
+  sentNow: string[];
+}
+
+/**
+ * One email carrying several things, each of which an address must get at
+ * most once: a recipient's profit alerts, say, with one key per alert and
+ * address. Keys already sent are left out, and the rest are claimed the way
+ * sendLifecycleEmail claims its one key (an EmailEvent row per key, inserted
+ * before anything is sent), so a run that dies partway, or a second run
+ * with the same things still to send, never sends one twice. A failed send
+ * frees its keys for a retry. `render` builds the email from the keys this
+ * call claimed; nothing is sent when there are none.
+ */
+export async function sendLifecycleEmailOncePerKey(input: {
+  userId: string | null;
+  emailType: string;
+  to: string;
+  keys: string[];
+  render: (keys: string[]) => Omit<SendEmailInput, "to">;
+}): Promise<KeyedEmailResult> {
+  const keys = [...new Set(input.keys)];
+  const found = await prisma.emailEvent.findMany({ where: { dedupeKey: { in: keys } }, select: { dedupeKey: true } });
+  const taken = new Set(found.map((f) => f.dedupeKey));
+  const alreadySent = keys.filter((k) => taken.has(k));
+
+  const claims: { id: string; key: string }[] = [];
+  const release = async (status: string, errorMessage: string | null, subject: string | null) => {
+    for (const c of claims) {
+      await prisma.emailEvent.update({
+        where: { id: c.id },
+        data: { dedupeKey: `failed:${c.id}:${c.key}`.slice(0, 500), status, errorMessage, ...(subject ? { subject } : {}) },
+      });
+    }
+  };
+  for (const key of keys) {
+    if (taken.has(key)) continue;
+    try {
+      const claim = await prisma.emailEvent.create({
+        data: { userId: input.userId, emailType: input.emailType, dedupeKey: key, toEmail: input.to, status: "sent" },
+      });
+      claims.push({ id: claim.id, key });
+    } catch (err) {
+      // Claimed by another run a moment ago: theirs to send.
+      if ((err as { code?: string })?.code === "P2002") {
+        alreadySent.push(key);
+        continue;
+      }
+      await release("failed", err instanceof Error ? err.message : "Unknown error", null).catch(() => {});
+      throw err;
+    }
+  }
+  if (claims.length === 0) return { ok: true, skipped: true, alreadySent, sentNow: [] };
+
+  const email = input.render(claims.map((c) => c.key));
+  const result = await sendEmail({ ...email, to: input.to });
+  if (result.ok) {
+    await prisma.emailEvent.updateMany({
+      where: { id: { in: claims.map((c) => c.id) } },
+      data: { subject: email.subject, providerMessageId: result.id ?? null },
+    });
+    return { ...result, alreadySent, sentNow: claims.map((c) => c.key) };
+  }
+  // Release the keys so a later run can retry, but keep the audit rows.
+  await release(result.skipped ? "skipped" : "failed", result.error ?? null, email.subject);
+  return { ...result, alreadySent, sentNow: [] };
 }
 
 /** True when a lifecycle email with this dedupe key has already gone out. */

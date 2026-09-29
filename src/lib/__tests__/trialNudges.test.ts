@@ -49,7 +49,7 @@ describe("dueTrialNudges", () => {
 describe("mid-trial email copy", () => {
   it("contains no en or em dashes", () => {
     for (const email of [trialCheckInEmail("Dana Smith"), reportGuideEmail(null)]) {
-      expect(email.subject + email.text + email.html).not.toMatch(/[–—]/);
+      expect(email.subject + email.text + email.html).not.toMatch(/[\u2013\u2014]/);
     }
   });
 

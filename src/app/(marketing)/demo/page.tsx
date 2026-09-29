@@ -121,7 +121,7 @@ export default function DemoPage() {
         <h2 className="text-xl font-bold text-jp-ink">6. Every job, with its margin</h2>
         <p className="mt-2 max-w-3xl text-jp-slate">
           Revenue and costs come straight from the invoices, bills and expenses tagged to each
-          QuickBooks project. Jobs under your target margin stand out.
+          QuickBooks project. Finished jobs under your target margin stand out.
         </p>
         <div className="mt-6">
           <JobListPreview />

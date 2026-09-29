@@ -11,6 +11,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 import {
+  NO_PLAN_STATUS,
   TRIAL_EXTENSION_GRACE_DAYS,
   addDays,
   computeTrialState,
@@ -19,6 +20,7 @@ import {
   extendTrialWithFeedback,
   markFirstAnalysis,
   markQuickBooksConnected,
+  newTrialSubscriptionData,
 } from "../trial";
 
 const DAY = 86_400_000;
@@ -61,7 +63,9 @@ beforeEach(() => {
 
 describe("trial state", () => {
   it("gives a new account exactly 14 days", async () => {
+    // Signup creates the trial row in the same write as the login.
     await fake.client.user.create({ data: { id: "u1", email: "a@b.com" } });
+    await fake.client.subscription.create({ data: { userId: "u1", ...newTrialSubscriptionData(START) } });
     const sub = await ensureSubscription("u1", START);
 
     expect(sub.status).toBe("trialing");
@@ -73,12 +77,49 @@ describe("trial state", () => {
 
   it("is idempotent - a second call returns the same trial, not a new one", async () => {
     await fake.client.user.create({ data: { id: "u1", email: "a@b.com" } });
+    await fake.client.subscription.create({ data: { userId: "u1", ...newTrialSubscriptionData(START) } });
     const first = await ensureSubscription("u1", START);
     const second = await ensureSubscription("u1", new Date(START.getTime() + 5 * DAY));
 
     expect(second.id).toBe(first.id);
     expect(trialEnd(second).getTime()).toBe(trialEnd(first).getTime());
     expect(await fake.client.subscription.count()).toBe(1);
+  });
+
+  /**
+   * A team member's or client's own trial row is deleted when they join
+   * someone's account. Removed later, they sign in again and the trial
+   * banner asks for their trial state: that used to create a fresh 14 days.
+   */
+  it("never starts a trial for a login that reaches it without one", async () => {
+    await fake.client.user.create({ data: { id: "removed_member", email: "pm@example.com" } });
+
+    const sub = await ensureSubscription("removed_member", START);
+
+    expect(sub.status).toBe(NO_PLAN_STATUS);
+    expect(sub.trialEndsAt).toBeNull();
+    const state = computeTrialState(sub, new Date(START.getTime() + DAY));
+    expect(state.onTrial).toBe(false);
+    // Not "expired" either: it never had one, so no "trial ended" email.
+    expect(state.expired).toBe(false);
+    expect(state.extensionOffered).toBe(false);
+    // Asked again (the banner on every page), still no trial.
+    const again = await ensureSubscription("removed_member", new Date(START.getTime() + 2 * DAY));
+    expect(again.id).toBe(sub.id);
+    expect(again.status).toBe(NO_PLAN_STATUS);
+  });
+
+  it("gives a no-plan login no access, and says so plainly", async () => {
+    await fake.client.user.create({ data: { id: "removed_client", email: "client@example.com" } });
+    await ensureSubscription("removed_client", START);
+
+    const { getEntitlements, inactiveMessage } = await import("../entitlements");
+    const entitlements = await getEntitlements("removed_client", START);
+
+    expect(entitlements.access).toBe("none");
+    expect(entitlements.active).toBe(false);
+    expect(entitlements.trialing).toBe(false);
+    expect(inactiveMessage(entitlements)).toMatch(/isn't on a JobProfitAI plan/);
   });
 
   it("counts days remaining and reports expiry", () => {

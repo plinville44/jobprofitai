@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAccount, refuseClient } from "@/lib/account";
+import { connectionForAccount, getAccount, refuseClient } from "@/lib/account";
 import { runSyncForConnection, SyncAlreadyRunningError } from "@/lib/quickbooksSync";
-import { getEntitlements } from "@/lib/entitlements";
+import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
+import { overLimitConnectionIds, pausedCompaniesMessage } from "@/lib/planLimits";
+import { syncCooldownMessage, syncCooldownSecondsLeft } from "@/lib/syncCooldown";
 
 /**
  * POST /api/quickbooks/sync  { connectionId }
@@ -48,19 +50,43 @@ async function runSync(req: NextRequest) {
   // keep pulling fresh QuickBooks data by calling the API directly.
   const entitlements = await getEntitlements(account.ownerId);
   if (!entitlements.active) {
+    return NextResponse.json({ error: inactiveMessage(entitlements), code: "entitlement_required" }, { status: 402 });
+  }
+
+  const body = await req.json().catch(() => ({}));
+  // Scoped to this login's account, and a disconnected company isn't synced.
+  const connection = await connectionForAccount(account, body?.connectionId);
+  if (!connection) {
+    return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+  }
+
+  // A company past the plan's company limit keeps the figures it has but
+  // isn't synced (src/lib/planLimits.ts). The nightly job skips it too.
+  const paused = await overLimitConnectionIds(account.ownerId);
+  if (paused.has(connection.id)) {
+    const name = connection.companyName?.trim() || "This company";
     return NextResponse.json(
-      { error: "Your JobProfitAI trial has ended. Choose a plan to continue.", code: "entitlement_required" },
-      { status: 402 }
+      {
+        error: `${pausedCompaniesMessage([name], entitlements.limits.maxConnections)} A paused company keeps its figures but doesn't sync. Billing shows what to do.`,
+        code: "company_paused",
+      },
+      { status: 403 }
     );
   }
 
-  const { connectionId } = await req.json();
-  const connection = await prisma.quickBooksConnection.findUnique({
-    where: { id: connectionId },
+  // When the last sync started, so a rebuild asked for since (a change of
+  // job setup) isn't held back by the pause (see syncCooldown.ts).
+  const lastRun = await prisma.syncRun.findFirst({
+    where: { connectionId: connection.id },
+    orderBy: { startedAt: "desc" },
+    select: { startedAt: true },
   });
-
-  if (!connection || connection.userId !== account.ownerId) {
-    return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+  const wait = syncCooldownSecondsLeft({ ...connection, lastSyncStartedAt: lastRun?.startedAt ?? null });
+  if (wait > 0) {
+    return NextResponse.json(
+      { error: syncCooldownMessage(wait), code: "sync_cooldown", retryAfterSeconds: wait },
+      { status: 429, headers: { "Retry-After": String(wait) } }
+    );
   }
 
   // A person clicking Sync now always gets a full read, never the lighter
@@ -77,6 +103,14 @@ async function runSync(req: NextRequest) {
   // and only changed rows are written - and this is a button a person
   // presses occasionally, not the scheduled syncs, which use the
   // incremental path (they call runSyncForConnection without this flag).
-  const result = await runSyncForConnection(connectionId, { forceFull: true });
+  //
+  // A deadline keeps a large company's read inside this route's 300-second
+  // limit: the sync stops between steps, says so, and the next press (within
+  // the hour) or the nightly sync carries on from where it stopped.
+  const result = await runSyncForConnection(connection.id, {
+    forceFull: true,
+    deadline: Date.now() + 240_000,
+    resumeWithinMs: 60 * 60_000,
+  });
   return NextResponse.json(result);
 }

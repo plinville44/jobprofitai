@@ -21,10 +21,16 @@ const calls = {
   pendingRewardsApplied: 0,
 };
 
+// What Stripe returns for a subscription or charge id. Unlisted ids come
+// back undefined, which the handler treats as nothing known.
+const stripeState = {
+  subscriptions: {} as Record<string, unknown>,
+  charges: {} as Record<string, unknown>,
+};
 vi.mock("@/lib/stripe/client", () => ({
   getStripe: () => ({
-    subscriptions: { retrieve: vi.fn() },
-    charges: { retrieve: vi.fn() },
+    subscriptions: { retrieve: vi.fn(async (id: string) => stripeState.subscriptions[id]) },
+    charges: { retrieve: vi.fn(async (id: string) => stripeState.charges[id]) },
   }),
   planForPriceId: (priceId: string | null) =>
     priceId === "price_149"
@@ -90,7 +96,7 @@ vi.mock("@/lib/email/lifecycle", () => ({
   }),
 }));
 
-import { processStripeEvent } from "../stripe/webhookHandlers";
+import { chargeRefundedInFull, processStripeEvent } from "../stripe/webhookHandlers";
 
 function subscriptionEvent(overrides: Record<string, unknown> = {}) {
   return {
@@ -133,6 +139,8 @@ beforeEach(() => {
   calls.disqualified.length = 0;
   calls.emails.length = 0;
   calls.pendingRewardsApplied = 0;
+  stripeState.subscriptions = {};
+  stripeState.charges = {};
 });
 
 describe("event idempotency", () => {
@@ -487,5 +495,79 @@ describe("out-of-order delivery", () => {
     } as never);
     const sub = await fake.client.subscription.findUnique({ where: { userId: "u1" } });
     expect(sub.status).toBe("active");
+  });
+});
+
+describe("a paid invoice whose money was given back", () => {
+  async function seedPartnerReferral() {
+    await seedAccount({ status: "active", stripeSubscriptionId: "sub_kept" });
+    await fake.client.referral.create({
+      data: { referralCodeId: "rc_1", kind: "partner", partnerId: "p1", referredUserId: "u1", status: "signed_up" },
+    });
+    await fake.client.user.create({ data: { id: "firm", email: "firm@example.com" } });
+    await fake.client.partner.create({
+      data: { id: "p1", userId: "firm", firmName: "Ledger", contactName: "Sam", status: "approved" },
+    });
+  }
+
+  function invoicePaid(id: string, subscription: string, charge: unknown = "ch_1") {
+    return {
+      id: `evt_${id}`,
+      type: "invoice.paid",
+      data: {
+        object: {
+          id,
+          customer: "cus_1",
+          subscription,
+          charge,
+          amount_paid: 14_900,
+          status_transitions: { paid_at: Math.floor(Date.now() / 1000) },
+          lines: { data: [] },
+        },
+      },
+    } as never;
+  }
+
+  it("records no commission and sends no partner email for a duplicate subscription cancelled and refunded first", async () => {
+    await seedPartnerReferral();
+    stripeState.subscriptions.sub_dup = { id: "sub_dup", status: "canceled", metadata: { jobprofitaiDuplicateOf: "sub_kept" } };
+    stripeState.charges.ch_1 = { id: "ch_1", amount: 14_900, amount_refunded: 14_900, refunded: true };
+
+    const result = await processStripeEvent(invoicePaid("in_dup", "sub_dup"));
+
+    expect(result.detail).toMatch(/duplicate/);
+    expect(calls.commissions).toEqual([]);
+    expect(calls.emails).toEqual([]);
+    const referral = await fake.client.referral.findUnique({ where: { referredUserId: "u1" } });
+    expect(referral.status).toBe("signed_up");
+  });
+
+  it("records no commission for an invoice whose charge was refunded in full before the event arrived", async () => {
+    await seedPartnerReferral();
+    stripeState.subscriptions.sub_kept = { id: "sub_kept", status: "active", metadata: {} };
+    stripeState.charges.ch_1 = { id: "ch_1", amount: 14_900, amount_refunded: 14_900, refunded: true };
+
+    const result = await processStripeEvent(invoicePaid("in_refunded", "sub_kept"));
+
+    expect(result.detail).toMatch(/refunded/);
+    expect(calls.commissions).toEqual([]);
+    expect(calls.emails).toEqual([]);
+  });
+
+  it("still pays commission on a kept payment, a partly refunded one, or one Stripe says nothing about", async () => {
+    await seedPartnerReferral();
+    stripeState.subscriptions.sub_kept = { id: "sub_kept", status: "active", metadata: {} };
+    stripeState.charges.ch_1 = { id: "ch_1", amount: 14_900, amount_refunded: 2_000, refunded: false };
+    await processStripeEvent(invoicePaid("in_1", "sub_kept"));
+    await processStripeEvent(invoicePaid("in_2", "sub_kept", { id: "ch_2", amount: 14_900, amount_refunded: 0, refunded: false }));
+    await processStripeEvent(invoicePaid("in_3", "sub_kept", "ch_unknown"));
+    expect(calls.commissions).toEqual(["in_1", "in_2", "in_3"]);
+  });
+
+  it("reads a full refund only from what the charge says", () => {
+    expect(chargeRefundedInFull({ refunded: true, amount: 100, amount_refunded: 100 })).toBe(true);
+    expect(chargeRefundedInFull({ refunded: false, amount: 100, amount_refunded: 100 })).toBe(true);
+    expect(chargeRefundedInFull({ refunded: false, amount: 100, amount_refunded: 40 })).toBe(false);
+    expect(chargeRefundedInFull({} as never)).toBe(false);
   });
 });

@@ -4,6 +4,7 @@ import type { QuickBooksConnection } from "@prisma/client";
 import { prisma } from "./prisma";
 import { getSession } from "./auth";
 import { getEntitlements } from "./entitlements";
+import { REMOVED_ROLE } from "./teamRemoval";
 
 /**
  * Who is signed in, and whose account they are working in.
@@ -43,7 +44,8 @@ export async function accountFor(userId: string): Promise<AccountContext> {
     where: { memberUserId: userId },
     select: { ownerUserId: true, acceptedAt: true, role: true, connectionId: true },
   });
-  if (membership?.acceptedAt && membership.ownerUserId !== userId) {
+  // A removed login's marker row (REMOVED_ROLE, never accepted) grants nothing.
+  if (membership?.acceptedAt && membership.role !== REMOVED_ROLE && membership.ownerUserId !== userId) {
     if (membership.role === "client") {
       // A client login with no company (its company row was removed), or on
       // an account no longer on a plan with client logins, sees nothing at

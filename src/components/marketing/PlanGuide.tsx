@@ -3,8 +3,9 @@ import { PLANS } from "@/lib/plans";
 
 /**
  * Which plan fits, by how many jobs are open at once and how many
- * QuickBooks companies (or whether it's a firm keeping clients' books). Limits come from the plan catalog so this can't
- * drift from what the product enforces.
+ * QuickBooks companies. A bookkeeper is placed by client count like anyone
+ * else: with 2 or 3 clients Pro covers them for less than Firm's minimum.
+ * Limits come from the plan catalog so this can't drift from the product.
  */
 export default function PlanGuide() {
   const std = PLANS.profit_intelligence;
@@ -19,8 +20,7 @@ export default function PlanGuide() {
     },
     {
       who: `More than ${std.limits.maxActiveJobs} jobs open at once, or 2 to ${pro.limits.maxConnections} companies`,
-      examples:
-        "Service contractors where every call is its own job, and owners with more than one company. Also the plan with forecasts on jobs in progress.",
+      examples: `Service contractors where every call is its own job, owners with more than one company, and bookkeepers with 2 or 3 contractor clients (a portfolio page shows them all; client logins come with ${firm.name}). Also the plan with forecasts on jobs in progress.`,
       plan: pro.name,
       price: pro.priceLabel,
     },
@@ -56,7 +56,8 @@ export default function PlanGuide() {
             <tr>
               <td className="px-5 py-4 align-top">
                 <p className="font-medium text-jp-ink">
-                  A bookkeeping or accounting firm with contractor clients, or more than {pro.limits.maxConnections} companies
+                  {firm.perCompany!.minCompanies} or more companies, such as a bookkeeping or accounting firm with{" "}
+                  {firm.perCompany!.minCompanies} or more contractor clients
                 </p>
                 <p className="mt-1 text-jp-muted">
                   Every client in one login, with a portfolio view and view-only logins for your clients.{" "}
@@ -77,7 +78,8 @@ export default function PlanGuide() {
       </div>
       <p className="mt-4 text-center text-sm leading-relaxed text-jp-muted">
         Only open jobs count. A job stops counting when you mark it finished, and jobs with no activity in 90 days can be
-        marked finished all at once. Not sure how many you have? The trial shows your count on the Billing page before you
+        marked finished all at once. If you go over {std.limits.maxActiveJobs} on {std.name}, we&rsquo;ll ask you to move to
+        Pro; nothing stops working. Not sure how many you have? The trial shows your count on the Billing page before you
         choose.
       </p>
     </div>

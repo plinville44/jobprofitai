@@ -23,6 +23,16 @@ import {
   sendSubscriptionCanceled,
   sendSubscriptionConfirmed,
 } from "@/lib/email/lifecycle";
+import { SUPPORT_EMAIL, sendLifecycleEmail } from "@/lib/email/client";
+import { overLimitConnectionIds } from "@/lib/planLimits";
+import {
+  DUPLICATE_OF_METADATA_KEY,
+  DUPLICATE_REFUND_METADATA_KEY,
+  isLiveSubscriptionStatus,
+  originalSubscriptionFor,
+  type SubscriptionSummary,
+} from "./duplicateSubscription";
+import { isFirmInvoice } from "./invoicePlan";
 
 // Stripe webhook processing.
 //
@@ -260,6 +270,13 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session): Promis
     // then run it through the same upsert path every subscription event uses,
     // so there is exactly one place that maps Stripe state to our columns.
     const subscription = await getStripe().subscriptions.retrieve(subscriptionId);
+
+    // A second checkout that got paid while another subscription was
+    // already live (two tabs, a double click on two plans). The older one is
+    // kept and this one is cancelled and refunded. See duplicateSubscription.ts.
+    const original = await findOriginalSubscription(userId, customerId ?? idOf(subscription.customer), subscription);
+    if (original) return cancelDuplicateSubscription(userId, subscription, original);
+
     // Just retrieved, so it is newer than any event still in flight.
     await handleSubscriptionUpsert(subscription, Math.floor(Date.now() / 1000));
   }
@@ -275,7 +292,213 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session): Promis
   // nowhere to go (no Stripe customer existed yet). Now there is one.
   const applied = await applyPendingRewardsForUser(userId);
 
-  return `Checkout completed for user ${userId}${applied ? `, applied ${applied} pending credit(s)` : ""}`;
+  // The company limit was checked when checkout started, but companies can
+  // be connected while the checkout page is open. Nothing needs storing:
+  // the newest ones past the limit are paused from here on (planLimits.ts)
+  // and Billing says so. Noted here so it shows in Stripe's webhook log.
+  const paused = await pausedNote(userId);
+
+  return `Checkout completed for user ${userId}${applied ? `, applied ${applied} pending credit(s)` : ""}${paused}`;
+}
+
+/** ", N companies paused (past the plan's limit)", or "" when none are. */
+async function pausedNote(userId: string): Promise<string> {
+  const paused = await overLimitConnectionIds(userId);
+  return paused.size > 0 ? `, ${paused.size} compan${paused.size === 1 ? "y" : "ies"} paused (past the plan's limit)` : "";
+}
+
+// --- A second subscription from a duplicate checkout -----------------------
+
+function summarize(subscription: Stripe.Subscription): SubscriptionSummary {
+  return { id: subscription.id, status: subscription.status, created: subscription.created ?? 0 };
+}
+
+/**
+ * The live subscription a just-completed checkout duplicates, or null when
+ * the checkout's subscription stands. Asks Stripe for all of the customer's
+ * subscriptions, since our own row may not have caught up (or may already
+ * have been overwritten by the duplicate's own events), plus the one on file
+ * in case it sits on another Stripe customer.
+ */
+async function findOriginalSubscription(
+  userId: string,
+  customerId: string | null,
+  created: Stripe.Subscription
+): Promise<Stripe.Subscription | null> {
+  const stripe = getStripe();
+  const candidates: Stripe.Subscription[] = [];
+  if (customerId) {
+    const page = await stripe.subscriptions.list({ customer: customerId, status: "all", limit: 20 });
+    candidates.push(...(page.data as Stripe.Subscription[]));
+  }
+  const onFile = await prisma.subscription.findUnique({
+    where: { userId },
+    select: { stripeSubscriptionId: true, status: true },
+  });
+  if (
+    onFile?.stripeSubscriptionId &&
+    onFile.stripeSubscriptionId !== created.id &&
+    isLiveSubscriptionStatus(onFile.status) &&
+    !candidates.some((c: Stripe.Subscription) => c.id === onFile.stripeSubscriptionId)
+  ) {
+    candidates.push(await stripe.subscriptions.retrieve(onFile.stripeSubscriptionId));
+  }
+  const original = originalSubscriptionFor(summarize(created), candidates.map(summarize));
+  return original ? candidates.find((c: Stripe.Subscription) => c.id === original.id) ?? null : null;
+}
+
+/**
+ * Cancels a duplicate subscription at once, refunds its first payment, keeps
+ * the original on file and emails the admin. Every step is safe to repeat,
+ * because Stripe retries this event: a cancelled subscription isn't
+ * cancelled again, a refunded charge isn't refunded again (checked, and an
+ * idempotency key besides), and the admin email has a dedupe key.
+ *
+ * Throws only when the duplicate could not be cancelled, so Stripe retries
+ * the event; the admin has been told either way. The Stripe calls follow
+ * API 2024-06-20 and are not verified against live Stripe.
+ */
+async function cancelDuplicateSubscription(
+  userId: string,
+  duplicate: Stripe.Subscription,
+  original: Stripe.Subscription
+): Promise<string> {
+  const stripe = getStripe();
+
+  // The duplicate's own events may have replaced the original on file.
+  // Put the original back first, so the duplicate's cancellation (and its
+  // "subscription deleted" event) can't end the customer's access.
+  await handleSubscriptionUpsert(original, Math.floor(Date.now() / 1000));
+
+  let cancelled = duplicate.status === "canceled" || duplicate.status === "incomplete_expired";
+  let cancelProblem: string | null = null;
+  if (!cancelled) {
+    try {
+      // Marked first, so every later event about it says what it is.
+      await stripe.subscriptions.update(duplicate.id, {
+        metadata: { [DUPLICATE_OF_METADATA_KEY]: original.id },
+      });
+      await stripe.subscriptions.cancel(
+        duplicate.id,
+        { invoice_now: false, prorate: false, cancellation_details: { comment: `Duplicate of ${original.id}` } },
+        { idempotencyKey: `duplicate-cancel:${duplicate.id}` }
+      );
+      cancelled = true;
+    } catch (err) {
+      const again: Stripe.Subscription | null = await stripe.subscriptions.retrieve(duplicate.id).catch(() => null);
+      if (again?.status === "canceled") cancelled = true;
+      else cancelProblem = err instanceof Error ? err.message : "Unknown error";
+    }
+  }
+
+  let refund: { ok: boolean; note: string };
+  try {
+    refund = await refundFirstPayment(duplicate);
+  } catch (err) {
+    refund = { ok: false, note: `refund failed: ${err instanceof Error ? err.message : "Unknown error"}` };
+  }
+
+  await notifyAdminOfDuplicate({ userId, duplicate, original, cancelled, cancelProblem, refund });
+
+  if (!cancelled) {
+    throw new Error(`Duplicate subscription ${duplicate.id} could not be cancelled: ${cancelProblem}`);
+  }
+  return `Duplicate subscription ${duplicate.id} cancelled for user ${userId} (kept ${original.id}); ${refund.note}`;
+}
+
+/** Refunds a duplicate subscription's first invoice in full, once. */
+async function refundFirstPayment(duplicate: Stripe.Subscription): Promise<{ ok: boolean; note: string }> {
+  const stripe = getStripe();
+  const invoiceId = idOf(duplicate.latest_invoice);
+  if (!invoiceId) return { ok: true, note: "no invoice, nothing to refund" };
+
+  const invoice: Stripe.Invoice = await stripe.invoices.retrieve(invoiceId);
+  if (invoice.status === "open") {
+    // Not paid yet (a payment still settling): make sure it never is.
+    await stripe.invoices.voidInvoice(invoiceId);
+    return { ok: true, note: `unpaid invoice ${invoiceId} voided` };
+  }
+  if ((invoice.amount_paid ?? 0) <= 0) return { ok: true, note: "nothing was paid" };
+
+  const chargeId = idOf(invoice.charge);
+  const paymentIntentId = idOf(invoice.payment_intent);
+  if (!chargeId && !paymentIntentId) {
+    return { ok: false, note: `no charge found on invoice ${invoiceId}; refund it by hand` };
+  }
+  if (chargeId) {
+    const charge: Stripe.Charge = await stripe.charges.retrieve(chargeId);
+    if (charge.refunded || (charge.amount_refunded ?? 0) >= (charge.amount ?? 0)) {
+      return { ok: true, note: `charge ${chargeId} already refunded` };
+    }
+  }
+  const refund = await stripe.refunds.create(
+    {
+      ...(chargeId ? { charge: chargeId } : { payment_intent: paymentIntentId }),
+      reason: "duplicate",
+      metadata: { [DUPLICATE_REFUND_METADATA_KEY]: duplicate.id },
+    },
+    { idempotencyKey: `duplicate-refund:${duplicate.id}` }
+  );
+  return { ok: true, note: `refunded $${((refund.amount ?? invoice.amount_paid ?? 0) / 100).toFixed(2)}` };
+}
+
+/** Emails the admin about a duplicate subscription, once per outcome. Never throws. */
+async function notifyAdminOfDuplicate(params: {
+  userId: string;
+  duplicate: Stripe.Subscription;
+  original: Stripe.Subscription;
+  cancelled: boolean;
+  cancelProblem: string | null;
+  refund: { ok: boolean; note: string };
+}): Promise<void> {
+  const { userId, duplicate, original, cancelled, cancelProblem, refund } = params;
+  try {
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+    const planOf = (s: Stripe.Subscription) => planForPriceId(priceIdFromSubscription(s)) ?? "unknown plan";
+    const done = cancelled && refund.ok;
+    const lines = [
+      `Account: ${user?.email ?? userId}`,
+      `Kept: ${original.id} (${planOf(original)}, ${original.status})`,
+      `Second subscription: ${duplicate.id} (${planOf(duplicate)}), ${cancelled ? "cancelled" : `NOT cancelled: ${cancelProblem}`}`,
+      `First payment: ${refund.note}`,
+      "",
+      done
+        ? "Two checkouts were paid for this account. The second was cancelled and refunded automatically. You may want to let the customer know."
+        : "Two checkouts were paid for this account and this couldn't be fully put right automatically. Please finish it in the Stripe dashboard.",
+    ].join("\n");
+    await sendLifecycleEmail({
+      userId,
+      emailType: "admin_duplicate_subscription",
+      dedupeKey: `admin_duplicate_subscription:${duplicate.id}:${done ? "done" : "problem"}`,
+      to: process.env.CONTACT_TO_EMAIL?.trim() || SUPPORT_EMAIL,
+      replyTo: user?.email ?? SUPPORT_EMAIL,
+      subject: `[Billing] Second subscription ${done ? "cancelled and refunded" : "needs attention"}: ${user?.email ?? userId}`,
+      text: lines,
+      html: `<pre style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;white-space:pre-wrap;">${lines
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")}</pre>`,
+    });
+  } catch (err) {
+    console.error("stripe: duplicate subscription notice failed:", err instanceof Error ? err.message : "Unknown error");
+  }
+}
+
+/**
+ * Whether a refunded charge was refunded by cancelDuplicateSubscription.
+ * The customer is still paying on the subscription that was kept, so that
+ * refund must not end their referral. False when it can't be told.
+ */
+async function refundIsForDuplicate(charge: Stripe.Charge): Promise<boolean> {
+  try {
+    const listed = charge.refunds?.data;
+    const refunds: { metadata?: Record<string, string> | null }[] = Array.isArray(listed)
+      ? listed
+      : (await getStripe().refunds.list({ charge: charge.id, limit: 10 })).data;
+    return refunds.some((r) => Boolean(r?.metadata?.[DUPLICATE_REFUND_METADATA_KEY]));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -295,6 +518,11 @@ async function handleSubscriptionUpsert(subscription: Stripe.Subscription, event
     metadataUserId: subscription.metadata?.jobprofitaiUserId ?? null,
   });
   if (!userId) return "No matching account for subscription";
+
+  // A subscription cancelled as a second, duplicate checkout is never put
+  // on file (see cancelDuplicateSubscription).
+  const duplicateOf = subscription.metadata?.[DUPLICATE_OF_METADATA_KEY];
+  if (duplicateOf) return `Event for ${subscription.id} ignored: cancelled as a duplicate of ${duplicateOf}`;
 
   const priceId = priceIdFromSubscription(subscription);
   const plan = planForPriceId(priceId);
@@ -371,7 +599,13 @@ async function handleSubscriptionUpsert(subscription: Stripe.Subscription, event
     await sendSubscriptionConfirmed(userId, plan ?? existing?.plan ?? "profit_intelligence", subscription.id);
   }
 
-  return `Subscription ${subscription.id} -> ${subscription.status} for user ${userId}`;
+  // A plan change (a move to the 1-company plan in Stripe's portal, say) can
+  // leave more companies than the new plan covers. Nothing is stored: the
+  // newest ones past the limit are paused from now on (planLimits.ts) and
+  // Billing lists them. Noted so it shows in Stripe's webhook log.
+  const paused = plan && existing?.plan && plan !== existing.plan ? await pausedNote(userId) : "";
+
+  return `Subscription ${subscription.id} -> ${subscription.status} for user ${userId}${paused}`;
 }
 
 // The event time isn't recorded here: "canceled is final" (see
@@ -384,6 +618,10 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription, _eve
     metadataUserId: subscription.metadata?.jobprofitaiUserId ?? null,
   });
   if (!userId) return "No matching account for deleted subscription";
+
+  // A duplicate we cancelled ourselves: the customer keeps the original.
+  const duplicateOf = subscription.metadata?.[DUPLICATE_OF_METADATA_KEY];
+  if (duplicateOf) return `Deleted event for ${subscription.id} ignored: cancelled as a duplicate of ${duplicateOf}`;
 
   // Only the subscription on file ends access. A deleted event for another
   // one (an old subscription, a duplicate checkout) changes nothing.
@@ -430,6 +668,12 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<string> {
   });
   if (!userId) return "No matching account for paid invoice";
 
+  // Money that was handed back is not a payment: no referral progress, no
+  // commission (which would also use up one of the partner's commission
+  // months) and no partner emails.
+  const reversed = await paymentGivenBack(invoice, subscriptionId);
+  if (reversed) return `Invoice ${invoice.id} paid for user ${userId}, but ${reversed}: no commission or referral progress`;
+
   const paidAt = invoice.status_transitions?.paid_at
     ? new Date(invoice.status_transitions.paid_at * 1000)
     : new Date();
@@ -456,6 +700,10 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<string> {
       })
     : null;
 
+  // The Firm plan earns a partner nothing (see partners.ts), so a Firm
+  // account isn't announced to the partner as a paying client either.
+  const firmInvoice = isFirmInvoice(invoice, sub?.plan);
+
   if (referral && referral.status !== "disqualified") {
     const wasAlreadyPaid = referral.firstPaidAt != null;
     await markReferralPaid(userId, paidAt);
@@ -469,7 +717,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<string> {
         notes.push("notified customer referrer of conversion");
       }
 
-      if (referral.kind === "partner" && partner?.status === "approved") {
+      if (referral.kind === "partner" && partner?.status === "approved" && !firmInvoice) {
         const payingClients = await payingClientsIncluding(partner.id, userId);
         await sendPartnerNewPayingClient({
           partnerUserId: partner.userId,
@@ -482,7 +730,9 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<string> {
     }
 
     // --- Partner commission, on every qualifying paid invoice ---
-    if (referral.kind === "partner" && referral.partnerId && partner?.status === "approved") {
+    if (referral.kind === "partner" && firmInvoice) {
+      notes.push("no commission: Firm plan");
+    } else if (referral.kind === "partner" && referral.partnerId && partner?.status === "approved") {
       const commission = await recordCommissionForInvoice({
         invoice,
         referralId: referral.id,
@@ -527,6 +777,39 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<string> {
   }
 
   return `Invoice ${invoice.id} paid for user ${userId}${notes.length ? `: ${notes.join("; ")}` : ""}`;
+}
+
+/**
+ * Why a paid invoice's money wasn't kept, or null when it was: its
+ * subscription was cancelled as a duplicate checkout (whose first payment
+ * cancelDuplicateSubscription refunds), or its charge was refunded in full.
+ *
+ * Stripe doesn't deliver events in order, so invoice.paid can arrive after
+ * the refund. charge.refunded then found no commission to void, and this
+ * handler would have recorded one afterwards. Asks Stripe for the current
+ * subscription and charge, since the event's own copy can predate both.
+ * Unlike isFullRefund, a charge that doesn't say it was refunded counts as
+ * kept. A Stripe error throws, so the event is retried. Stripe calls follow
+ * API 2024-06-20 (newer versions drop `invoice.charge`, and then only the
+ * duplicate check applies); not verified against live Stripe.
+ */
+async function paymentGivenBack(invoice: Stripe.Invoice, subscriptionId: string): Promise<string | null> {
+  const stripe = getStripe();
+  const subscription: Stripe.Subscription | null | undefined = await stripe.subscriptions.retrieve(subscriptionId);
+  if (subscription?.metadata?.[DUPLICATE_OF_METADATA_KEY]) return "it was a duplicate subscription, cancelled and refunded";
+
+  const onInvoice: string | Stripe.Charge | null | undefined = invoice.charge;
+  const charge: Stripe.Charge | null | undefined =
+    typeof onInvoice === "string" ? await stripe.charges.retrieve(onInvoice) : onInvoice;
+  if (charge && chargeRefundedInFull(charge)) return "its payment was refunded";
+  return null;
+}
+
+/** Whether a charge says it was refunded in full. Unknown counts as not refunded. */
+export function chargeRefundedInFull(charge: Pick<Stripe.Charge, "refunded" | "amount" | "amount_refunded">): boolean {
+  if (charge.refunded === true) return true;
+  const amount = charge.amount ?? 0;
+  return amount > 0 && (charge.amount_refunded ?? 0) >= amount;
 }
 
 /**
@@ -632,7 +915,9 @@ async function handleChargeRefunded(charge: Stripe.Charge): Promise<string> {
   }
 
   const userId = await resolveUserId({ customerId: idOf(charge.customer) });
-  if (userId && (await disqualifiesOnRefund(userId))) {
+  // Refunding a duplicate checkout's payment isn't the customer leaving:
+  // they're still paying on the subscription that was kept.
+  if (userId && (await disqualifiesOnRefund(userId)) && !(await refundIsForDuplicate(charge))) {
     await disqualifyReferral(userId, "Referred customer's payment was refunded");
     notes.push("disqualified referral");
   }

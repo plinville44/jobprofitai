@@ -31,8 +31,9 @@ const FAQ_ITEMS = [
           shows income, cost and margin for a job you go and open. It doesn&rsquo;t compare that
           margin to a target you set, flag which jobs are drifting below it, tell you a type of work
           consistently runs over estimate, forecast where an in-progress job lands, build a WIP
-          report of what&rsquo;s over and under billed, email you the day a job goes over its
-          estimate, or send you a weekly brief of what changed.
+          report of what&rsquo;s over and under billed, email you after the nightly sync when a
+          job&rsquo;s costs go more than 10% over its estimate, or send you a weekly brief of what
+          changed.
         </span>
         <span className="mt-3 block">
           It also won&rsquo;t tell you that six of your jobs have no estimate on file and four have
@@ -86,11 +87,14 @@ const FAQ_ITEMS = [
     q: "What counts as an “active job”?",
     a: (
       <>
-        A QuickBooks Project (or customer, if you make one customer per job) you haven&rsquo;t
-        marked completed yet. QuickBooks doesn&rsquo;t expose project status through its API, so
-        you mark jobs completed inside JobProfitAI, one at a time, in bulk from the jobs list, or
-        all at once for jobs with no activity in 90 days. Completed jobs stay in your history and
-        your trend analysis; they don&rsquo;t count against the limit.
+        A job you haven&rsquo;t marked completed yet: a QuickBooks Project or sub-customer, a
+        customer if you make one customer per job, or a Class if each job is a class.
+        QuickBooks doesn&rsquo;t expose project status through its API, so you mark jobs completed
+        inside JobProfitAI, one at a time, in bulk from the jobs list, or all at once for jobs with
+        no activity in 90 days. Completed jobs stay in your history and your trend analysis; they
+        don&rsquo;t count against the limit. If you have more than{" "}
+        {PLANS.profit_intelligence.limits.maxActiveJobs} open on {PLANS.profit_intelligence.name},
+        we&rsquo;ll ask you to move to Pro; nothing stops working.
       </>
     ),
   },
@@ -124,7 +128,7 @@ const COMPARISON: { label: string; standard: string; pro: string }[] = [
   { label: "Job profitability dashboard", standard: "Included", pro: "Included" },
   { label: "Revenue, cost, gross profit & margin by job", standard: "Included", pro: "Included" },
   { label: "Cost breakdown by category", standard: "Included", pro: "Included" },
-  { label: "Labor at pay rates, plus your labor burden", standard: "Included", pro: "Included" },
+  { label: "Labor at the cost rate on each time entry, plus any labor burden", standard: "Included", pro: "Included" },
   { label: "Estimate vs. actual comparison", standard: "Included", pro: "Included" },
   { label: "Margin leak & cost-overrun detection", standard: "Included", pro: "Included" },
   { label: "Historical profitability trends", standard: "Included", pro: "Included" },
@@ -135,9 +139,9 @@ const COMPARISON: { label: string; standard: string; pro: string }[] = [
   { label: "Money you're owed: unbilled work, possible change orders, unpaid invoices", standard: "Included", pro: "Included" },
   { label: "Data Health checks", standard: "Included", pro: "Included" },
   { label: "Weekly Profit Brief", standard: "Included", pro: "Included" },
-  { label: "Forecast at completion on open jobs", standard: "-", pro: "Included" },
-  { label: "Open jobs heading below target, in your opportunities", standard: "-", pro: "Included" },
-  { label: "Benchmarking each job against similar finished jobs", standard: "-", pro: "Included" },
+  { label: "Forecast at completion on open jobs", standard: "Not included", pro: "Included" },
+  { label: "Open jobs heading below target, in your opportunities", standard: "Not included", pro: "Included" },
+  { label: "Benchmarking each job against similar finished jobs", standard: "Not included", pro: "Included" },
   { label: "Support", standard: "Email support", pro: "Priority support" },
 ];
 
@@ -186,6 +190,12 @@ export default function PricingPage() {
               <p className="mt-3 text-[15px] leading-relaxed text-jp-slate">
                 Connect each contractor you keep books for. See all of them on one portfolio page, open any one for
                 its jobs, estimates, WIP and money owed, and give each client a view-only login to their own company.
+              </p>
+              <p className="mt-3 text-[15px] leading-relaxed text-jp-slate">
+                Keeping books for 2 or 3 contractors? {PLANS.profit_intelligence_pro.name} covers up to{" "}
+                {PLANS.profit_intelligence_pro.limits.maxConnections} companies for{" "}
+                {PLANS.profit_intelligence_pro.priceLabel} a month, with the same portfolio page but no client logins.{" "}
+                {PLANS.firm.name} starts at {PLANS.firm.perCompany!.minCompanies} companies.
               </p>
               <ul className="mt-5 space-y-2.5 text-[15px]">
                 {PLANS.firm.marketingFeatures.map((f) => (

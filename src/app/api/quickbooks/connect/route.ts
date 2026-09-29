@@ -3,7 +3,8 @@ import { SignJWT } from "jose";
 import { prisma } from "@/lib/prisma";
 import { getAccount } from "@/lib/account";
 import { buildAuthorizeUrl } from "@/lib/quickbooks";
-import { canConnectAnotherCompany } from "@/lib/entitlements";
+import { canConnectAnotherCompany, getEntitlements } from "@/lib/entitlements";
+import { connectNeedsOwner, OWNER_ONLY_CONNECT_NOTICE } from "@/lib/connectCompany";
 
 /**
  * GET /api/quickbooks/connect[?reconnect=<connectionId>]
@@ -13,7 +14,8 @@ import { canConnectAnotherCompany } from "@/lib/entitlements";
  * pass through our servers; we get a one-time code back on the callback.
  *
  * Works for the account owner and for team members; the company always
- * belongs to the account owner.
+ * belongs to the account owner. On a paid Firm plan only the owner can add a
+ * new company, since each one changes the bill; members can still reconnect.
  */
 export async function GET(req: NextRequest) {
   const account = await getAccount();
@@ -35,6 +37,14 @@ export async function GET(req: NextRequest) {
         select: { id: true },
       })
     : null;
+
+  // On a paid Firm plan a new company is added to the bill, so only the
+  // owner may connect one (checked again in the callback).
+  if (!reconnecting && account.role === "member" && connectNeedsOwner(await getEntitlements(account.ownerId))) {
+    return NextResponse.redirect(
+      new URL(`/dashboard/settings?notice=${OWNER_ONLY_CONNECT_NOTICE}`, process.env.APP_URL)
+    );
+  }
 
   // Plan limits are enforced here, before anyone is sent to Intuit, and
   // again in the callback (two tabs could both get this far).

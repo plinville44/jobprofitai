@@ -5,6 +5,8 @@ import {
   type JobFinancials,
   type NeedsAttentionItem,
 } from "@/lib/profitability";
+import { isOverPlanLimit } from "@/lib/planLimits";
+import { basisCutoff, rebuildPending } from "@/lib/weekOverWeek";
 
 /**
  * Mid-week profit alerts.
@@ -12,6 +14,9 @@ import {
  * The weekly brief says what happened; these say it as soon as the nightly
  * sync sees it: an open job goes 10% or more over its estimate, a Pro
  * forecast drops below target, or a job gets well ahead of its billing.
+ * "Over its estimate" is only for a cost estimate the contractor gave, never
+ * one filled in from the target margin, the same as the brief's tile (see
+ * estimateFromTargetMargin in computeNeedsAttentionForJob).
  *
  * Each alert is sent once per job and kind:
  *   - A row is recorded the first time the condition is seen, and marked
@@ -27,6 +32,15 @@ import {
  * The first evaluation for a company only records what is already true. A
  * newly connected company with twenty jobs already over budget gets that in
  * its first brief, not as twenty alerts.
+ *
+ * The same quiet "baseline" run follows any change in how the figures are
+ * worked out (alertsNeedBaseline): a new labor burden, a switch of job
+ * setup, time-entry labor turned on or off, a rebuild under a new sync
+ * version. Those move every job's figures at once with nothing happening
+ * on the jobs; a switch of job setup even gives every job a new id. Without
+ * this, each one emailed the owner a pile of "new" alerts the next night.
+ * A baseline run also settles alerts still waiting to be sent, so they
+ * don't go out afterwards on figures worked out the old way.
  */
 export const ALERT_KINDS: Record<string, string> = {
   over_budget: "Over its estimate",
@@ -70,14 +84,53 @@ export function hasCleared(kind: string, job: JobFinancials | undefined, forecas
   }
 }
 
+/**
+ * Whether the next evaluation should only record conditions, not email
+ * them: never baselined (a new company, or Settings cleared it), or the
+ * figures' basis changed after the last baseline. Pure, for tests.
+ */
+export function alertsNeedBaseline(c: {
+  alertsBaselinedAt: Date | null;
+  laborBurdenSetAt?: Date | null;
+  basisChangedAt?: Date | null;
+  rebuildRequestedAt?: Date | null;
+  lastFullSyncAt?: Date | null;
+}): boolean {
+  if (c.alertsBaselinedAt == null) return true;
+  // Settings asked for a rebuild that hasn't synced: today's figures are
+  // the old ones, and tomorrow's will be different again.
+  if (rebuildPending(c)) return true;
+  const cutoff = basisCutoff(c);
+  return cutoff != null && cutoff > c.alertsBaselinedAt;
+}
+
 export async function evaluateAlerts(
   connectionId: string,
   now: Date = new Date()
-): Promise<{ pending: NewAlert[]; baseline: boolean }> {
+): Promise<{ pending: NewAlert[]; baseline: boolean; paused?: boolean }> {
   const connection = await prisma.quickBooksConnection.findUniqueOrThrow({
     where: { id: connectionId },
-    select: { alertsBaselinedAt: true },
+    select: {
+      userId: true,
+      alertsBaselinedAt: true,
+      laborBurdenSetAt: true,
+      basisChangedAt: true,
+      rebuildRequestedAt: true,
+      lastFullSyncAt: true,
+    },
   });
+
+  // A company the plan doesn't cover (see planLimits.ts) gets no alert
+  // emails. Its baseline is cleared, so the first run after it's covered
+  // again records what built up meanwhile instead of emailing it all at
+  // once; the weekly brief covers that.
+  if (await isOverPlanLimit({ id: connectionId, userId: connection.userId })) {
+    if (connection.alertsBaselinedAt != null) {
+      await prisma.quickBooksConnection.update({ where: { id: connectionId }, data: { alertsBaselinedAt: null } });
+    }
+    return { pending: [], baseline: false, paused: true };
+  }
+
   const data = await getConnectionProfitData(connectionId, now, { statusFilter: "open" });
   const openJobs = new Map(data.jobs.filter((j) => j.status === "open").map((j) => [j.jobId, j]));
 
@@ -101,8 +154,9 @@ export async function evaluateAlerts(
     .map((a) => a.id);
   if (cleared.length) await prisma.jobAlert.deleteMany({ where: { id: { in: cleared } } });
 
-  const baseline = connection.alertsBaselinedAt == null;
+  const baseline = alertsNeedBaseline(connection);
   const pending: NewAlert[] = [];
+  const settle: string[] = [];
   for (const [key, item] of current) {
     const row = existingByKey.get(key);
     if (!row) {
@@ -115,6 +169,10 @@ export async function evaluateAlerts(
       if (baseline) continue;
     } else if (row.emailed) {
       continue;
+    } else if (baseline) {
+      // Waiting to be sent from before the change: settled, not sent.
+      settle.push(row.id);
+      continue;
     }
     pending.push({
       jobId: item.jobId,
@@ -125,7 +183,17 @@ export async function evaluateAlerts(
     });
   }
   if (baseline) {
-    await prisma.quickBooksConnection.update({ where: { id: connectionId }, data: { alertsBaselinedAt: now } });
+    // Rows waiting from before the change whose condition isn't current
+    // any more (a figure that became unmeasurable) are settled too, so they
+    // can't be sent the moment it comes back.
+    for (const a of existing) if (!a.emailed && !cleared.includes(a.id) && !settle.includes(a.id)) settle.push(a.id);
+    if (settle.length) await prisma.jobAlert.updateMany({ where: { id: { in: settle } }, data: { emailed: true } });
+    // Left unset while a rebuild is still waiting for its sync, so the run
+    // after it records the rebuilt figures quietly too.
+    await prisma.quickBooksConnection.update({
+      where: { id: connectionId },
+      data: { alertsBaselinedAt: rebuildPending(connection) ? null : now },
+    });
   }
   pending.sort((a, b) => (b.financialImpact ?? 0) - (a.financialImpact ?? 0));
   return { pending, baseline };

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
 import { createFakePrisma, type FakePrisma } from "./support/fakePrisma";
+import { unguardedHandlers } from "./support/routeGuards";
 
 const fake: { client: FakePrisma } = { client: createFakePrisma() };
 vi.mock("@/lib/prisma", () => ({
@@ -224,17 +225,62 @@ describe("every route that changes data refuses client logins", () => {
     expect(files.length).toBeGreaterThan(30);
   });
 
-  it("guards each one", () => {
+  it("guards each changing handler right after getAccount()", () => {
     const unguarded: string[] = [];
     for (const file of files) {
-      const src = readFileSync(file, "utf8");
       const route = file.slice(apiRoot.length + 1).replace(/[\\/]route\.ts$/, "").replace(/\\/g, "/");
-      const mutates = /export async function (POST|PUT|PATCH|DELETE)\b/.test(src);
-      const usesAccount = /\bgetAccount\(|\baccountFor\(/.test(src);
-      if (!mutates || !usesAccount || ALLOWED.has(route)) continue;
-      const guarded = src.includes("refuseClient(") || src.includes('role !== "owner"');
-      if (!guarded) unguarded.push(route);
+      if (ALLOWED.has(route)) continue;
+      for (const f of unguardedHandlers(readFileSync(file, "utf8"))) unguarded.push(`${route} ${f.method}: ${f.problem}`);
     }
     expect(unguarded).toEqual([]);
+  });
+
+  // The shapes the old check (the text "refuseClient(" anywhere in the
+  // file) let through, and the ones that must keep passing.
+  const route = (body: string, extra = "") =>
+    `import { getAccount, refuseClient } from "@/lib/account";\n${extra}\nexport async function POST(req: NextRequest) {\n${body}\n}\n`;
+  const guard = "const refused = refuseClient(account);\n  if (refused) return refused;";
+  const start = 'const account = await getAccount();\n  if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });';
+
+  it("accepts a guard right after getAccount(), or an owner-only check", () => {
+    expect(unguardedHandlers(route(`${start}\n  ${guard}\n  await prisma.job.update({});`))).toEqual([]);
+    expect(unguardedHandlers(route(`${start}\n  if (account.role !== "owner") {\n    return NextResponse.json({}, { status: 403 });\n  }`))).toEqual([]);
+    // Typed params and a return type with braces in it.
+    const typed = `import { getAccount, refuseClient } from "@/lib/account";
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ jobId: string }> }): Promise<Response> {
+  ${start}
+  ${guard}
+  const s = \`\${"{"}\`;
+}`;
+    expect(unguardedHandlers(typed)).toEqual([]);
+    // Handing the work to a helper that refuses right after getAccount().
+    expect(unguardedHandlers(route("return run(req);", `async function run(req: NextRequest) {\n  ${start}\n  ${guard}\n}`))).toEqual([]);
+    // A handler that never uses the account (a sign-up, a webhook) isn't one of these.
+    expect(unguardedHandlers(route("await prisma.contact.create({});"))).toEqual([]);
+  });
+
+  it("refuses the shapes that used to pass", () => {
+    // The guard only in the GET handler.
+    const getOnly = `import { getAccount, refuseClient } from "@/lib/account";
+export async function GET() {
+  ${start}
+  ${guard}
+}
+export async function POST() {
+  ${start}
+  await prisma.job.update({});
+}`;
+    expect(unguardedHandlers(getOnly).map((f) => f.method)).toEqual(["POST"]);
+    // Only in a comment.
+    expect(unguardedHandlers(route(`${start}\n  // refuseClient(account) is not needed here\n  await prisma.job.update({});`))).toHaveLength(1);
+    // After the write.
+    expect(unguardedHandlers(route(`${start}\n  await prisma.job.update({});\n  ${guard}`))).toHaveLength(1);
+    // Called but its answer ignored.
+    expect(unguardedHandlers(route(`${start}\n  refuseClient(account);\n  await prisma.job.update({});`))).toHaveLength(1);
+    // The work handed to a helper that gets the account but never refuses.
+    const helper = route("return run(req);", `async function run(req: NextRequest) {\n  ${start}\n  await prisma.job.update({});\n}`);
+    expect(unguardedHandlers(helper)[0]?.problem).toMatch(/^through run\(\): never refuses/);
+    // Exported in a shape the check can't read.
+    expect(unguardedHandlers("export const POST = async () => {};")).toHaveLength(1);
   });
 });

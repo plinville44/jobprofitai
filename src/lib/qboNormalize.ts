@@ -9,7 +9,7 @@
  *
  * Rules that are easy to get wrong, and are the reason this file exists:
  *
- *  - Labor is hours x the employee's PAY rate (TimeActivity.CostRate).
+ *  - Labor is hours x the COST rate on the time entry (TimeActivity.CostRate).
  *    TimeActivity.HourlyRate is the rate the customer is BILLED, and using it
  *    as a cost overstated labor by the contractor's whole markup, while
  *    non-billable crew time (no bill rate) came through as $0.
@@ -63,8 +63,12 @@ export const costEntryId = (connectionId: string, source: string, txnId: string,
 export const revenueId = (connectionId: string, source: RevenueSourceType, txnId: string) =>
   `${connectionId}:${source}:${txnId}`;
 
-/** Revenue that comes from one line of a transaction: a bank deposit line, or a journal entry income line. */
-export type LineRevenueSourceType = "Deposit" | "JournalEntry";
+/**
+ * Revenue that comes from one line of a transaction: a bank deposit line, a
+ * journal entry income line, or an income line on a check, expense, bill or
+ * vendor credit (a refund paid to a customer).
+ */
+export type LineRevenueSourceType = "Deposit" | "JournalEntry" | "Purchase" | "Bill" | "VendorCredit";
 
 export const lineRevenueId = (connectionId: string, source: LineRevenueSourceType, txnId: string, lineId: string) =>
   `${connectionId}:${source}:${txnId}:${lineId}`;
@@ -184,6 +188,60 @@ const NOT_COST_ACCOUNT_TYPES = new Set([
   "other income",
 ]);
 
+// Other Current Asset accounts that hold money owed to the company or cash
+// on its way to the bank, never job cost. Retainage matters most: many
+// contractors move retainage to a receivable with a journal entry that names
+// the customer, and that is not a cost of the job. Detail type names are
+// QuickBooks' own; the name check catches accounts set up under a generic
+// detail type.
+const NOT_COST_ASSET_SUBTYPE = /^(retainage|undepositedfunds|allowancefor|loansto|employeecashadvances|investment)/i;
+const NOT_COST_ASSET_NAME = /\b(retainage|retention|undeposited)\b/i;
+
+/**
+ * Whether a line posted to this account can be job cost, and what kind of
+ * account it is. One rule for bills, expenses, journal entries and deposits:
+ *
+ *  - "cost": Cost of Goods Sold, Expense, Other Expense.
+ *  - "asset": Other Current Asset, such as Construction in Progress, except
+ *    the receivable and cash accounts above.
+ *  - "unknown": the account can't be looked up.
+ *  - null: a balance-sheet or income account that is never job cost.
+ */
+export function costAccountKind(accountId: string | null, lookups: Lookups): "cost" | "asset" | "unknown" | null {
+  const account = accountId ? lookups.accounts.get(accountId) : undefined;
+  const type = (account?.type ?? "").toLowerCase();
+  if (!account || type === "") return "unknown";
+  if (NOT_COST_ACCOUNT_TYPES.has(type)) return null;
+  if (type === "other current asset") {
+    if (NOT_COST_ASSET_SUBTYPE.test(account.subType ?? "") || NOT_COST_ASSET_NAME.test(`${account.name} ${account.fullName}`)) return null;
+    return "asset";
+  }
+  return "cost";
+}
+
+// A journal entry touches asset accounts for many reasons besides holding
+// job costs: a year-end "Costs in excess of billings" adjustment, inventory
+// used on a job, a prepaid expense used up. Those name the job too, but the
+// cost was already counted (or never was one), so only an account that holds
+// job costs until the job is finished counts on a journal entry.
+const WIP_ASSET_NAME = /\b(construction in progress|work in progress|work in process|cip|wip)\b/;
+const NOT_WIP_ASSET_NAME = /\b(billing|billings|in excess|retainage|retention|inventory|prepaid)\b/;
+const NOT_WIP_ASSET_SUBTYPE = /^(inventory|prepaidexpenses)/i;
+
+/**
+ * Whether an Other Current Asset account holds job costs while the job is
+ * under way (Construction in Progress, Work in Progress, CIP, WIP). Journal
+ * entry lines on other asset accounts are not job cost. Bills and expenses
+ * don't use this: a bill posted to an asset account and tagged to a job is
+ * cost on the job, as QuickBooks' own job reports show it.
+ */
+export function isWorkInProgressAccount(account: AccountInfo | undefined): boolean {
+  if (!account) return false;
+  if (NOT_WIP_ASSET_SUBTYPE.test(account.subType ?? "")) return false;
+  const name = ` ${`${account.name} ${account.fullName}`.toLowerCase().replace(/[^a-z0-9]+/g, " ")} `;
+  return WIP_ASSET_NAME.test(name) && !NOT_WIP_ASSET_NAME.test(name);
+}
+
 export interface NormalizedCostLine {
   lineId: string;
   customerQboId: string | null;
@@ -215,10 +273,23 @@ export function expenseLines(txn: any, sourceType: ExpenseSourceType, lookups: L
       const isCustomer = (entity?.Type ?? "").toLowerCase() === "customer";
       const accountId = str(d.AccountRef?.value);
       const account = accountId ? lookups.accounts.get(accountId) : undefined;
-      const accountType = (account?.type ?? "").toLowerCase();
-      // Only cost accounts. Income and balance-sheet lines on a journal
-      // entry are not job cost.
-      if (accountType !== "cost of goods sold" && accountType !== "expense" && accountType !== "other expense") continue;
+      // The account rule bills and expenses use, signed by debit or credit,
+      // with asset accounts narrowed to the ones that hold job costs (below).
+      // A builder who holds costs in Construction in Progress closes
+      // a finished job with a debit to cost of goods sold and a credit to
+      // Construction in Progress, both naming the job: the credit cancels the
+      // bill that went to Construction in Progress, so the cost counts once.
+      // Income lines are read by journalRevenueLines.
+      const kind = costAccountKind(accountId, lookups);
+      if (kind == null) continue;
+      // Only asset accounts that hold job costs: a "Costs in excess of
+      // billings" adjustment or inventory used on a job names the job too,
+      // and counting it would add cost that was never spent, or cancel cost
+      // that was (see isWorkInProgressAccount).
+      if (kind === "asset" && !isWorkInProgressAccount(account)) continue;
+      // An asset or unknown account line with no job on it is a balance
+      // sheet movement, not company overhead, so it is left out entirely.
+      if (kind !== "cost" && !(isCustomer && entity?.EntityRef?.value != null) && d.ClassRef?.value == null) continue;
       const raw = num(line.Amount);
       if (raw === 0) continue;
       const amount = (d.PostingType === "Credit" ? -1 : 1) * raw;
@@ -253,7 +324,9 @@ export function expenseLines(txn: any, sourceType: ExpenseSourceType, lookups: L
     // as a fixed asset, a loan payment, a transfer) isn't job cost, even
     // with a customer on it: QuickBooks' own job reports leave it out too.
     // Item lines always count, and so does an account we can't look up.
-    if (acct && accountId && NOT_COST_ACCOUNT_TYPES.has((lookups.accounts.get(accountId)?.type ?? "").toLowerCase())) continue;
+    // Income lines (a refund check to a customer) become revenue instead:
+    // see expenseRevenueLines.
+    if (acct && accountId && costAccountKind(accountId, lookups) == null) continue;
     const itemId = str(item?.ItemRef?.value);
     const sourceName = str(acct?.AccountRef?.name) ?? str(item?.ItemRef?.name);
     const { category, isJobCostAccount } = categorizeLine({ sourceName, accountId, itemId }, lookups);
@@ -280,15 +353,27 @@ export type TimeCostResult =
   | { kind: "cost"; hours: number; payRate: number; amount: number; category: CostCategory }
   | { kind: "skip"; reason: "no_customer" | "vendor_time" | "no_pay_rate" | "no_hours" };
 
-/** Hours on a time entry: Hours + Minutes, or End - Start - break. */
+/**
+ * Hours on a time entry: End - Start - break when the entry has start and
+ * end times, otherwise Hours + Minutes.
+ *
+ * Start and end win when both are there, because they are what the crew
+ * clocked and the break sits inside them. Whether QuickBooks' Hours on such
+ * an entry already has the break taken off isn't known, so the break is only
+ * ever taken off the start-to-end span and never off Hours: that way it can't
+ * be taken off twice, or not at all.
+ */
 export function timeActivityHours(ta: any): number {
-  const direct = num(ta?.Hours) + num(ta?.Minutes) / 60;
-  if (direct > 0) return direct;
+  const direct = Math.max(0, num(ta?.Hours) + num(ta?.Minutes) / 60);
   const start = typeof ta?.StartTime === "string" ? Date.parse(ta.StartTime) : NaN;
   const end = typeof ta?.EndTime === "string" ? Date.parse(ta.EndTime) : NaN;
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
-  const breakHours = num(ta?.BreakHours) + num(ta?.BreakMinutes) / 60;
-  return Math.max(0, (end - start) / 3_600_000 - breakHours);
+  if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+    const breakHours = Math.max(0, num(ta?.BreakHours) + num(ta?.BreakMinutes) / 60);
+    const worked = (end - start) / 3_600_000 - breakHours;
+    // A break as long as the whole span is bad data: fall back to Hours.
+    if (worked > 0) return worked;
+  }
+  return direct;
 }
 
 /**
@@ -322,6 +407,10 @@ export interface NormalizedRevenue {
   txnDate: Date | null;
   /** What's still owed on an open invoice (QuickBooks' Balance, with tax), else null. */
   openBalance: number | null;
+  /** The sale's own number (DocNumber), when it has one. */
+  docNumber: string | null;
+  /** When an invoice is due (DueDate); null on everything but invoices, and on invoices with none. */
+  dueDate: Date | null;
 }
 
 export function revenueFromTxn(txn: any, sourceType: RevenueSourceType): NormalizedRevenue {
@@ -336,17 +425,26 @@ export function revenueFromTxn(txn: any, sourceType: RevenueSourceType): Normali
     status: negative ? "credit" : sourceType === "Invoice" && num(txn?.Balance) > 0 ? "open" : "paid",
     txnDate: qboDate(txn?.TxnDate),
     openBalance: sourceType === "Invoice" && num(txn?.Balance) > 0 ? round2(num(txn?.Balance)) : null,
+    docNumber: str(txn?.DocNumber),
+    dueDate: sourceType === "Invoice" ? qboDate(txn?.DueDate) : null,
   };
 }
 
 /**
  * A sale split by QuickBooks Class, for companies that track each job as a
  * class. Each class gets its share of the sale net of tax, in proportion to
- * its lines (so a discount line is spread across them), and the same share
- * of any open balance. Lines with no class of their own take the
- * transaction's class; with none at all, the key is null.
+ * its lines, and the same share of any open balance. Lines with no class of
+ * their own take the transaction's class; with none at all, the key is null.
+ *
+ * A discount line with its own class comes off that class only, as it does
+ * in QuickBooks' report for the class. A discount with no class of its own
+ * (and shipping, and anything else between the lines and the total) is
+ * spread across the classes by share.
  */
-export function revenueByClass(txn: any, sourceType: RevenueSourceType): { classQboId: string | null; amount: number; tax: number; openBalance: number | null }[] {
+export function revenueByClass(
+  txn: any,
+  sourceType: RevenueSourceType
+): { classQboId: string | null; amount: number; tax: number; openBalance: number | null; docNumber: string | null; dueDate: Date | null }[] {
   const whole = revenueFromTxn(txn, sourceType);
   const byClass = new Map<string | null, number>();
   const walk = (lines: unknown) => {
@@ -354,6 +452,15 @@ export function revenueByClass(txn: any, sourceType: RevenueSourceType): { class
     for (const line of lines) {
       if (line?.GroupLineDetail) {
         walk(line.GroupLineDetail.Line);
+        continue;
+      }
+      const discount = line?.DiscountLineDetail;
+      if (discount) {
+        const own = str(discount.ClassRef?.value);
+        // QuickBooks sends the discount as a positive amount; taken off
+        // whatever the sign.
+        const off = Math.abs(num(line.Amount));
+        if (own && off > 0) byClass.set(own, (byClass.get(own) ?? 0) - off);
         continue;
       }
       const d = line?.SalesItemLineDetail;
@@ -366,8 +473,17 @@ export function revenueByClass(txn: any, sourceType: RevenueSourceType): { class
   };
   walk(txn?.Line);
   const gross = [...byClass.values()].reduce((a, b) => a + b, 0);
-  if (byClass.size === 0 || gross === 0) {
-    return [{ classQboId: str(txn?.ClassRef?.value), amount: whole.amount, tax: whole.tax, openBalance: whole.openBalance }];
+  if (byClass.size === 0 || Math.abs(gross) < 0.005) {
+    return [
+      {
+        classQboId: str(txn?.ClassRef?.value),
+        amount: whole.amount,
+        tax: whole.tax,
+        openBalance: whole.openBalance,
+        docNumber: whole.docNumber,
+        dueDate: whole.dueDate,
+      },
+    ];
   }
   return [...byClass].map(([classQboId, amount]) => {
     const share = amount / gross;
@@ -376,6 +492,9 @@ export function revenueByClass(txn: any, sourceType: RevenueSourceType): { class
       amount: round2(whole.amount * share),
       tax: round2(whole.tax * share),
       openBalance: whole.openBalance == null ? null : round2(whole.openBalance * share),
+      // Every class's share is part of the same invoice, due the same day.
+      docNumber: whole.docNumber,
+      dueDate: whole.dueDate,
     };
   });
 }
@@ -472,6 +591,85 @@ export function journalRevenueLines(txn: any, lookups: Lookups, byClass = false)
   return out;
 }
 
+/**
+ * Income-account lines on a check, expense, bill or vendor credit that name
+ * a job: a refund check to a customer posted to "Refunds and Allowances", say.
+ * QuickBooks takes these off the customer's income, so they are revenue here
+ * too: negative for money paid out, positive for money coming back (a card
+ * credit or a vendor credit). expenseLines leaves them out of cost.
+ * Other Income lines are left out, as they are for deposits.
+ */
+export function expenseRevenueLines(
+  txn: any,
+  sourceType: "Purchase" | "Bill" | "VendorCredit",
+  lookups: Lookups,
+  byClass = false
+): NormalizedRevenueLine[] {
+  const out: NormalizedRevenueLine[] = [];
+  const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
+  const moneyBack = sourceType === "VendorCredit" || (sourceType === "Purchase" && txn?.Credit === true);
+  for (const [i, line] of lines.entries()) {
+    const d = line?.AccountBasedExpenseLineDetail;
+    if (!d) continue;
+    if (!isIncomeAccount(str(d.AccountRef?.value), lookups)) continue;
+    const customerQboId = str(d.CustomerRef?.value);
+    const classQboId = str(d.ClassRef?.value) ?? str(txn?.ClassRef?.value);
+    if (byClass ? !classQboId : !customerQboId) continue;
+    const raw = num(line.Amount);
+    if (raw === 0) continue;
+    out.push({
+      lineId: str(line.Id) ?? String(i),
+      customerQboId,
+      classQboId,
+      amount: round2(moneyBack ? raw : -raw),
+      txnDate: qboDate(txn?.TxnDate),
+    });
+  }
+  return out;
+}
+
+/**
+ * Deposit lines that put money back against a cost account for a job: a
+ * supplier's refund check deposited to "Job Materials" with the job as the
+ * name it was received from (or, for jobs by class, the job's class). They
+ * reduce the job's cost, as they do in QuickBooks' report for that customer
+ * or class. Payments (lines with a LinkedTxn) and income lines are not cost.
+ * Only accounts that can be looked up count: a deposit to an account we
+ * can't see is more likely income than a refund.
+ */
+export function depositCostLines(txn: any, lookups: Lookups): NormalizedCostLine[] {
+  const out: NormalizedCostLine[] = [];
+  const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
+  for (const [i, line] of lines.entries()) {
+    if (Array.isArray(line?.LinkedTxn) && line.LinkedTxn.length > 0) continue;
+    const d = line?.DepositLineDetail;
+    if (!d) continue;
+    const accountId = str(d.AccountRef?.value);
+    const kind = costAccountKind(accountId, lookups);
+    if (kind !== "cost" && kind !== "asset") continue;
+    const raw = num(line.Amount);
+    if (raw === 0) continue;
+    const entity = d.Entity;
+    const isCustomer = String(entity?.type ?? entity?.Type ?? "").toLowerCase() === "customer";
+    const account = accountId ? lookups.accounts.get(accountId) : undefined;
+    const sourceName = str(d.AccountRef?.name) ?? account?.fullName ?? null;
+    const { category, isJobCostAccount } = categorizeLine({ sourceName, accountId, itemId: null }, lookups);
+    out.push({
+      lineId: str(line.Id) ?? String(i),
+      customerQboId: isCustomer ? str(entity?.value ?? entity?.EntityRef?.value) : null,
+      customerName: isCustomer ? str(entity?.name ?? entity?.EntityRef?.name) : null,
+      classQboId: str(d.ClassRef?.value) ?? str(txn?.ClassRef?.value),
+      // Money in against a cost: a reduction.
+      amount: round2(-raw),
+      category,
+      accountName: sourceName,
+      isJobCostAccount,
+      description: str(line.Description),
+    });
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Estimates
 // ---------------------------------------------------------------------------
@@ -514,6 +712,15 @@ export const HOURLY_PRICE_MAX = 300;
  * cost.
  */
 export const ITEM_PRICE_RATIO_MAX = 10;
+/**
+ * Materials and other items priced at more than three times their purchase
+ * cost are usually sold installed: shingles costing $110 a square, quoted at
+ * $450 a square, carry the labor to put them on. Costing that line at the item cost
+ * alone would leave the labor out, so it's left to the past-jobs method.
+ * Labor items keep the wider ITEM_PRICE_RATIO_MAX: an hour costing $30 billed
+ * at $95 is still an hour.
+ */
+export const INSTALLED_PRICE_RATIO_MAX = 3;
 
 /**
  * Whether a line's quantity is a count of units its cost can be worked out
@@ -524,7 +731,8 @@ export function isUnitPriced(category: CostCategory, pricePerUnit: number, unitC
   if (!(pricePerUnit > 0)) return false;
   if (unitCost != null && unitCost > 0) {
     const ratio = pricePerUnit / unitCost;
-    return ratio <= ITEM_PRICE_RATIO_MAX && ratio >= 1 / ITEM_PRICE_RATIO_MAX;
+    const max = category === "labor" ? ITEM_PRICE_RATIO_MAX : INSTALLED_PRICE_RATIO_MAX;
+    return ratio <= max && ratio >= 1 / ITEM_PRICE_RATIO_MAX;
   }
   return category === "labor" && pricePerUnit >= HOURLY_PRICE_MIN && pricePerUnit <= HOURLY_PRICE_MAX;
 }
@@ -792,4 +1000,61 @@ export function resolveJob(index: JobIndex, customerQboId: string): { jobId: str
   const children = index.byParent.get(customerQboId);
   if (children && children.length === 1) return { jobId: children[0], method: "parent_customer_fallback" };
   return null;
+}
+
+/**
+ * Parents (customers or classes) whose costs match a different job once the
+ * `added` jobs are stored. A cost tagged to a parent goes on the parent's job
+ * only while it has exactly one (see resolveJob), so:
+ *
+ *  - one job to two or more: costs tagged to the parent were put on its only
+ *    job, and now belong to neither;
+ *  - no job to exactly one: costs tagged to the parent before its first job
+ *    existed matched nothing, and now go on that job.
+ *
+ * An incremental sync never re-reads those costs, so the company needs a
+ * full sync to move them. No job to two at once changes nothing: the costs
+ * matched nothing and still don't.
+ *
+ * `existing` is the stored jobs still in QuickBooks, `added` the jobs this
+ * sync read (ones already stored are skipped). `newParents` are parents
+ * created since the last sync: every transaction naming one is in this
+ * sync's list of changes and is matched against the new jobs anyway.
+ */
+export function parentsNeedingFullSync(
+  existing: { qboId: string; parentQboId: string | null }[],
+  added: { qboId: string; parentQboId: string | null }[],
+  newParents: ReadonlySet<string> = new Set()
+): string[] {
+  const before = new Map<string, number>();
+  for (const j of existing) if (j.parentQboId) before.set(j.parentQboId, (before.get(j.parentQboId) ?? 0) + 1);
+  const known = new Set(existing.map((j) => j.qboId));
+  const gained = new Map<string, Set<string>>();
+  for (const j of added) {
+    if (!j.parentQboId || known.has(j.qboId)) continue;
+    gained.set(j.parentQboId, (gained.get(j.parentQboId) ?? new Set()).add(j.qboId));
+  }
+  const out: string[] = [];
+  for (const [parent, jobs] of gained) {
+    if (newParents.has(parent)) continue;
+    const had = before.get(parent) ?? 0;
+    const has = had + jobs.size;
+    if ((had === 1 && has >= 2) || (had === 0 && has === 1)) out.push(parent);
+  }
+  return out;
+}
+
+/**
+ * The parent customers in a change list that were created at or after
+ * `since` (QuickBooks' MetaData.CreateTime). A customer with no readable
+ * creation time is treated as older, which at worst costs a full sync.
+ */
+export function customersCreatedSince(customers: any[], since: Date | null): Set<string> {
+  const out = new Set<string>();
+  if (!since) return out;
+  for (const c of customers) {
+    const created = typeof c?.MetaData?.CreateTime === "string" ? Date.parse(c.MetaData.CreateTime) : NaN;
+    if (c?.Id != null && Number.isFinite(created) && created >= since.getTime()) out.add(String(c.Id));
+  }
+  return out;
 }

@@ -276,8 +276,11 @@ describe("bank-ready WIP schedule", () => {
     expect(r).toMatchObject({ estimatedTotalCost: 120_000, estimatedGrossProfit: -20_000, costToComplete: 60_000, costFromTarget: true });
   });
 
-  it("leaves a total blank rather than add up only the rows it knows", () => {
+  it("lists a job whose total cost can't be estimated as needing a cost estimate, rather than blank the totals", () => {
+    // Entered as 2% complete with no cost estimate: too early to project a
+    // total cost from the percent, and nothing else to take it from.
     const tiny = job({
+      jobId: "tiny",
       status: "open",
       revenue: 0,
       costs: 100,
@@ -285,9 +288,10 @@ describe("bank-ready WIP schedule", () => {
       wip: wip({ percentComplete: 0.02, percentCompleteSource: "manual", earnedRevenue: 200, overUnderBilling: -200 }),
     });
     const s = buildWipSchedule([tiny], NOW);
-    expect(s.inProgress[0].estimatedTotalCost).toBeNull();
-    expect(s.totals.estimatedTotalCost).toBeNull();
-    expect(s.totals.costToComplete).toBeNull();
+    expect(s.inProgress).toEqual([]);
+    expect(s.notScheduled).toEqual([{ jobId: "tiny", jobName: tiny.jobName, needs: "progress" }]);
+    expect(s.totals.estimatedTotalCost).toBe(0);
+    expect(s.totals.costToComplete).toBe(0);
   });
 });
 

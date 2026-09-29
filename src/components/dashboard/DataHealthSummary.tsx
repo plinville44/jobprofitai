@@ -27,7 +27,7 @@ export default function DataHealthSummary({ dataHealth, byClass = false }: { dat
     },
     { label: "job costs not tagged to a job (last 12 months)", count: dataHealth.untaggedJobCostCount },
     { label: unrecognized, count: dataHealth.unresolvedExpenseCount },
-    { label: "employee time entries with no pay rate", count: dataHealth.timeEntriesWithoutPayRate },
+    { label: "employee time entries with no cost rate", count: dataHealth.timeEntriesWithoutPayRate },
     { label: "possible duplicate cost entries", count: dataHealth.possibleDuplicates.length },
     { label: "open jobs missing a cost estimate (setup)", count: dataHealth.jobsMissingEstimates.length },
   ];
@@ -58,6 +58,11 @@ export default function DataHealthSummary({ dataHealth, byClass = false }: { dat
               {r.label.startsWith("job costs not tagged") && dataHealth.untaggedJobCostAmount ? (
                 <span className="text-gray-400"> ({formatCurrency(dataHealth.untaggedJobCostAmount)})</span>
               ) : null}
+              {r.label.startsWith("job costs not tagged") ? (
+                <Link href="/dashboard/data-health#untagged-costs" className="ml-2 text-brand hover:underline">
+                  See which
+                </Link>
+              ) : null}
               {r.label === unrecognized && dataHealth.unresolvedExpenseAmount ? (
                 <span className="text-gray-400"> ({formatCurrency(dataHealth.unresolvedExpenseAmount)})</span>
               ) : null}
@@ -67,7 +72,7 @@ export default function DataHealthSummary({ dataHealth, byClass = false }: { dat
       )}
       {unmeasured.length > 0 && (
         <p className="mt-2 text-xs text-gray-400">
-          {unmeasured.length === 1 ? "One item hasn't" : `${unmeasured.length} items haven't`} been measured yet - sync
+          {unmeasured.length === 1 ? "One item hasn't" : `${unmeasured.length} items haven't`} been measured yet. Sync
           QuickBooks to check.
         </p>
       )}

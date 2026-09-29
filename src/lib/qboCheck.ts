@@ -8,7 +8,7 @@
  * mistakes:
  *
  *   - Labor from timesheets. QuickBooks' Profit and Loss only has costs
- *     that were posted to an account; time entries costed at pay rates are
+ *     that were posted to an account; time entries costed at their cost rates are
  *     not postings, so they are here and not there.
  *   - Costs tagged to the parent customer that were assigned to this job
  *     (it was that customer's only job). QuickBooks reports them under the
@@ -71,7 +71,7 @@ export interface OurJobTotals {
   revenue: number;
   /** Costs from bills, checks, expenses, credits and journal entries tagged directly to this job. */
   postedCosts: number;
-  /** Labor from time entries at pay rates. Not in QuickBooks' Profit and Loss. */
+  /** Labor from time entries at their cost rates. Not in QuickBooks' Profit and Loss. */
   timesheetLabor: number;
   /** Costs tagged to the parent customer and assigned to this job here. */
   parentCustomerCosts: number;
@@ -109,7 +109,7 @@ export function compareWithQuickBooks(ours: OurJobTotals, qb: PnlTotals): CheckR
   const notes: string[] = [];
   if (ours.timesheetLabor !== 0) {
     notes.push(
-      `JobProfitAI also counts ${money(ours.timesheetLabor)} of labor from timesheets at each person's pay rate. QuickBooks' Profit and Loss doesn't include time entries, so that amount is on top of the costs compared above.` +
+      `JobProfitAI also counts ${money(ours.timesheetLabor)} of labor from timesheets at the cost rate on each time entry. QuickBooks' Profit and Loss doesn't include time entries, so that amount is on top of the costs compared above.` +
         (ours.laborBurden && ours.laborBurden > 0
           ? ` On the job's figures it also carries your ${Math.round(ours.laborBurden * 1000) / 10}% labor burden, another ${money(ours.timesheetLabor * ours.laborBurden)}.`
           : "")

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 
-import { computeBriefHeadline, type BriefOpportunitySnapshot } from "../briefHeadline";
+import { briefTileJobs, computeBriefHeadline, snapshotFromFeed, type BriefOpportunitySnapshot } from "../briefHeadline";
 import { renderBriefEmail } from "../email/briefEmail";
 import { computeWeekOverWeek } from "../weekOverWeek";
 import type { ConnectionMetrics } from "../profitability";
@@ -96,5 +96,84 @@ describe("weekly brief headline", () => {
     expect(email.html).toContain("Remodel &lt;jobs&gt; are priced low");
     expect(email.html.indexOf("new margin risk")).toBeLessThan(email.html.indexOf("What changed"));
     expect(email.text).toContain("What to change, and what it's worth:");
+  });
+});
+
+describe("the headline after a change of basis", () => {
+  // The reviewer's run: two open jobs, burden changed from 0 to 30%, nothing
+  // else touched.
+  const now = snap({ openJobRisk: 17_250, openJobsAtRisk: 2, openRiskByJob: { a: 9_000, b: 8_250 } });
+  const prior = { opportunities: { openRiskByJob: {} } };
+  const storedAt = new Date("2026-09-21T12:00:00Z");
+
+  it("doesn't call risk worked out on a new labor burden new margin risk", () => {
+    const h = computeBriefHeadline(now, prior, "Acme", { priorCreatedAt: storedAt, laborBurdenSetAt: new Date("2026-09-24T00:00:00Z") });
+    expect(h.newRisk).toBeNull();
+    expect(h.subject).toBeNull();
+    expect(h.headline).toBe("$17,250 is at risk on 2 open jobs.");
+  });
+
+  it("nor after a change of job setup, time-entry labor, or sync version", () => {
+    expect(computeBriefHeadline(now, prior, "Acme", { priorCreatedAt: storedAt, basisChangedAt: new Date("2026-09-24T00:00:00Z") }).newRisk).toBeNull();
+    const oldVersion = { ...prior, syncVersion: 5 };
+    expect(computeBriefHeadline(now, oldVersion, "Acme", { priorCreatedAt: storedAt, syncVersion: 6 }).newRisk).toBeNull();
+    expect(computeBriefHeadline(now, { ...prior, basisPending: true }, "Acme", { priorCreatedAt: storedAt }).newRisk).toBeNull();
+  });
+
+  it("still compares when nothing changed since the last brief", () => {
+    const h = computeBriefHeadline(now, prior, "Acme", {
+      priorCreatedAt: storedAt,
+      laborBurdenSetAt: new Date("2026-09-01T00:00:00Z"),
+      basisChangedAt: null,
+      syncVersion: 6,
+    });
+    expect(h.newRisk).toBe(17_250);
+    expect(h.subject).toBe("Acme: $17,250 of new margin risk this week");
+  });
+});
+
+describe("the brief's tiles follow the feed's rules", () => {
+  const jm = (id: string, o: Record<string, unknown>) =>
+    ({
+      jobId: id,
+      jobName: `Job ${id}`,
+      customerName: null,
+      status: "open",
+      estimatedCost: 10_000,
+      actualCost: 12_000,
+      estimatedRevenue: 20_000,
+      actualRevenue: 5_000,
+      costByCategory: {},
+      marginPct: null,
+      varianceVsEstimate: 2_000,
+      varianceVsEstimatePct: 0.2,
+      flags: [],
+      ...o,
+    }) as ConnectionMetrics["jobs"][number];
+
+  it("leaves estimates filled in from the target margin out of \"10%+ over estimate\"", () => {
+    const m = { jobs: [jm("own", {}), jm("filled", {}), jm("closed", { status: "closed" }), jm("near", { varianceVsEstimatePct: 0.08 })], briefJobIds: ["own", "filled", "closed", "near"] };
+    const t = briefTileJobs(m, { targetFilledEstimates: ["filled"] });
+    expect(t.overEstimate.map((j) => j.jobId)).toEqual(["own"]);
+    expect(t.unbilled).toBeNull();
+  });
+
+  it("takes unbilled work, and the jobs behind it, from the feed", () => {
+    const feed = snapshotFromFeed({
+      items: [
+        { kind: "underbilled", jobIds: ["small"], impact: 2_000, section: "act_now", impactKind: "cash" },
+        { kind: "underbilled", jobIds: ["big"], impact: 12_500, section: "act_now", impactKind: "cash" },
+        { kind: "open_job_over_estimate", jobIds: ["own"], impact: 2_000, section: "act_now", impactKind: "profit", title: "t", impactLabel: "l" },
+      ],
+      summary: { targetSet: true, pricingGap: 0, openJobRisk: 2_000, openJobsAtRisk: 1, estimatesShortfall: 0, estimatesFlagged: 0, unbilledWork: 14_500, jobsJudged: 0, openJobsChecked: 1, billingChecked: 2 },
+    } as never);
+    expect(feed.unbilledJobs).toEqual([{ jobId: "big", amount: 12_500 }, { jobId: "small", amount: 2_000 }]);
+    const t = briefTileJobs({ jobs: [jm("big", {}), jm("small", {})], briefJobIds: ["big", "small"] }, { feed });
+    expect(t.unbilled).toEqual([
+      { jobId: "big", jobName: "Job big", amount: 12_500 },
+      { jobId: "small", jobName: "Job small", amount: 2_000 },
+    ]);
+    // Adds up to the feed's own total.
+    expect(t.unbilled!.reduce((s, u) => s + u.amount, 0)).toBe(feed.unbilledWork);
   });
 });

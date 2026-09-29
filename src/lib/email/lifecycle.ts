@@ -1,6 +1,15 @@
 import { prisma } from "@/lib/prisma";
 import { PLANS, isPlanId, planPriceText } from "@/lib/plans";
-import { sendEmail, sendLifecycleEmail, SUPPORT_EMAIL, type SendEmailResult } from "./client";
+import { isPlanOffered } from "@/lib/stripe/client";
+import { companyOpenPath } from "@/lib/companyLinks";
+import {
+  sendEmail,
+  sendLifecycleEmail,
+  sendLifecycleEmailOncePerKey,
+  SUPPORT_EMAIL,
+  type SendEmailInput,
+  type SendEmailResult,
+} from "./client";
 import * as T from "./templates";
 import { DEFAULT_TIME_ZONE } from "@/lib/format";
 
@@ -83,10 +92,11 @@ export async function sendSetupReminder(userId: string, daysLeft: number): Promi
  */
 export async function tryAnnounceAnalysisReady(
   userId: string,
-  companyName: string | null
+  companyName: string | null,
+  opts: { jobSourceQuestionPending?: boolean } = {}
 ): Promise<void> {
   try {
-    await sendAnalysisReady(userId, companyName?.trim() || "your QuickBooks company");
+    await sendAnalysisReady(userId, companyName?.trim() || "your QuickBooks company", opts);
   } catch (err) {
     console.error(
       "lifecycle: could not send analysis-ready email:",
@@ -97,11 +107,12 @@ export async function tryAnnounceAnalysisReady(
 
 export async function sendAnalysisReady(
   userId: string,
-  companyName: string
+  companyName: string,
+  opts: { jobSourceQuestionPending?: boolean } = {}
 ): Promise<SendEmailResult> {
   const contact = await contactFor(userId);
   if (!contact) return { ok: false, error: "User not found" };
-  const email = T.analysisReadyEmail(companyName);
+  const email = T.analysisReadyEmail(companyName, opts);
 
   return sendLifecycleEmail({
     userId,
@@ -200,7 +211,7 @@ export async function sendTrialExpired(
 ): Promise<SendEmailResult> {
   const contact = await contactFor(userId);
   if (!contact) return { ok: false, error: "User not found" };
-  const email = T.trialExpiredEmail();
+  const email = T.trialExpiredEmail({ firmOffered: isPlanOffered("firm") });
 
   return sendLifecycleEmail({
     userId,
@@ -230,6 +241,90 @@ export async function sendTestimonialRequest(userId: string): Promise<SendEmailR
     to: contact.email,
     ...email,
   });
+}
+
+// --- Weekly Profit Brief -------------------------------------------------
+
+/**
+ * One recipient's copy of one week's brief. Keyed to the company, the week
+ * and the address, so a run that dies partway through the recipient list
+ * and is picked up again sends only to those who didn't get it, instead of
+ * a second copy to everyone. A failed send frees the key for a retry.
+ */
+export async function sendWeeklyBrief(input: {
+  ownerId: string;
+  connectionId: string;
+  weekStarting: Date;
+  recipient: string;
+  email: Pick<SendEmailInput, "subject" | "html" | "text" | "headers">;
+}): Promise<SendEmailResult> {
+  const to = input.recipient.trim().toLowerCase();
+  return sendLifecycleEmail({
+    userId: input.ownerId,
+    emailType: "weekly_brief",
+    dedupeKey: `weekly_brief:${input.connectionId}:${dayStamp(input.weekStarting)}:${to}`,
+    to: input.recipient,
+    ...input.email,
+  });
+}
+
+/**
+ * Tells the owner once that a company's brief is held back because its
+ * data can't be brought up to date (see briefOnHoldEmail). Keyed to the
+ * company's last successful sync, so it's one email per problem: nothing
+ * more while the syncs keep failing, and a new email only if a later
+ * problem starts after a sync has worked again.
+ */
+export async function sendBriefOnHold(input: {
+  ownerId: string;
+  connectionId: string;
+  companyName: string;
+  lastSyncedAt: Date | null;
+  reason: string | null;
+}): Promise<SendEmailResult> {
+  const contact = await contactFor(input.ownerId);
+  if (!contact) return { ok: false, error: "User not found" };
+  const email = T.briefOnHoldEmail(input.companyName, input.reason, T.appUrl(companyOpenPath(input.connectionId, "/dashboard/settings")));
+  return sendLifecycleEmail({
+    userId: input.ownerId,
+    emailType: "brief_on_hold",
+    dedupeKey: `brief_on_hold:${input.connectionId}:${input.lastSyncedAt?.toISOString() ?? "never"}`,
+    to: contact.email,
+    ...email,
+  });
+}
+
+// --- Profit alerts -------------------------------------------------------
+
+/**
+ * One recipient's profit alerts for a company, in one email. Each alert
+ * goes to each address at most once (keyed to the alert and the address),
+ * so a run that dies partway through the recipients, or a later run with
+ * the same alerts still waiting, sends each address only what it hasn't
+ * had, and an address whose send failed gets them next time. `alertId` is
+ * the alert's own row: one that clears and fires again later is a new alert.
+ *
+ * Returns the send's result and the alerts this address now has, from this
+ * send or an earlier one.
+ */
+export async function sendProfitAlerts<A extends { alertId: string }>(input: {
+  ownerId: string;
+  recipient: string;
+  alerts: A[];
+  render: (alerts: A[]) => Pick<SendEmailInput, "subject" | "html" | "text" | "headers">;
+}): Promise<{ result: SendEmailResult; has: string[] }> {
+  const to = input.recipient.trim().toLowerCase();
+  const keyOf = (a: A) => `profit_alert:${a.alertId}:${to}`;
+  const byKey = new Map(input.alerts.map((a) => [keyOf(a), a]));
+  const result = await sendLifecycleEmailOncePerKey({
+    userId: input.ownerId,
+    emailType: "profit_alert",
+    to: input.recipient,
+    keys: [...byKey.keys()],
+    render: (keys) => input.render(input.alerts.filter((a) => keys.includes(keyOf(a)))),
+  });
+  const has = [...result.alreadySent, ...result.sentNow].map((k) => byKey.get(k)?.alertId).filter((id): id is string => id != null);
+  return { result, has };
 }
 
 // --- Billing -------------------------------------------------------------

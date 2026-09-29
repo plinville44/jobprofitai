@@ -3,6 +3,12 @@ import { prisma } from "@/lib/prisma";
 import { PLANS, firmBillableCompanies, planPriceText, type PlanId } from "@/lib/plans";
 import { ensureSubscription } from "@/lib/trial";
 import { appUrl, getStripe, requirePriceIdForPlan } from "./client";
+import {
+  PAYMENT_BEING_CONFIRMED_MESSAGE,
+  RECENT_CHECKOUT_SECONDS,
+  secondCheckoutDecision,
+  type SubscriptionSummary,
+} from "./duplicateSubscription";
 
 // Everything that talks to Stripe on behalf of a signed-in user: customer
 // creation, Checkout, and the Billing Portal.
@@ -58,6 +64,76 @@ export interface CheckoutSessionResult {
   sessionId: string;
 }
 
+/** A checkout refused because this customer already has one paid or on its way. The message is for the customer. */
+export class CheckoutBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CheckoutBlockedError";
+  }
+}
+
+interface ListedSubscription {
+  id: string;
+  status: string;
+  created: number;
+}
+interface ListedCheckoutSession {
+  id: string;
+  status: string | null;
+  created: number;
+  subscription?: string | { id: string } | null;
+}
+
+/**
+ * Stops a second checkout for a customer who already has a subscription or
+ * a payment on its way, and closes any checkout still open from the last
+ * hour so only the one being started now can be paid. See
+ * duplicateSubscription.ts for why, and for the webhook backstop that
+ * catches what this can't (two clicks at the same instant). Throws
+ * CheckoutBlockedError with a message for the customer.
+ *
+ * Stripe's list filters are used as documented for API 2024-06-20; not
+ * verified against live Stripe. An open session that can't be closed is
+ * checked again, since it may have just been paid.
+ */
+async function refuseSecondCheckout(stripe: Stripe, customerId: string, now: Date = new Date()): Promise<void> {
+  const nowSeconds = Math.floor(now.getTime() / 1000);
+  const [subscriptions, sessions] = await Promise.all([
+    stripe.subscriptions.list({ customer: customerId, status: "all", limit: 20 }),
+    stripe.checkout.sessions.list({
+      customer: customerId,
+      created: { gte: nowSeconds - RECENT_CHECKOUT_SECONDS },
+      limit: 20,
+    }),
+  ]);
+  const subs: SubscriptionSummary[] = (subscriptions.data as ListedSubscription[]).map((s) => ({
+    id: s.id,
+    status: s.status,
+    created: s.created,
+  }));
+  const decision = secondCheckoutDecision(
+    subs,
+    (sessions.data as ListedCheckoutSession[]).map((s) => ({
+      id: s.id,
+      status: s.status,
+      created: s.created,
+      subscriptionId: s.subscription == null ? null : typeof s.subscription === "string" ? s.subscription : s.subscription.id,
+    })),
+    nowSeconds
+  );
+  if (decision.block) throw new CheckoutBlockedError(decision.message);
+
+  for (const sessionId of decision.expireSessionIds) {
+    try {
+      await stripe.checkout.sessions.expire(sessionId);
+    } catch {
+      const again: { status?: string | null } = await stripe.checkout.sessions.retrieve(sessionId);
+      if (again.status === "complete") throw new CheckoutBlockedError(PAYMENT_BEING_CONFIRMED_MESSAGE);
+      // Already expired by someone else: nothing left to close.
+    }
+  }
+}
+
 /**
  * Creates a Stripe-hosted Checkout session for a monthly subscription.
  *
@@ -74,6 +150,7 @@ export async function createCheckoutSession(
   const stripe = getStripe();
   const priceId = requirePriceIdForPlan(plan);
   const customerId = await getOrCreateStripeCustomer(userId);
+  await refuseSecondCheckout(stripe, customerId);
 
   // Firm is billed per connected company, four at least. The quantity is
   // kept in step afterwards as companies are connected and disconnected
@@ -224,6 +301,81 @@ export function subscriptionRevenueCents(invoice: Stripe.Invoice): number {
 
   const collected = invoice.amount_paid ?? 0;
   return Math.max(0, Math.min(lineTotal, collected));
+}
+
+/**
+ * What a customer has actually paid for their subscription so far, in cents:
+ * each paid invoice's subscription revenue (pre-tax, and never more than was
+ * collected, see subscriptionRevenueCents) less anything refunded on it.
+ *
+ * Used to cap a referral reward at what the referred account paid, so a
+ * referral can never earn more credit than it brought in. Reads the 100 most
+ * recent paid invoices, far more than the few months a referral takes to
+ * qualify. The charge is expanded to see refunds (API 2024-06-20, which the
+ * client is pinned to, still puts `charge` on the invoice). Not verified
+ * against live Stripe.
+ */
+export async function paidSubscriptionRevenueCents(customerId: string): Promise<number> {
+  return (await paidSubscriptionHistory(customerId)).revenueCents;
+}
+
+/** What a customer has paid for their subscription so far. See paidSubscriptionHistoryFrom. */
+export interface PaidSubscriptionHistory {
+  /** Subscription revenue kept, net of refunds (see netPaidRevenueCents). */
+  revenueCents: number;
+  /** Invoices on which some subscription revenue was paid and not refunded. */
+  paidInvoices: number;
+  /** How many of those were renewals (billing_reason "subscription_cycle"). */
+  paidRenewals: number;
+}
+
+/**
+ * The same paid invoice list as paidSubscriptionRevenueCents, also counting
+ * the invoices that were actually paid. A referral qualifies on these
+ * counts rather than on the subscription's period end, because Stripe moves
+ * the period end when it CREATES the renewal invoice, which is before the
+ * card is charged. Only a paid, unrefunded renewal invoice shows the renewal
+ * was paid. Not verified against live Stripe.
+ */
+export async function paidSubscriptionHistory(customerId: string): Promise<PaidSubscriptionHistory> {
+  const stripe = getStripe();
+  const page = await stripe.invoices.list({
+    customer: customerId,
+    status: "paid",
+    limit: 100,
+    expand: ["data.charge"],
+  });
+  return paidSubscriptionHistoryFrom(page.data);
+}
+
+/** The refunded amount on an invoice's charge, when the charge was expanded. */
+function refundedCents(invoice: Stripe.Invoice): number {
+  const charge: { amount_refunded?: number | null } | string | null | undefined = invoice.charge;
+  return charge && typeof charge === "object" ? charge.amount_refunded ?? 0 : 0;
+}
+
+/**
+ * Pure, for tests. An invoice counts as paid only when some subscription
+ * revenue on it was collected and kept: one fully covered by account credit
+ * ($0 collected) or fully refunded is "paid" to Stripe but brought nothing in.
+ */
+export function paidSubscriptionHistoryFrom(invoices: Stripe.Invoice[]): PaidSubscriptionHistory {
+  let revenueCents = 0;
+  let paidInvoices = 0;
+  let paidRenewals = 0;
+  for (const invoice of invoices) {
+    const kept = Math.max(0, subscriptionRevenueCents(invoice) - refundedCents(invoice));
+    revenueCents += kept;
+    if (kept <= 0) continue;
+    paidInvoices++;
+    if (invoice.billing_reason === "subscription_cycle") paidRenewals++;
+  }
+  return { revenueCents, paidInvoices, paidRenewals };
+}
+
+/** Subscription revenue kept across these invoices, net of refunds. Pure, for tests. */
+export function netPaidRevenueCents(invoices: Stripe.Invoice[]): number {
+  return paidSubscriptionHistoryFrom(invoices).revenueCents;
 }
 
 /**

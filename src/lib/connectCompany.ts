@@ -1,10 +1,12 @@
+import type { QuickBooksConnection } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { detectCostTrackingMode, qboCompanyInfo, revokeToken, type QboTokenResponse } from "@/lib/quickbooks";
 import { encryptToken, hashRealmId, legacyHashRealmId } from "@/lib/crypto";
-import { canConnectAnotherCompany, getEntitlements } from "@/lib/entitlements";
+import { canConnectAnotherCompany, getEntitlements, type Entitlements } from "@/lib/entitlements";
 import { tryMarkQuickBooksConnected } from "@/lib/trial";
 import { sendEmail } from "@/lib/email/client";
 import { connectAttemptBlockedEmail } from "@/lib/email/templates";
+import { removeClientLoginsForCompany } from "@/lib/teamRemoval";
 
 /**
  * Attaches a QuickBooks company to an account after Intuit's consent screen.
@@ -18,16 +20,40 @@ import { connectAttemptBlockedEmail } from "@/lib/email/templates";
  *   - the account is on a free trial and this company has already been
  *     through a trial on another account (one trial per company).
  *   - the account's plan has no room for another company.
+ *   - a team member tries to add a company to a Firm account (see
+ *     connectNeedsOwner).
  */
 export type AttachResult =
   | { ok: true; connectionId: string }
-  | { ok: false; code: "already_connected" | "trial_used" | "plan_limit" | "verify_failed"; message: string };
+  | { ok: false; code: "already_connected" | "trial_used" | "plan_limit" | "verify_failed" | "owner_only"; message: string };
+
+/**
+ * Whether only the account owner may connect a NEW company. On a paid Firm
+ * plan the bill follows the number of connected companies, and team members
+ * can't see billing, so a member could otherwise raise the owner's bill
+ * without the owner noticing. Reconnecting a company already on the account
+ * doesn't change the count, so members can still do that. Pure, for tests.
+ */
+export function connectNeedsOwner(entitlements: Pick<Entitlements, "plan" | "active" | "trialing">): boolean {
+  return entitlements.active && !entitlements.trialing && entitlements.plan === "firm";
+}
+
+/** The Settings page's ?notice= value that shows OWNER_ONLY_CONNECT_MESSAGE. */
+export const OWNER_ONLY_CONNECT_NOTICE = "owner_only_connect";
+
+export const OWNER_ONLY_CONNECT_MESSAGE =
+  "On the Firm plan the monthly bill follows how many companies are connected, so only the account owner can connect a new one. Ask them to connect it. You can still reconnect a company that's already on the account.";
 
 export async function attachCompany(input: {
   ownerId: string;
   realmId: string;
   tokens: QboTokenResponse;
   reconnectId?: string | null;
+  /**
+   * Who is connecting. A "member" can't add a company to a Firm account;
+   * callers that know the role should always pass it.
+   */
+  actorRole?: "owner" | "member" | "client";
 }): Promise<AttachResult> {
   const { ownerId, realmId, tokens } = input;
   const now = Date.now();
@@ -75,7 +101,7 @@ export async function attachCompany(input: {
     (await prisma.quickBooksConnection.count({ where: { realmIdHash: { startsWith: movedPrefix }, userId: { not: ownerId } } })) > 0;
 
   const refuse = async (
-    code: "already_connected" | "trial_used" | "plan_limit",
+    code: "already_connected" | "trial_used" | "plan_limit" | "owner_only",
     message: string,
     opts: { revoke: boolean } = { revoke: true }
   ): Promise<AttachResult> => {
@@ -123,7 +149,36 @@ export async function attachCompany(input: {
   // Only a live one: bringing back a company this account disconnected
   // takes a place on the plan like any other.
   const isThisAccountsCompany = existing?.userId === ownerId && !existing.disconnectedAt;
-  if (!isThisAccountsCompany && !input.reconnectId) {
+
+  // A reconnect that ended with a DIFFERENT company chosen on Intuit's
+  // screen replaces the old connection rather than adding to it, so the
+  // company count stays the same. That only holds when THIS request is the
+  // one that takes the old company off. Reconnecting company A in two tabs
+  // and choosing a different new company in each used to skip the checks
+  // below in both, and the second added a company to the bill. The
+  // disconnect is a single guarded write, so of two such requests only one
+  // can see it change a row; the other is checked like any new company.
+  let replacedId: string | null = null;
+  if (!isThisAccountsCompany && input.reconnectId && input.reconnectId !== existing?.id) {
+    const replaced = await prisma.quickBooksConnection.updateMany({
+      where: { id: input.reconnectId, userId: ownerId, disconnectedAt: null },
+      data: { disconnectedAt: new Date() },
+    });
+    if (replaced.count > 0) replacedId = input.reconnectId;
+  }
+  // Puts the replaced company back when this attempt doesn't go through.
+  const restoreReplaced = async () => {
+    if (!replacedId) return;
+    await prisma.quickBooksConnection
+      .updateMany({ where: { id: replacedId, userId: ownerId }, data: { disconnectedAt: null } })
+      .catch(() => {});
+  };
+
+  const addsCompany = !isThisAccountsCompany && !replacedId;
+  if (addsCompany && input.actorRole === "member" && connectNeedsOwner(entitlements)) {
+    return refuse("owner_only", OWNER_ONLY_CONNECT_MESSAGE);
+  }
+  if (addsCompany) {
     const permission = await canConnectAnotherCompany(ownerId);
     if (!permission.allowed) return refuse("plan_limit", permission.reason ?? "Your plan has no room for another company.");
   }
@@ -132,6 +187,8 @@ export async function attachCompany(input: {
   // The weekly brief goes to the account owner unless Settings says otherwise.
   const defaultRecipients = owner?.email ? [owner.email] : [];
   const ownershipChanged = Boolean(existing && existing.userId !== ownerId);
+  // This account had disconnected the company and is bringing it back.
+  const revivedFromDisconnect = Boolean(existing && existing.userId === ownerId && existing.disconnectedAt);
 
   const tokenData = {
     accessToken: encryptToken(tokens.access_token),
@@ -140,42 +197,58 @@ export async function attachCompany(input: {
     refreshTokenExpiresAt: new Date(now + tokens.x_refresh_token_expires_in * 1000),
   };
 
-  const connection = existing
-    ? await prisma.quickBooksConnection.update({
-        where: { id: existing.id },
-        data: {
-          userId: ownerId,
-          realmIdHash, // upgrades a row stored under the older plain hash
-          ...tokenData,
-          disconnectedAt: null,
-          // A fresh grant clears the error that sent them here.
-          lastSyncStatus: null,
-          lastSyncError: null,
-          // Only when the company changes hands (its previous owner
-          // disconnected it): the new owner's address replaces the old
-          // recipients, so one owner's figures never keep going to another.
-          ...(ownershipChanged ? { emailRecipients: defaultRecipients } : {}),
-        },
-      })
-    : await prisma.quickBooksConnection.create({
-        data: {
-          userId: ownerId,
-          realmId: encryptToken(realmId),
-          realmIdHash,
-          environment: process.env.QBO_ENVIRONMENT ?? "sandbox",
-          ...tokenData,
-          emailRecipients: defaultRecipients,
-          ...(owner?.timeZone ? { emailTimezone: owner.timeZone } : {}),
-        },
-      });
+  // Written in one step so a failure can put a replaced company back.
+  let connection: QuickBooksConnection;
+  try {
+    connection = existing
+      ? await prisma.quickBooksConnection.update({
+          where: { id: existing.id },
+          data: {
+            userId: ownerId,
+            realmIdHash, // upgrades a row stored under the older plain hash
+            ...tokenData,
+            disconnectedAt: null,
+            // A fresh grant clears the error that sent them here.
+            lastSyncStatus: null,
+            lastSyncError: null,
+            // Only when the company changes hands (its previous owner
+            // disconnected it): the new owner's address replaces the old
+            // recipients, so one owner's figures never keep going to another.
+            ...(ownershipChanged ? { emailRecipients: defaultRecipients } : {}),
+          },
+        })
+      : await prisma.quickBooksConnection.create({
+          data: {
+            userId: ownerId,
+            realmId: encryptToken(realmId),
+            realmIdHash,
+            environment: process.env.QBO_ENVIRONMENT ?? "sandbox",
+            ...tokenData,
+            emailRecipients: defaultRecipients,
+            ...(owner?.timeZone ? { emailTimezone: owner.timeZone } : {}),
+          },
+        });
+  } catch (err) {
+    await restoreReplaced();
+    throw err;
+  }
 
-  // A reconnect that ended with a DIFFERENT company chosen on Intuit's
-  // screen replaces the dead connection rather than adding to it.
+  // Choosing another company that is already live on this account while
+  // reconnecting one: the reconnected one is replaced too. (A different new
+  // company already replaced it above; this changes nothing then.)
   if (input.reconnectId && input.reconnectId !== connection.id) {
     await prisma.quickBooksConnection.updateMany({
       where: { id: input.reconnectId, userId: ownerId, disconnectedAt: null },
       data: { disconnectedAt: new Date() },
     });
+  }
+
+  // Client logins lost access when the company was disconnected (however
+  // that happened: Settings, inside QuickBooks, or a reconnect that chose
+  // another company). Coming back doesn't restore them; the owner invites
+  // them again. Their sessions already see nothing, so no sign-out needed.
+  if (revivedFromDisconnect) {
+    await removeClientLoginsForCompany(ownerId, connection.id);
   }
 
   if (entitlements.trialing) {

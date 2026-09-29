@@ -145,6 +145,12 @@ export class FakeModel {
     return this.findFirst({ where, select });
   }
 
+  async findUniqueOrThrow({ where, select }: { where: Row; select?: Row }): Promise<Row> {
+    const row = await this.findFirst({ where, select });
+    if (!row) throw new PrismaError("P2025", `No ${this.name} found`);
+    return row;
+  }
+
   async findFirst({
     where,
     orderBy,

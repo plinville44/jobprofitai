@@ -96,8 +96,10 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
       // Core profitability - src/lib/profitability.ts computeJobFinancials/computeDashboardTotals
       "Job profitability dashboard",
       "Revenue, cost, gross profit and margin by job",
-      // TimeActivity CostRate - src/lib/qboNormalize.ts timeActivityCost; burdenedAmount
-      "Labor at each person's pay rate from QuickBooks timesheets, plus your labor burden",
+      // TimeActivity CostRate - src/lib/qboNormalize.ts timeActivityCost; burdenedAmount.
+      // The cost rate is whatever the employee's QuickBooks cost rate holds,
+      // which can already include taxes and benefits, so the burden is "any".
+      "Labor at the cost rate on each QuickBooks time entry, plus any labor burden it doesn't already include",
       "Cost breakdown by category (labor, materials, subs, equipment)",
       "Estimate vs. actual comparison",
       // src/lib/qboCheck.ts + /api/jobs/[jobId]/quickbooks-check
@@ -108,8 +110,9 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
       // computeMoneyOwed + /dashboard/money-owed
       "Money you're owed: work done but not billed, possible change orders and unpaid invoices",
       // Margin leak detection - computeNeedsAttentionForJob + computeProfitLeakage;
-      // emails from src/lib/alerts.ts via the nightly sync
-      "Margin leak detection, with email alerts when a job goes over its estimate or gets ahead of its billing",
+      // emails from src/lib/alerts.ts after the nightly sync (over_budget is
+      // more than 10% over the estimate)
+      "Margin leak detection, with email alerts after the nightly sync when an open job goes more than 10% over its estimate or gets well ahead of its billing",
       "Jobs-below-target-margin tracking",
       "Profit leakage breakdown per job",
       // Trends - getMarginTrend, computeMarginTrend
@@ -170,7 +173,7 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
       // /dashboard/portfolio
       "Portfolio view: every client's margin, open jobs, unpaid invoices and data gaps on one page",
       // TeamMember role "client" (src/lib/team.ts, src/lib/account.ts)
-      "View-only logins for your clients, each seeing only their own company",
+      "View-only logins for your clients: each sees one company, including its dashboard, Data Health and WIP report, and can't change anything",
       "10 staff logins for your team",
       "Priority support",
     ],
@@ -256,6 +259,8 @@ export const SUBSCRIPTION_STATUS_LABELS: Record<string, string> = {
   incomplete: "Checkout not completed",
   incomplete_expired: "Checkout not completed",
   unpaid: "Unpaid, access paused",
+  // A login with no plan and no trial of its own (NO_PLAN_STATUS in trial.ts).
+  none: "No plan",
 };
 
 export function planDisplayName(plan: string): string {
@@ -287,9 +292,9 @@ export interface PartnerTier {
 
 /** Ordered highest-threshold-first so tier resolution is a simple `.find()`. */
 export const PARTNER_TIERS: PartnerTier[] = [
-  { key: "tier_3", label: "25+ paying clients", minPayingClients: 25, rateBps: 3000, ratePct: 30 },
-  { key: "tier_2", label: "10-24 paying clients", minPayingClients: 10, rateBps: 2500, ratePct: 25 },
-  { key: "tier_1", label: "1-9 paying clients", minPayingClients: 1, rateBps: 2000, ratePct: 20 },
+  { key: "tier_3", label: "25 or more paying clients", minPayingClients: 25, rateBps: 3000, ratePct: 30 },
+  { key: "tier_2", label: "10 to 24 paying clients", minPayingClients: 10, rateBps: 2500, ratePct: 25 },
+  { key: "tier_1", label: "1 to 9 paying clients", minPayingClients: 1, rateBps: 2000, ratePct: 20 },
 ];
 
 /** Commission applies to the first 12 successfully paid subscription months per referred client. */

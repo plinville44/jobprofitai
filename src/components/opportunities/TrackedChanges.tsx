@@ -29,6 +29,10 @@ export default function TrackedChanges({
         const o = a.outcome;
         const measured = o.status === "measured";
         const better = measured && (o.extraProfit ?? 0) > 0;
+        // Job figures were worked out on other terms after this started and
+        // the before figure couldn't be worked out again on today's terms:
+        // the before and after can't be set side by side as a gain or a loss.
+        const notComparable = o.basisChanged != null && !o.baselineRebuilt;
         return (
           <article key={a.id} className="rounded-xl border border-gray-200 bg-white p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -40,21 +44,40 @@ export default function TrackedChanges({
                 </p>
                 <h3 className="mt-1 text-base font-semibold text-navy">{a.action}</h3>
               </div>
-              {measured && o.extraProfit != null && (
+              {measured && notComparable ? (
                 <div className="text-right">
-                  <p className={`text-xl font-bold ${better ? "text-green-700" : "text-gray-600"}`}>
-                    {better ? "+" : ""}
-                    {formatCurrency(o.extraProfit)}
+                  <p className="text-base font-semibold text-gray-600">Can&apos;t compare</p>
+                  <p className="text-xs text-gray-500">
+                    {o.basisChanged === "labor_burden" ? "labor costed differently since" : "figures worked out differently since"}
                   </p>
-                  <p className="text-xs text-gray-500">gross profit vs. before</p>
                 </div>
+              ) : (
+                measured &&
+                o.extraProfit != null && (
+                  <div className="text-right">
+                    <p className={`text-xl font-bold ${better ? "text-green-700" : "text-gray-600"}`}>
+                      {better ? "+" : ""}
+                      {formatCurrency(o.extraProfit)}
+                    </p>
+                    <p className="text-xs text-gray-500">gross profit vs. before</p>
+                  </div>
+                )
               )}
             </div>
             <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
               <div>
                 <p className="text-xs text-gray-500">Before</p>
-                <p className="font-semibold text-navy">{formatPct(a.baselineMarginPct)}</p>
-                <p className="text-xs text-gray-400">{a.baselineJobs} finished jobs</p>
+                <p className="font-semibold text-navy">{formatPct(o.baselineMarginPct)}</p>
+                <p className="text-xs text-gray-400">
+                  {o.baselineJobs} finished {o.baselineJobs === 1 ? "job" : "jobs"}
+                  {o.baselineRebuilt
+                    ? ", on today's figures"
+                    : o.basisChanged === "labor_burden"
+                      ? ", old labor burden"
+                      : o.basisChanged === "job_figures"
+                        ? ", old figures"
+                        : ""}
+                </p>
               </div>
               <div>
                 <p className="text-xs text-gray-500">Since</p>
@@ -73,7 +96,7 @@ export default function TrackedChanges({
             </div>
             <p className="mt-3 text-sm text-gray-700">{o.message}</p>
             <div className="mt-3 flex flex-wrap items-center gap-3">
-              {measured && <ConfidenceBadge confidence={o.confidence} />}
+              {measured && !notComparable && <ConfidenceBadge confidence={o.confidence} />}
               {o.jobIds.length > 0 && (
                 <span className="text-xs text-gray-500">
                   Jobs:{" "}

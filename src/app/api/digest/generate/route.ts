@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getAccount, refuseClient } from "@/lib/account";
 import { tryMarkFirstAnalysis } from "@/lib/trial";
 import { tryAnnounceAnalysisReady } from "@/lib/email/lifecycle";
+import { jobSourceQuestionPending } from "@/lib/jobSetup";
 import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
 import { generateWeeklyDigestForConnection } from "@/lib/digest";
 
@@ -104,7 +105,10 @@ export async function POST(req: NextRequest) {
     await tryMarkFirstAnalysis(account.ownerId);
     // "Your numbers are in, here's where to start." Sends once ever, guarded
     // by the EmailEvent dedupe key rather than by a check here.
-    await tryAnnounceAnalysisReady(account.ownerId, connection.companyName);
+    // Not held back for the "Is each job a Class?" question: it points to it.
+    await tryAnnounceAnalysisReady(account.ownerId, connection.companyName, {
+      jobSourceQuestionPending: jobSourceQuestionPending(connection),
+    });
 
     return NextResponse.json({ id: digest.id, narrative, kind, metrics });
   } catch (err) {

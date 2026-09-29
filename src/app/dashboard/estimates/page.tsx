@@ -82,11 +82,22 @@ export default async function EstimatesPage() {
         <h2 className="text-sm font-semibold text-navy">How the check works</h2>
         <p className="mt-2">
           When an estimate&apos;s lines carry quantities, those lines are costed directly: products and services at the
-          purchase cost set on them in QuickBooks, and hours on labor lines at your average labor cost per hour (from time
-          entries, plus any labor burden set in Settings). A line priced as a lump sum, rather than per hour or per unit,
-          isn&apos;t counted. Then the check follows this job&apos;s own price and scope. When every line can be costed
+          purchase cost set on them in QuickBooks (labor ones plus any labor burden set in Settings, shown as &ldquo;item
+          cost plus burden&rdquo;), and hours on labor lines at your average labor cost per hour (from time entries, plus
+          any labor burden). When labor from time entries is turned off in Settings, no burden is added and hours on
+          labor lines aren&apos;t costed. A line priced as a lump sum,
+          rather than per hour or per unit,
+          isn&apos;t counted, and neither is a material or other non-labor item priced at more than three times its
+          purchase cost: that&apos;s usually sold installed, and its item cost leaves the labor out. Then the check follows this job&apos;s own price and scope. When every line can be costed
           that way, no past jobs are needed. When at least half the price can, the rest is checked at your past jobs&apos;
-          rate, which needs three finished jobs of the type.
+          rate, which needs three finished jobs of the type. Each estimate shows how every line was read, so you can
+          see if one was read the wrong way.
+        </p>
+        <p className="mt-2">
+          Quantities only say what each line is read as. When you have at least three finished jobs of the type and the
+          quantities come out more than 15 points above them, the usual cause is a line read the wrong way: an installed
+          price costed at a materials-only item cost, or labor priced by the square or by the day read as hours. Then the
+          check goes by the lower figure, your past jobs, marks it low confidence and says so.
         </p>
         <p className="mt-2">
           Otherwise we take your finished jobs of the same type from the last two years, work out what they cost for
@@ -172,37 +183,41 @@ function EstimateCard({ e, options, readOnly }: { e: CheckedEstimate; options: {
       </div>
 
       <p className="mt-3 text-sm text-gray-700">{c.summary}</p>
-      {c.quantityLines.length > 0 && (
-        <table className="mt-3 w-full max-w-3xl text-left text-sm">
-          <thead className="text-xs text-gray-500">
-            <tr>
-              <th className="py-1 font-medium">Line</th>
-              <th className="py-1 font-medium">Quantity</th>
-              <th className="py-1 font-medium">Costed at</th>
-              <th className="py-1 font-medium">Cost</th>
-              <th className="py-1 font-medium">You&apos;re charging</th>
-            </tr>
-          </thead>
-          <tbody>
-            {c.quantityLines.map((l, i) => (
-              <tr key={i} className="border-t border-gray-100">
-                <td className="py-1.5">{l.name ?? coreCategoryName(l.category)}</td>
-                <td className="py-1.5">
-                  {l.qty.toLocaleString("en-US", { maximumFractionDigits: 2 })}
-                  {l.basis === "labor_rate" ? " h" : ""}
-                </td>
-                <td className="py-1.5 text-gray-600">
-                  {formatCurrency(l.unitCost)}
-                  {l.basis === "labor_rate" ? " an hour (your labor cost)" : " each (item cost)"}
-                </td>
-                <td className="py-1.5">{formatCurrency(l.cost)}</td>
-                <td className={`py-1.5 ${l.price < l.cost / (1 - (c.targetMarginPct ?? 0)) ? "font-medium text-red-700" : "text-gray-700"}`}>
-                  {formatCurrency(l.price)}
-                </td>
+      {c.lineReadings.length > 0 && (
+        <div className="mt-3 max-w-4xl overflow-x-auto">
+          <p className="text-xs font-medium text-gray-600">
+            {c.quantityMarginOverruled != null
+              ? `How each line was read from its quantity. Costed this way the estimate comes to ${formatPct(c.quantityMarginOverruled)}, which is why it was set aside; a line read the wrong way usually explains it.`
+              : "How each line was read from its quantity. If a line was read the wrong way (a price per square or per day read as hours, or an installed price costed as materials only), the result above is off too."}
+          </p>
+          <table className="mt-1 w-full text-left text-sm">
+            <thead className="text-xs text-gray-500">
+              <tr>
+                <th className="py-1 pr-3 font-medium">Line</th>
+                <th className="py-1 pr-3 font-medium">How it was read</th>
+                <th className="py-1 pr-3 font-medium">Cost</th>
+                <th className="py-1 font-medium">You&apos;re charging</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {c.lineReadings.map((l, i) => {
+                // Red when the costed part of the line doesn't reach the target on its own cost.
+                const thin = l.cost != null && l.costedPrice < l.cost / (1 - (c.targetMarginPct ?? 0));
+                return (
+                  <tr key={i} className="border-t border-gray-100 align-top">
+                    <td className="py-1.5 pr-3">{l.name ?? coreCategoryName(l.category)}</td>
+                    <td className={`py-1.5 pr-3 text-xs ${l.cost == null ? "text-gray-500" : "text-gray-700"}`}>{l.reading}</td>
+                    <td className="py-1.5 pr-3">{l.cost == null ? <span className="text-xs text-gray-500">Not costed</span> : formatCurrency(l.cost)}</td>
+                    <td className={`py-1.5 ${thin ? "font-medium text-red-700" : "text-gray-700"}`}>{formatCurrency(l.price)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {c.quantityMarginOverruled == null && (c.quantityCoverage ?? 1) < 0.999 && (
+            <p className="mt-1 text-xs text-gray-500">Lines and parts of lines that weren&apos;t costed are checked at your past jobs&apos; rate for this type of job.</p>
+          )}
+        </div>
       )}
 
       {c.parts.length > 0 && (

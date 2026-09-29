@@ -162,6 +162,15 @@ model QuickBooksConnection {
   // When the labor burden was last changed. Margins saved before then (weekly
   // snapshots, tracked-change baselines) were worked out on other terms.
   laborBurdenSetAt DateTime?
+  // When stored job figures last changed for a reason other than new
+  // activity in QuickBooks: a switch of job setup (Projects, customers,
+  // Classes), turning time-entry labor on or off, or a full sync that
+  // rebuilt rows under a new SYNC_VERSION. Weekly snapshots and alert
+  // conditions from before then were worked out on other terms, so the brief
+  // doesn't report the difference as a change on the jobs. The labor burden
+  // has its own date above; code that compares with old figures uses the
+  // later of the two.
+  basisChangedAt DateTime?
 
   // Bumped in code whenever the way synced rows are stored changes. A
   // connection below the current version gets a full sync next time,
@@ -185,6 +194,12 @@ model QuickBooksConnection {
   // unavailable. They're retried as full syncs for up to a day, then
   // accepted, so one flaky data type can't make every sync a full one.
   fullSyncCutShortAt DateTime?
+  // A full sync too big for one run reads its data types over several runs
+  // (its progress is kept on its SyncRun rows). Set when one is owed or has
+  // stopped partway: the nightly sync continues it from this time, in its one
+  // full-sync slot. A day ahead once it keeps running out of time, so it's
+  // tried once a day. Null when no full sync is owed or partway.
+  fullSyncContinueAt DateTime?
   aiBriefAt    DateTime?
   aiAnalysisAt DateTime?
   aiSuggestAt       DateTime?
@@ -248,6 +263,7 @@ model QuickBooksConnection {
   profitInsights    ProfitInsight[]
   feedback          Feedback[]
   clientLogins      TeamMember[]
+  untaggedCosts     UntaggedCost[]
 
   @@index([userId])
 }
@@ -283,7 +299,10 @@ model SyncRun {
 
   startedAt         DateTime  @default(now())
   finishedAt        DateTime?
-  status            String    // "in_progress" | "success" | "error"
+  // "partial": a full sync that ran out of time and stopped between two of
+  // its steps; its entitiesUpdated.fullSyncProgress says where, for the run
+  // that carries on (see FULL_SYNC_STEPS in src/lib/quickbooksSync.ts).
+  status            String    // "in_progress" | "success" | "error" | "partial"
   mode              String    // "full" | "incremental"
   entitiesUpdated   Json?     // e.g. { jobs: 3, purchases: 12, bills: 4, timeActivities: 9, invoices: 8, estimates: 2 }
   errorMessage      String?
@@ -472,6 +491,38 @@ model CostEntry {
   @@index([qboSourceType, qboSourceId])
 }
 
+// One line of job cost from the last 12 months that isn't on any job: posted
+// to a job-cost account (or bought as an item) with no customer, project or
+// class on it. Exactly the lines the untagged job cost count on Data Health
+// counts, so the contractor can see which ones to fix in QuickBooks. Kept in
+// step by the sync the way CostEntry is: a full sync replaces a company's
+// rows, an incremental sync replaces the rows of each transaction it
+// re-reads. See src/lib/untaggedCosts.ts.
+model UntaggedCost {
+  id            String   @id @default(cuid())
+  connectionId  String
+  connection    QuickBooksConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  qboSourceType String   // "Purchase" | "Bill" | "VendorCredit"
+  qboSourceId   String
+  // The QuickBooks line id, or the line's position when it has none.
+  lineKey       String
+  // What QuickBooks calls the form, for the label and the link to it:
+  // "bill" | "expense" | "check" | "credit_card" | "credit_card_credit" | "vendor_credit".
+  kind          String
+  txnDate       DateTime
+  docNumber     String?  // bill number, check number or ref no.
+  payee         String?
+  accountName   String?  // the account or product/service the line was posted to
+  memo          String?
+  amount        Decimal  @db.Decimal(12, 2) // signed: vendor credits and card credits are negative
+
+  createdAt     DateTime @default(now())
+
+  @@unique([connectionId, qboSourceType, qboSourceId, lineKey])
+  @@index([connectionId, amount])
+}
+
 // Actual revenue recognized against a job, from QBO invoices.
 model InvoiceSummary {
   id          String    @id @default(cuid())
@@ -493,6 +544,13 @@ model InvoiceSummary {
   // any sales tax). Null for everything but open invoices.
   openBalance  Decimal? @db.Decimal(12, 2)
   txnDate      DateTime
+  // The sale's own number (DocNumber) and, on invoices, its due date
+  // (DueDate) from QuickBooks, so Money Owed can name the invoice and age it
+  // from when it was due. Null on deposit, journal entry and expense rows,
+  // where QuickBooks has none, and on rows stored before sync version 6
+  // until the next full sync fills them.
+  docNumber    String?
+  dueDate      DateTime?
 
   @@index([jobId])
 }
@@ -627,6 +685,9 @@ model Subscription {
   // checks don't have to call Stripe on every request.
   status                String    @default("trialing")
   // "trialing" | "trial_expired" | "active" | "past_due" | "canceled" | "incomplete" | "unpaid"
+  // | "none" (a login with no plan and no trial of its own, such as a removed
+  // team member or client login that signs in again; see NO_PLAN_STATUS in
+  // src/lib/trial.ts)
 
   // Entitlement tier - read exclusively through src/lib/entitlements.ts,
   // never checked directly elsewhere in the app.
