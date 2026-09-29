@@ -1,5 +1,6 @@
 import { confidenceLabel, formatCurrency, formatDate, formatPct } from "@/lib/format";
-import { getSampleCompany, SAMPLE_TARGET_PCT } from "@/lib/sampleCompany";
+import { getSampleCompany, SAMPLE_NOW, SAMPLE_TARGET_PCT } from "@/lib/sampleCompany";
+import { buildWipSchedule, NOT_SCHEDULED_NEED_TEXT } from "@/lib/wipSchedule";
 import { coreCategoryName, GAIN_KINDS, type FeedItem } from "@/lib/opportunities";
 import { computeBriefHeadline, snapshotFromFeed } from "@/lib/briefHeadline";
 
@@ -520,6 +521,82 @@ export function TrackedChangePreview() {
           </div>
         </div>
         <p className="mt-3 text-sm leading-relaxed text-jp-slate">{o.message}</p>
+      </div>
+    </AppFrame>
+  );
+}
+
+/**
+ * The Work in Progress schedule for the sample company, built by the same
+ * buildWipSchedule the real report (src/app/reports/wip) uses, with the same
+ * column names. Harborview's costs have passed its estimate, so the schedule
+ * lists it as needing an updated estimate instead of calling it finished:
+ * showing that on the website is part of the point.
+ */
+export function WipPreview() {
+  const { jobs } = getSampleCompany();
+  const w = buildWipSchedule(jobs, SAMPLE_NOW);
+  const pct = (n: number) => `${Math.round(n * 1000) / 10}%`;
+  const money = (n: number | null) => (n == null ? "-" : formatCurrency(n));
+  const cell = "px-3 py-2.5 text-right tabular-nums";
+  return (
+    <AppFrame label="Work in Progress Schedule">
+      <div className="p-4 sm:p-6">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-jp-muted">Contracts in progress</p>
+        <div className="mt-2 overflow-x-auto rounded-lg border border-jp-line">
+          <table className="w-full min-w-[760px] text-left text-sm">
+            <thead className="bg-jp-surface text-[11px] uppercase tracking-wide text-jp-muted">
+              <tr>
+                <th scope="col" className="px-3 py-2.5 font-semibold">Job</th>
+                <th scope="col" className="px-3 py-2.5 text-right font-semibold">Contract</th>
+                <th scope="col" className="px-3 py-2.5 text-right font-semibold">Est. total cost</th>
+                <th scope="col" className="px-3 py-2.5 text-right font-semibold">Cost to date</th>
+                <th scope="col" className="px-3 py-2.5 text-right font-semibold">% complete</th>
+                <th scope="col" className="px-3 py-2.5 text-right font-semibold">Earned revenue</th>
+                <th scope="col" className="px-3 py-2.5 text-right font-semibold">Billed to date</th>
+                <th scope="col" className="px-3 py-2.5 text-right font-semibold">Over billed</th>
+                <th scope="col" className="px-3 py-2.5 text-right font-semibold">Under billed</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-jp-line">
+              {w.inProgress.map((r) => (
+                <tr key={r.jobId}>
+                  <td className="px-3 py-2.5 font-medium text-jp-ink">{r.jobName}</td>
+                  <td className={`${cell} text-jp-ink`}>{money(r.contract)}</td>
+                  <td className={`${cell} text-jp-ink`}>{money(r.estimatedTotalCost)}</td>
+                  <td className={`${cell} text-jp-ink`}>{money(r.costToDate)}</td>
+                  <td className={`${cell} text-jp-ink`}>{pct(r.percentComplete)}</td>
+                  <td className={`${cell} text-jp-ink`}>{money(r.earnedRevenue)}</td>
+                  <td className={`${cell} text-jp-ink`}>{money(r.billedToDate)}</td>
+                  <td className={`${cell} text-jp-ink`}>{money(r.overBilled)}</td>
+                  <td className={`${cell} font-semibold ${r.underBilled > 0 ? "text-amber-700" : "text-jp-ink"}`}>{money(r.underBilled)}</td>
+                </tr>
+              ))}
+              <tr className="bg-jp-surface font-semibold">
+                <td className="px-3 py-2.5 text-jp-ink">Total</td>
+                <td className={`${cell} text-jp-ink`}>{money(w.totals.contract)}</td>
+                <td className={`${cell} text-jp-ink`}>{money(w.totals.estimatedTotalCost)}</td>
+                <td className={`${cell} text-jp-ink`}>{money(w.totals.costToDate)}</td>
+                <td className={cell} />
+                <td className={`${cell} text-jp-ink`}>{money(w.totals.earnedRevenue)}</td>
+                <td className={`${cell} text-jp-ink`}>{money(w.totals.billedToDate)}</td>
+                <td className={`${cell} text-jp-ink`}>{money(w.totals.overBilled)}</td>
+                <td className={`${cell} text-amber-700`}>{money(w.totals.underBilled)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        {w.notScheduled.length > 0 && (
+          <div className="mt-3 rounded-md bg-jp-surface-2/70 px-3 py-2 text-sm leading-relaxed text-jp-ink">
+            <span className="font-semibold">Not on the schedule yet: </span>
+            {w.notScheduled.map((j) => `${j.jobName} (${NOT_SCHEDULED_NEED_TEXT[j.needs]})`).join("; ")}.
+          </div>
+        )}
+        <p className="mt-3 text-xs leading-relaxed text-jp-muted">
+          Percent complete is cost to date divided by the estimated total cost. Under billed is work done that
+          hasn&rsquo;t been billed yet. In the app, the report also lists contracts finished in the last 12 months, and
+          prints or saves as a PDF.
+        </p>
       </div>
     </AppFrame>
   );

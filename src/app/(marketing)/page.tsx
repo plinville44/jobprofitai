@@ -19,6 +19,7 @@ import {
   WeeklyBriefPreview,
 } from "@/components/marketing/ProductPreview";
 import PricingCards from "@/components/marketing/PricingCards";
+import QuickBooksComparison from "@/components/marketing/QuickBooksComparison";
 import FitCheck from "@/components/marketing/FitCheck";
 import { PLANS } from "@/lib/plans";
 import { OG_IMAGE } from "@/lib/siteMeta";
@@ -250,40 +251,7 @@ export default function HomePage() {
           intro="Nothing to re-enter and nothing to switch. JobProfitAI only reads QuickBooks, and you keep working there exactly as you do now."
           align="center"
         />
-        <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-2">
-          <Card className="p-7">
-            <p className="text-sm font-semibold uppercase tracking-wide text-jp-muted">QuickBooks tells you</p>
-            <ul className="mt-4 space-y-3 text-[15px] text-jp-slate">
-              {[
-                "What each job billed and what it spent",
-                "Profit and loss by project",
-                "Budget against actual, where you've set a budget up",
-              ].map((item) => (
-                <li key={item} className="flex gap-2.5">
-                  <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-400" aria-hidden="true" />
-                  {item}
-                </li>
-              ))}
-            </ul>
-          </Card>
-          <Card className="border-jp-blue/30 p-7">
-            <p className="text-sm font-semibold uppercase tracking-wide text-jp-blue">JobProfitAI tells you</p>
-            <ul className="mt-4 space-y-3 text-[15px] text-jp-ink">
-              {[
-                "What to change on your pricing, ranked by what it's worth in dollars",
-                "Which job types, customers and job sizes don't hit your margin, and by how much",
-                "Whether labor, materials, subs or equipment is the thin part of your price",
-                "Whether a pending estimate is priced high enough, before you send it",
-                "Whether the change you made is working, on the jobs that follow it",
-              ].map((item) => (
-                <li key={item} className="flex gap-2.5">
-                  <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-jp-green" aria-hidden="true" />
-                  {item}
-                </li>
-              ))}
-            </ul>
-          </Card>
-        </div>
+        <QuickBooksComparison />
       </Section>
 
       {/* ── Problem ──────────────────────────────────────────────────── */}
