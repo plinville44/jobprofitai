@@ -3,7 +3,8 @@ import { redirect } from "next/navigation";
 import { getAccount } from "@/lib/account";
 import { prisma } from "@/lib/prisma";
 import { canConnectAnotherCompany, getEntitlements, getUsageAgainstLimits } from "@/lib/entitlements";
-import { getTrialState } from "@/lib/trial";
+import { NO_PLAN_STATUS, getTrialState } from "@/lib/trial";
+import { pausedCompaniesMessage, pausedCompanySummary, planFit } from "@/lib/planLimits";
 import { getReferralSummary } from "@/lib/referrals";
 import {
   PLANS,
@@ -66,12 +67,35 @@ export default async function BillingPage(props: {
   if (!account) redirect("/login");
   // A client's view-only login has no settings or billing of its own.
   if (account.role === "client") redirect("/dashboard");
+
+  // ?limit= is a code, never text to print: the message is worked out here,
+  // so a link can't put words of its choosing on this page.
+  let limitNotice: string | null = null;
+  if (searchParams?.limit === "trial_used") {
+    limitNotice = "That QuickBooks company has already had a free trial of JobProfitAI. Choose a plan to connect it.";
+  } else if (searchParams?.limit) {
+    const permission = await canConnectAnotherCompany(account.ownerId);
+    limitNotice = permission.allowed
+      ? null
+      : permission.reason ?? "Your plan has no room for another QuickBooks company.";
+  }
+  const limitTitle = searchParams?.limit === "trial_used" ? "Free trial already used" : "Plan limit reached";
+
   if (account.role !== "owner") {
     const owner = await prisma.user.findUnique({ where: { id: account.ownerId }, select: { email: true } });
     return (
-      <main>
+      <main className="space-y-6">
         <h1 className="text-2xl font-bold text-navy">Billing</h1>
-        <p className="mt-4 text-gray-600">
+        {/* A team member sent here by the company limit sees why, and who can change it. */}
+        {limitNotice ? (
+          <Panel tone="warning" title={limitTitle}>
+            <p className="text-sm text-amber-900">{limitNotice}</p>
+            <p className="mt-2 text-sm text-amber-900">
+              Only the account owner{owner?.email ? ` (${owner.email})` : ""} can change the plan.
+            </p>
+          </Panel>
+        ) : null}
+        <p className="text-gray-600">
           Billing for this account is managed by its owner{owner?.email ? ` (${owner.email})` : ""}. Your access comes
           with their plan.
         </p>
@@ -93,22 +117,11 @@ export default async function BillingPage(props: {
   // for a trial that ended at 7pm Pacific on Sep 15.
   const timeZone = connection?.emailTimezone ?? DEFAULT_TIME_ZONE;
 
-  const [usage, referrals] = await Promise.all([
+  const [usage, referrals, pausedSummary] = await Promise.all([
     getUsageAgainstLimits(account.ownerId, entitlements),
     getReferralSummary(account.ownerId),
+    pausedCompanySummary(account.ownerId),
   ]);
-
-  // ?limit= is a code, never text to print: the message is worked out here,
-  // so a link can't put words of its choosing on this page.
-  let limitNotice: string | null = null;
-  if (searchParams?.limit === "trial_used") {
-    limitNotice = "That QuickBooks company has already had a free trial of JobProfitAI. Choose a plan to connect it.";
-  } else if (searchParams?.limit) {
-    const permission = await canConnectAnotherCompany(account.ownerId);
-    limitNotice = permission.allowed
-      ? null
-      : permission.reason ?? "Your plan has no room for another QuickBooks company.";
-  }
 
   const stripeReady = isStripeConfigured();
   const currentPlan: PlanId | null =
@@ -127,6 +140,33 @@ export default async function BillingPage(props: {
     complimentary && subscription?.stripeSubscriptionId && ["active", "past_due", "trialing"].includes(subscription.status)
       ? subscription
       : null;
+
+  // Companies past the plan's company limit (src/lib/planLimits.ts). Only
+  // while the plan is live: on a lapsed account nothing syncs anyway.
+  const paused = entitlements.active && !complimentary ? pausedSummary.paused : [];
+  const proCovers = PLANS.profit_intelligence_pro.limits.maxConnections;
+  const firmCovers = PLANS.firm.limits.maxConnections;
+  // The way out that fits this account, besides disconnecting companies.
+  const pausedPlanHint = entitlements.trialing
+    ? firmOffered && usage.connections <= firmCovers
+      ? `Or choose the ${PLANS.firm.name} plan below, which covers up to ${firmCovers} companies. Choosing it during your trial starts billing that day.`
+      : "Or email support@jobprofitai.com about a plan that covers them all."
+    : currentPlan === "profit_intelligence" && usage.connections <= proCovers
+      ? `Or switch to ${PLANS.profit_intelligence_pro.name}, which covers ${proCovers}, from Manage Billing.`
+      : currentPlan !== "firm" && firmOffered && usage.connections <= firmCovers
+        ? `Or email support@jobprofitai.com to move to the ${PLANS.firm.name} plan, which covers up to ${firmCovers}.`
+        : "Or email support@jobprofitai.com about a plan that covers them all.";
+
+  // What the account already uses, shown on the plan chooser so a plan that
+  // can't cover it is ruled out before checkout rather than refused after.
+  const usageLine = `You have ${usage.connections} QuickBooks ${usage.connections === 1 ? "company" : "companies"} and ${usage.activeJobs} open ${usage.activeJobs === 1 ? "job" : "jobs"}.`;
+  const firmFit = planFit(PLANS.firm, usage);
+  // A paying Pro customer can move to the 1-company plan in Stripe's portal;
+  // say before they do what that would pause.
+  const downgradePauses =
+    isPaid && currentPlan === "profit_intelligence_pro"
+      ? Math.max(0, usage.connections - PLANS.profit_intelligence.limits.maxConnections)
+      : 0;
 
   return (
     <div className="space-y-6">
@@ -155,8 +195,30 @@ export default async function BillingPage(props: {
         </Panel>
       ) : null}
       {limitNotice ? (
-        <Panel tone="warning" title={searchParams?.limit === "trial_used" ? "Free trial already used" : "Plan limit reached"}>
+        <Panel tone="warning" title={limitTitle}>
           <p className="text-sm text-amber-900">{limitNotice}</p>
+        </Panel>
+      ) : null}
+
+      {paused.length > 0 ? (
+        <Panel tone="warning" title="Some companies are paused">
+          <p className="text-sm text-amber-900">
+            {pausedCompaniesMessage(
+              paused.map((c) => c.name),
+              pausedSummary.maxConnections
+            )}
+          </p>
+          <p className="mt-2 text-sm text-amber-900">
+            Nothing is deleted: a paused company keeps its figures and stays on your dashboard, but it doesn&rsquo;t
+            sync with QuickBooks or send its Weekly Profit Brief or alerts. Your plan covers the companies you connected
+            first.
+          </p>
+          <p className="mt-2 text-sm text-amber-900">
+            <Link href="/dashboard/settings" className="font-semibold underline">
+              Disconnect companies you no longer need in Settings.
+            </Link>{" "}
+            {pausedPlanHint}
+          </p>
         </Panel>
       ) : null}
 
@@ -295,7 +357,9 @@ export default async function BillingPage(props: {
             value={
               complimentary
                 ? "Complimentary (owner login)"
-                : STATUS_LABELS[subscription?.status ?? ""] ?? subscription?.status ?? NO_VALUE
+                : subscription?.status === NO_PLAN_STATUS
+                  ? "No plan"
+                  : STATUS_LABELS[subscription?.status ?? ""] ?? subscription?.status ?? NO_VALUE
             }
           />
           {entitlements.currentPeriodEnd ? (
@@ -321,11 +385,10 @@ export default async function BillingPage(props: {
           </p>
         ) : null}
 
-        {usage.overConnectionLimit && !complimentary ? (
+        {usage.overConnectionLimit && !complimentary && paused.length === 0 ? (
           <p className="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
             You have {usage.connections} QuickBooks companies connected and your plan covers {usage.maxConnections}.
-            Disconnect the ones you no longer need in Settings, or email support@jobprofitai.com to move to a plan that
-            covers them all.
+            Disconnect the ones you no longer need in Settings, or choose a plan that covers them all.
           </p>
         ) : null}
 
@@ -385,37 +448,62 @@ export default async function BillingPage(props: {
                 </>
               )}
             </p>
-          ) : (
+          ) : null}
+          {stripeReady && isPaid && downgradePauses > 0 ? (
+            <p className="mt-3 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              {usageLine} {PLANS.profit_intelligence.name} covers{" "}
+              {PLANS.profit_intelligence.limits.maxConnections} company, so switching to it would pause{" "}
+              {downgradePauses} of them: they&rsquo;d keep their figures but stop syncing until you disconnect some or
+              move back.
+            </p>
+          ) : null}
+          {!stripeReady || isPaid ? null : (
             <>
+              <p className="mb-4 text-sm text-gray-600">{usageLine}</p>
               <div className="grid gap-5 lg:grid-cols-2">
-                {PLAN_LIST.map((plan) => (
-                  <div
-                    key={plan.id}
-                    className={`rounded-xl border p-5 ${
-                      plan.mostPopular ? "border-brand" : "border-gray-200"
-                    }`}
-                  >
-                    <div className="flex items-baseline justify-between">
-                      <h3 className="font-semibold text-navy">{plan.name}</h3>
-                      {plan.mostPopular ? (
-                        <span className="rounded-full bg-brand-light px-2.5 py-0.5 text-xs font-semibold text-brand">
-                          Most Popular
-                        </span>
+                {PLAN_LIST.map((plan) => {
+                  // Disabled with the reason when the plan can't cover the
+                  // companies already connected (checkout would refuse it);
+                  // a warning only for the open-job limit, which isn't enforced.
+                  const fit = planFit(plan, usage);
+                  return (
+                    <div
+                      key={plan.id}
+                      className={`rounded-xl border p-5 ${
+                        plan.mostPopular && fit.fits ? "border-brand" : "border-gray-200"
+                      }`}
+                    >
+                      <div className="flex items-baseline justify-between">
+                        <h3 className="font-semibold text-navy">{plan.name}</h3>
+                        {plan.mostPopular ? (
+                          <span className="rounded-full bg-brand-light px-2.5 py-0.5 text-xs font-semibold text-brand">
+                            Most Popular
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-2 text-3xl font-bold text-navy">
+                        {plan.priceLabel}
+                        <span className="text-base font-normal text-gray-500">/month</span>
+                      </p>
+                      <p className="mt-2 text-sm text-gray-600">{plan.bestFor}</p>
+                      <p className="mt-2 text-sm text-gray-600">
+                        Covers {plan.limits.maxConnections} QuickBooks{" "}
+                        {plan.limits.maxConnections === 1 ? "company" : "companies"} and{" "}
+                        {plan.limits.maxActiveJobs == null ? "unlimited open jobs" : `up to ${plan.limits.maxActiveJobs} open jobs`}.
+                      </p>
+                      {fit.warning ? (
+                        <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">{fit.warning}</p>
                       ) : null}
+                      <CheckoutButton
+                        plan={plan.id}
+                        label={`Choose ${plan.name}`}
+                        variant={plan.mostPopular && fit.fits ? "primary" : "secondary"}
+                        className="mt-5"
+                        disabledReason={fit.reason}
+                      />
                     </div>
-                    <p className="mt-2 text-3xl font-bold text-navy">
-                      {plan.priceLabel}
-                      <span className="text-base font-normal text-gray-500">/month</span>
-                    </p>
-                    <p className="mt-2 text-sm text-gray-600">{plan.bestFor}</p>
-                    <CheckoutButton
-                      plan={plan.id}
-                      label={`Choose ${plan.name}`}
-                      variant={plan.mostPopular ? "primary" : "secondary"}
-                      className="mt-5"
-                    />
-                  </div>
-                ))}
+                  );
+                })}
               </div>
               {firmOffered ? (
                 <div className="mt-5 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-gray-200 p-5">
@@ -430,10 +518,13 @@ export default async function BillingPage(props: {
                       disconnect companies.
                     </p>
                   </div>
-                  <CheckoutButton plan="firm" label="Choose Firm" variant="secondary" />
+                  <CheckoutButton plan="firm" label="Choose Firm" variant="secondary" disabledReason={firmFit.reason} />
                 </div>
               ) : null}
               <p className="mt-4 text-xs text-gray-500">
+                {entitlements.trialing
+                  ? "Choosing a plan during your free trial starts billing that day, and the rest of the trial ends. "
+                  : ""}
                 Plans renew automatically every month at the price shown until you cancel. Cancel
                 anytime from Manage Billing on this page; cancellation takes effect at the end of the
                 month you have already paid for. See our{" "}
@@ -453,9 +544,10 @@ export default async function BillingPage(props: {
       {/* ── Referrals ────────────────────────────────────────────── */}
       <Panel title="Referral credits">
         <p className="text-sm text-gray-600">
-          Refer someone who becomes a paying customer and, once they&rsquo;ve paid for{" "}
-          {REFERRAL_QUALIFY_DAYS} days and their second month, you earn one free month of your current plan as an account
-          credit{currentPlan === "firm" ? `, priced at the Firm minimum of ${PLANS.firm.perCompany!.minCompanies} companies` : ""}. Credits stack and come off future invoices automatically.
+          Refer someone who becomes a paying customer. Once they&rsquo;ve paid their first monthly renewal and are still
+          subscribed at least {REFERRAL_QUALIFY_DAYS} days after their first payment, you earn an account credit worth one
+          month of your current plan{currentPlan === "firm" ? `, priced at the Firm minimum of ${PLANS.firm.perCompany!.minCompanies} companies` : ""},
+          or what they&rsquo;ve paid us so far if that&rsquo;s less. Credits stack and come off future invoices automatically.
         </p>
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[

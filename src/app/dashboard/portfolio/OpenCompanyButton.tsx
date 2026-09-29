@@ -15,7 +15,13 @@ export default function OpenCompanyButton({ connectionId, href = "/dashboard", l
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ connectionId }),
       });
-      if (res.ok) router.push(href);
+      if (res.ok) {
+        router.push(href);
+        // A navigation re-renders only the page, not the shared header, so
+        // without this the header's company switcher kept naming the company
+        // that was on screen before.
+        router.refresh();
+      }
     } finally {
       setBusy(false);
     }

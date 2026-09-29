@@ -163,15 +163,20 @@ export function DashboardPreview() {
 
 // The same example company as the previews above and below: Harborview is
 // $100,000 billed and $82,800 spent (17.2%, 14% over its $72,600 estimate),
-// Oakfield sits 6.2 points under the 28% target, and Laurel Ave finished at
-// 31.4%. Used on /demo so a visitor can see a whole job list, not just the
+// Oakfield finished 6.2 points under the 28% target, and Laurel Ave finished
+// at 31.4%. Used on /demo so a visitor can see a whole job list, not just the
 // attention table.
+//
+// Only finished jobs are judged against the target margin. An open job's
+// margin to date is mostly billing timing, so the product judges open jobs on
+// their estimate (and, on Pro, their forecast) instead; the notes on open
+// jobs below say only what the product says about them.
 const EXAMPLE_JOBS = [
   { job: "Harborview Roof Replacement", status: "Active", revenue: 100_000, costs: 82_800, note: "14% over estimate" },
   { job: "Cedar Ln. Deck Rebuild", status: "Active", revenue: 64_000, costs: 52_300, note: "Margin falling" },
-  { job: "Oakfield Warehouse Fit-Out", status: "Active", revenue: 206_000, costs: 161_100, note: "Below target" },
+  { job: "Oakfield Warehouse Fit-Out", status: "Completed", revenue: 206_000, costs: 161_100, note: "Finished below target" },
   { job: "Riverside HVAC Retrofit", status: "Active", revenue: 88_500, costs: 67_700, note: "Labor running high" },
-  { job: "Pine Ridge Addition", status: "Active", revenue: 142_000, costs: 98_700, note: "On target" },
+  { job: "Pine Ridge Addition", status: "Active", revenue: 142_000, costs: 98_700, note: "Nothing flagged" },
   { job: "Laurel Ave Bath Remodel", status: "Completed", revenue: 54_000, costs: 37_040, note: "On target" },
   { job: "Elm Ct. Siding", status: "Completed", revenue: 31_500, costs: 21_900, note: "On target" },
 ];
@@ -198,14 +203,19 @@ export function JobListPreview() {
             <tbody className="divide-y divide-jp-line">
               {EXAMPLE_JOBS.map((row) => {
                 const marginPct = ((row.revenue - row.costs) / row.revenue) * 100;
-                const below = marginPct < EXAMPLE_TARGET_MARGIN_PCT;
+                const judged = row.status === "Completed";
+                const tone = !judged
+                  ? "text-jp-ink"
+                  : marginPct < EXAMPLE_TARGET_MARGIN_PCT
+                    ? "text-amber-600"
+                    : "text-green-700";
                 return (
                   <tr key={row.job}>
                     <td className="px-4 py-3 font-medium text-jp-ink">{row.job}</td>
                     <td className="px-4 py-3 text-jp-slate">{row.status}</td>
                     <td className="px-4 py-3 text-right tabular-nums text-jp-ink">{formatCurrency(row.revenue)}</td>
                     <td className="px-4 py-3 text-right tabular-nums text-jp-ink">{formatCurrency(row.costs)}</td>
-                    <td className={`px-4 py-3 text-right font-semibold tabular-nums ${below ? "text-amber-600" : "text-green-700"}`}>
+                    <td className={`px-4 py-3 text-right font-semibold tabular-nums ${tone}`}>
                       {marginPct.toFixed(1)}%
                     </td>
                     <td className="px-4 py-3 text-jp-muted">{row.note}</td>
@@ -216,7 +226,9 @@ export function JobListPreview() {
           </table>
         </div>
         <p className="mt-3 text-xs text-jp-muted">
-          Margin is colored against a {EXAMPLE_TARGET_MARGIN_PCT}% target margin, which you set in Settings.
+          Finished jobs&rsquo; margins are colored against a {EXAMPLE_TARGET_MARGIN_PCT}% target margin, which you set in
+          Settings. Open jobs are judged on their estimate instead, since margin partway through a job mostly reflects
+          when you last billed.
         </p>
       </div>
     </AppFrame>

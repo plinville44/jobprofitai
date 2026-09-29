@@ -136,9 +136,11 @@ export default function HowItWorksPage() {
               job is a class, and pulls together everything attached to each one: invoices, sales
               receipts, credit memos, bills, expenses, vendor credits, time entries and estimates.
               Sales tax is taken out of revenue, refunds and credits come off, and labor from
-              timesheets is costed at each person&rsquo;s pay rate, not the rate you bill, plus the
-              labor burden you set for payroll taxes, workers&rsquo; comp and benefits. JobProfitAI
-              works with QuickBooks Online only, not QuickBooks Desktop.
+              timesheets is costed at the cost rate on each time entry (the employee&rsquo;s cost
+              rate in QuickBooks), not the rate you bill. If your cost rates are just wages, you add
+              a labor burden for payroll taxes, workers&rsquo; comp and benefits in Settings; if they
+              already include those, you leave it at 0. JobProfitAI works with QuickBooks Online
+              only, not QuickBooks Desktop.
             </p>
             <p>
               Costs are grouped into categories you&rsquo;d actually recognize: labor, materials,
@@ -195,8 +197,9 @@ export default function HowItWorksPage() {
               in-progress jobs are also judged on where they&rsquo;re forecast to finish.
             </p>
             <p>
-              JobProfitAI syncs every night, and emails you as soon as an open job goes over its
-              estimate or gets well ahead of its billing, instead of waiting for the weekly brief.
+              JobProfitAI syncs every night. When that sync finds an open job whose costs are more
+              than 10% over its estimate, or whose work has got well ahead of its billing, it emails
+              you then, instead of waiting for the weekly brief.
               The Money Owed page puts the cash side in one place: work done but not billed yet,
               open jobs whose costs have gone well past the estimate (possible change orders nobody
               billed), and unpaid invoices by how long they&rsquo;ve been waiting.
@@ -209,9 +212,10 @@ export default function HowItWorksPage() {
             </p>
             <p>
               There&rsquo;s also a Data Health page that tells you exactly what is missing before
-              you trust a number: job costs (materials, subcontractors, cost of goods) from the
-              last year not tagged to any job, jobs with revenue but no costs recorded, time entries
-              with no pay rate in QuickBooks, and open jobs with no cost estimate. Those gaps change what the numbers can tell you, so
+              you trust a number: each job cost (materials, subcontractors, cost of goods) from the
+              last 12 months that isn&rsquo;t tagged to any job, listed biggest first, jobs with
+              revenue but no costs recorded, time entries with no cost rate in QuickBooks, and open
+              jobs with no cost estimate. Those gaps change what the numbers can tell you, so
               they&rsquo;re shown rather than papered over.
             </p>
           </Step>

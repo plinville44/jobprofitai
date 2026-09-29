@@ -3,6 +3,7 @@ import { prisma } from "./prisma";
 import { hashToken } from "./passwordReset";
 import { getEntitlements } from "./entitlements";
 import { CLIENT_LOGINS_PER_COMPANY } from "./plans";
+import { REMOVED_ROLE } from "./teamRemoval";
 
 /**
  * Team logins.
@@ -27,6 +28,8 @@ import { CLIENT_LOGINS_PER_COMPANY } from "./plans";
  * Client logins (Firm plan) are invitations too, with role "client" and the
  * one company they may see. They don't use up the plan's team logins; each
  * company can have CLIENT_LOGINS_PER_COMPANY of them.
+ *
+ * Removing a login is in src/lib/teamRemoval.ts.
  */
 
 export const INVITE_TTL_DAYS = 7;
@@ -147,6 +150,11 @@ export async function createInvite(
     expiresAt,
     role: clientConnectionId ? "client" : "member",
     connectionId: clientConnectionId,
+    // A reused row can be the marker left when this person was removed
+    // (REMOVED_ROLE), which still holds their login id. An invitation isn't
+    // anyone's login until it is accepted, and holding the id would stop
+    // them joining any other team while this one sits unused.
+    memberUserId: null,
   };
   const invite = existing
     ? await prisma.teamMember.update({ where: { id: existing.id }, data })
@@ -255,6 +263,19 @@ export async function acceptInvite(token: unknown, userId: string, now = new Dat
     };
   }
 
+  // Another row can still hold this login's id without giving it any access:
+  // the marker left when it was removed from an account (REMOVED_ROLE), or
+  // an older re-invitation built on that marker that was never accepted.
+  // Neither may block joining. The marker goes; an unused invitation stays
+  // for its own address but lets go of the login.
+  if (membership && !membership.acceptedAt && membership.id !== invite.id) {
+    if (membership.role === REMOVED_ROLE) {
+      await prisma.teamMember.delete({ where: { id: membership.id } });
+    } else {
+      await prisma.teamMember.update({ where: { id: membership.id }, data: { memberUserId: null } });
+    }
+  }
+
   try {
     await prisma.teamMember.update({
       where: { id: invite.id },
@@ -299,7 +320,7 @@ export interface TeamRow {
 
 export async function listTeam(ownerId: string, now = new Date()): Promise<TeamRow[]> {
   const rows = await prisma.teamMember.findMany({
-    where: { ownerUserId: ownerId },
+    where: { ownerUserId: ownerId, role: { not: REMOVED_ROLE } },
     orderBy: { invitedAt: "asc" },
     include: { member: { select: { name: true } } },
   });

@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAccount } from "@/lib/account";
+import { getAccount, refuseClient } from "@/lib/account";
 import { PLANS, isPlanId } from "@/lib/plans";
 import { prisma } from "@/lib/prisma";
-import { createCheckoutSession } from "@/lib/stripe/billing";
+import { CheckoutBlockedError, createCheckoutSession } from "@/lib/stripe/billing";
 import { getEntitlements } from "@/lib/entitlements";
 
 /**
@@ -19,6 +19,8 @@ export async function POST(req: NextRequest) {
   try {
     const account = await getAccount();
     if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const refused = refuseClient(account);
+    if (refused) return refused;
     if (account.role !== "owner") {
       return NextResponse.json({ error: "Only the account owner can change the plan." }, { status: 403 });
     }
@@ -31,8 +33,11 @@ export async function POST(req: NextRequest) {
     }
 
     // One subscription per account. The Billing page hides these buttons
-    // from paying customers; this is the server-side rule behind that, so
-    // a double click or a second tab can't start a second subscription.
+    // from paying customers; this is the server-side rule behind that.
+    // Our own row only learns of a payment from Stripe's webhook, so
+    // createCheckoutSession also asks Stripe (a checkout paid moments ago in
+    // another tab), and the webhook cancels and refunds a second
+    // subscription that still gets through.
     const entitlements = await getEntitlements(account.ownerId);
     if (entitlements.access === "complimentary") {
       return NextResponse.json(
@@ -49,7 +54,8 @@ export async function POST(req: NextRequest) {
 
     // A plan must cover the companies already connected. Without this, an
     // account that connected dozens of companies on Firm could cancel and
-    // resubscribe to a one-company plan and keep them all.
+    // resubscribe to a one-company plan and keep them all. (Companies
+    // connected after checkout starts are paused instead, see planLimits.ts.)
     const connected = await prisma.quickBooksConnection.count({ where: { userId: account.ownerId, disconnectedAt: null } });
     const max = PLANS[plan].limits.maxConnections;
     if (connected > max) {
@@ -64,6 +70,9 @@ export async function POST(req: NextRequest) {
     const { url } = await createCheckoutSession(account.ownerId, plan);
     return NextResponse.json({ url });
   } catch (err) {
+    if (err instanceof CheckoutBlockedError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("billing/checkout failed:", message);
 

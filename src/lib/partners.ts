@@ -9,6 +9,7 @@ import {
   type PartnerTier,
 } from "@/lib/plans";
 import { subscriptionRevenueCents } from "@/lib/stripe/billing";
+import { isFirmInvoice } from "@/lib/stripe/invoicePlan";
 import { getOrCreatePartnerReferralCode, referralUrl } from "@/lib/referrals";
 
 // The accountant / bookkeeper partner program.
@@ -98,8 +99,28 @@ export async function countPayingClients(partnerId: string): Promise<number> {
     where: {
       userId: { in: referredUserIds },
       status: { in: ["active", "past_due"] },
+      // Firm accounts earn no commission (see recordCommissionForInvoice), so
+      // they don't raise the rate on the partner's other clients either.
+      // Otherwise a Firm account opened through a partner's own link would
+      // still pay the partner, by lifting their tier.
+      plan: { not: "firm" },
     },
   });
+}
+
+/**
+ * No partner commission on the Firm plan, whoever holds it.
+ *
+ * A partner could open a second login through their own link and buy Firm
+ * there for their own clients, taking 20% to 30% of their own bill back. The
+ * self-referral check compares only user ids, so nothing caught it. A firm
+ * that buys Firm is paying for its own clients' companies, which is what the
+ * partner program is not for, so the rule is simply: Firm invoices earn
+ * nothing. Decided from the invoice's own prices where they name a plan we
+ * sell, otherwise from the plan on file. Pure, for tests.
+ */
+export function commissionAllowedForInvoice(invoice: Stripe.Invoice, referredPlan: string | null | undefined): boolean {
+  return !isFirmInvoice(invoice, referredPlan);
 }
 
 /** The tier a partner is currently in, based on live paying-client count. */
@@ -119,8 +140,9 @@ export async function currentPartnerTier(partnerId: string): Promise<PartnerTier
  * check is involved, because a read-then-write check is exactly what a
  * concurrent retry defeats.
  *
- * Returns the commission created, or null when none was due (past the
- * 12-month window, zero collectable revenue, partner not approved).
+ * Returns the commission created, or null when none was due (a Firm plan
+ * invoice, past the 12-month window, zero collectable revenue, partner not
+ * approved).
  */
 export async function recordCommissionForInvoice(params: {
   invoice: Stripe.Invoice;
@@ -137,6 +159,13 @@ export async function recordCommissionForInvoice(params: {
   // Commission is capped at the first 12 successfully paid subscription
   // months per referred client. Voided commissions (refunds) don't consume a
   // month - the client didn't actually pay for it.
+  const referredSub = await prisma.subscription.findUnique({
+    where: { userId: referredUserId },
+    select: { status: true, plan: true },
+  });
+  // Firm invoices never earn commission, and no row is written for them.
+  if (!commissionAllowedForInvoice(invoice, referredSub?.plan)) return null;
+
   const priorMonths = await prisma.partnerCommission.count({
     where: { referralId, status: { in: ["earned", "paid"] } },
   });
@@ -155,10 +184,6 @@ export async function recordCommissionForInvoice(params: {
   // subscription update that marks them active, and the rate frozen onto
   // this row would otherwise ignore the very client who just paid.
   const counted = await countPayingClients(partnerId);
-  const referredSub = await prisma.subscription.findUnique({
-    where: { userId: referredUserId },
-    select: { status: true },
-  });
   const alreadyCounted = referredSub?.status === "active" || referredSub?.status === "past_due";
   const tier = partnerTierFor(alreadyCounted ? counted : counted + 1);
   const commissionCents = Math.round((revenueCents * tier.rateBps) / 10_000);

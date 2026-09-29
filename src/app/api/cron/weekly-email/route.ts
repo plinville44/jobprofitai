@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { generateWeeklyDigestForConnection } from "@/lib/digest";
-import { runSyncForConnection, SyncAlreadyRunningError, COST_SYNC_VERSION } from "@/lib/quickbooksSync";
+import { generateWeeklyDigestForConnection, SummaryOutOfTimeError, summaryToReuse, withSummaryForRetry } from "@/lib/digest";
+import { runSyncForConnection, SyncAlreadyRunningError, FullSyncNotAllowedError, COST_SYNC_VERSION, SYNC_VERSION } from "@/lib/quickbooksSync";
+import { jobSourceQuestionPending } from "@/lib/jobSetup";
 import { authorizeCron } from "@/lib/cronAuth";
-import { sendEmail } from "@/lib/email/client";
 import { renderBriefEmail } from "@/lib/email/briefEmail";
+import { sendBriefOnHold, sendWeeklyBrief } from "@/lib/email/lifecycle";
 import { getEntitlements } from "@/lib/entitlements";
+import { overLimitConnectionIds } from "@/lib/planLimits";
 import { isValidTimeZone, lastScheduledSend, withinCatchUp } from "@/lib/schedule";
+import { customerSyncError, syncLooksFailed } from "@/lib/briefSend";
 
 /**
  * GET /api/cron/weekly-email  (Vercel Cron, every 15 minutes; see vercel.json)
@@ -24,13 +27,23 @@ import { isValidTimeZone, lastScheduledSend, withinCatchUp } from "@/lib/schedul
  *    and the run stops starting new ones with time to spare, leaving the
  *    rest to the next run 15 minutes later.
  *  - A company that keeps failing is retried at most MAX_ATTEMPTS times in
- *    a week, so one broken connection cannot use up every run.
+ *    a week, so one broken connection cannot use up every run. Only its
+ *    own failures count: an AI outage sends the brief without the written
+ *    summary, a company started too late in a run to write the summary is
+ *    left to the next run, and a send the email provider couldn't take is
+ *    retried an hour later, with the same summary, without using an attempt.
+ *  - No full sync ever runs here. One can take longer than this whole run,
+ *    and when the platform cut it off it took other companies' briefs down
+ *    with it, partway through sending. A company that needs one waits for
+ *    the nightly sync.
  */
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
 const CONCURRENCY = 4;
 const STOP_STARTING_AFTER_MS = 200_000;
+/** The AI write-up must be done by this point in the run, leaving time to send. */
+const AI_DEADLINE_MS = 280_000;
 const MAX_ATTEMPTS = 5;
 /** A sync this recent (the nightly one, say) is fresh enough for the brief. */
 const FRESH_SYNC_MS = 6 * 3_600_000;
@@ -38,8 +51,39 @@ const FRESH_SYNC_MS = 6 * 3_600_000;
 const CLAIM_TTL_MS = 10 * 60_000;
 /** Past this point in a run, don't start a sync before a brief: build it from what's synced. */
 const SKIP_SYNC_AFTER_MS = 150_000;
+/** Kept a day under the sync's own 30-day full-sync interval, so a sync started here is never a full one. */
+const FULL_SYNC_DUE_MS = 29 * 86_400_000;
+/** How long a brief held back by a failing upgrade sync waits before the owner is told. */
+const HOLD_NOTICE_AFTER_MS = 24 * 3_600_000;
+/** After a send the email provider couldn't take, try again this much later. */
+const RETRY_SEND_AFTER_MS = 60 * 60_000;
+/**
+ * A company deferred for lack of time is only deferred while a run this much
+ * later is still inside the catch-up window (runs are 15 minutes apart).
+ * Past that, the brief goes without the summary rather than not at all.
+ */
+const DEFER_MARGIN_MS = 30 * 60_000;
 
 type Result = { connectionId: string; status: string; detail?: string };
+type Connection = Awaited<ReturnType<typeof prisma.quickBooksConnection.findMany>>[number];
+
+/** Per-account facts looked up once per run, not once per company: a firm can have dozens. */
+function accountFacts() {
+  const paused = new Map<string, Promise<Set<string>>>();
+  const companies = new Map<string, Promise<number>>();
+  return {
+    isPaused: async (c: Connection) => {
+      if (!paused.has(c.userId)) paused.set(c.userId, overLimitConnectionIds(c.userId));
+      return (await paused.get(c.userId)!).has(c.id);
+    },
+    companyCount: (ownerId: string) => {
+      if (!companies.has(ownerId)) {
+        companies.set(ownerId, prisma.quickBooksConnection.count({ where: { userId: ownerId, disconnectedAt: null } }));
+      }
+      return companies.get(ownerId)!;
+    },
+  };
+}
 
 export async function GET(req: NextRequest) {
   // Fails closed in production when CRON_SECRET is missing (see cronAuth.ts).
@@ -53,7 +97,7 @@ export async function GET(req: NextRequest) {
   });
 
   const results: Result[] = [];
-  const due: { connection: (typeof connections)[number]; scheduledAt: Date; weekStarting: Date }[] = [];
+  const due: { connection: Connection; scheduledAt: Date; weekStarting: Date }[] = [];
 
   for (const connection of connections) {
     const timeZone = isValidTimeZone(connection.emailTimezone) ? connection.emailTimezone : "America/New_York";
@@ -79,12 +123,13 @@ export async function GET(req: NextRequest) {
   // Oldest-due first, so a backlog drains in order.
   due.sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime());
 
+  const facts = accountFacts();
   let next = 0;
   const worker = async () => {
     while (next < due.length) {
       if (Date.now() - startedAt > STOP_STARTING_AFTER_MS) return;
       const item = due[next++];
-      results.push(await sendOne(item.connection, item.weekStarting, startedAt));
+      results.push(await sendOne(item.connection, item.weekStarting, item.scheduledAt, startedAt, facts));
     }
   };
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
@@ -103,9 +148,11 @@ export async function GET(req: NextRequest) {
 }
 
 async function sendOne(
-  connection: Awaited<ReturnType<typeof prisma.quickBooksConnection.findMany>>[number],
+  connection: Connection,
   weekStarting: Date,
-  runStartedAt: number
+  scheduledAt: Date,
+  runStartedAt: number,
+  facts: ReturnType<typeof accountFacts>
 ): Promise<Result> {
   let claimed = false;
   const release = (data: Record<string, unknown> = {}) =>
@@ -114,9 +161,13 @@ async function sendOne(
     // Already sent this week? (A retry, or a second run in the window.)
     const existing = await prisma.weeklyDigest.findUnique({
       where: { connectionId_weekStarting: { connectionId: connection.id, weekStarting } },
-      select: { emailedAt: true },
+      select: { emailedAt: true, metrics: true },
     });
     if (existing?.emailedAt) return { connectionId: connection.id, status: "skipped", detail: "already emailed this week" };
+    // An earlier try at this week's send already wrote the summary (the email
+    // provider couldn't take it, or the run died partway): the retry sends
+    // the same words instead of writing new ones.
+    const storedSummary = summaryToReuse(existing?.metrics);
 
     if (connection.emailRecipients.length === 0) {
       return { connectionId: connection.id, status: "skipped", detail: "no recipients configured" };
@@ -137,6 +188,36 @@ async function sendOne(
     const entitlements = await getEntitlements(connection.userId);
     if (!entitlements.active) {
       return { connectionId: connection.id, status: "skipped", detail: `no active entitlement (${entitlements.access})` };
+    }
+    // A company past what the plan covers is paused (see planLimits.ts):
+    // no sync, no brief, until the owner disconnects some or upgrades.
+    if (await facts.isPaused(connection)) {
+      return { connectionId: connection.id, status: "skipped", detail: "paused: the plan covers fewer companies than are connected" };
+    }
+
+    // A company still on an older way of storing costs waits for the
+    // nightly sync to finish its upgrade: mid-upgrade its costs can read
+    // double. That's a full sync, which never runs here, and waiting isn't
+    // this brief's fault, so no attempt is used.
+    if (connection.syncVersion < COST_SYNC_VERSION) {
+      // An upgrade sync that keeps failing (a class-mode company whose
+      // QuickBooks has no classes, say) would hold the brief back every
+      // week with nobody told. After a day, the owner is told once.
+      if (syncLooksFailed(connection, Date.now()) && Date.now() - scheduledAt.getTime() >= HOLD_NOTICE_AFTER_MS) {
+        const notice = await sendBriefOnHold({
+          ownerId: connection.userId,
+          connectionId: connection.id,
+          companyName: connection.companyName ?? "Your company",
+          lastSyncedAt: connection.lastSyncedAt,
+          reason: connection.lastSyncStatus === "error" ? customerSyncError(connection.lastSyncError) : null,
+        });
+        return {
+          connectionId: connection.id,
+          status: "deferred",
+          detail: `waiting for the upgrade sync, which is failing; owner ${notice.ok ? (notice.skipped ? "already told" : "told") : `not told (${notice.error ?? "send failed"})`}`,
+        };
+      }
+      return { connectionId: connection.id, status: "deferred", detail: "waiting for the upgrade sync to finish" };
     }
 
     // Claim it: one run at a time per company. The attempt counts now, so
@@ -169,25 +250,32 @@ async function sendOne(
       return { connectionId: connection.id, status: "skipped", detail: "already emailed this week" };
     }
 
-    // Sync first so the brief reflects the freshest numbers, unless the
-    // nightly sync already did, or this run is short on time. A company
-    // still on an older sync version must finish its upgrade sync first:
-    // mid-upgrade its costs can read double.
-    const fresh = connection.lastSyncedAt && Date.now() - connection.lastSyncedAt.getTime() < FRESH_SYNC_MS;
-    // Only an upgrade that changes how costs are stored is worth waiting for.
-    const mustWaitForUpgrade = connection.syncVersion < COST_SYNC_VERSION;
-    // Nor right after a failed sync: the nightly job retries those, and
-    // retrying here every 15 minutes would only repeat the failure.
+    // A quick catch-up sync first so the brief reflects the freshest
+    // numbers, unless the nightly sync already did, or this run is short on
+    // time. Only when it will be incremental: a sync that would be a full
+    // one (a new sync version, a rebuild Settings asked for, or the monthly
+    // full read) is left to the nightly job, and the brief is built from
+    // what's already synced. Nor right after a failed sync: the nightly job
+    // retries those, and retrying here every 15 minutes would only repeat
+    // the failure.
+    const nowMs = Date.now();
+    const fresh = connection.lastSyncedAt && nowMs - connection.lastSyncedAt.getTime() < FRESH_SYNC_MS;
+    const wouldBeFull =
+      connection.syncVersion < SYNC_VERSION ||
+      !connection.lastFullSyncAt ||
+      nowMs - connection.lastFullSyncAt.getTime() > FULL_SYNC_DUE_MS;
     const failedRecently =
-      connection.lastSyncStatus === "error" &&
+      syncLooksFailed(connection, nowMs) &&
       connection.lastSyncAttemptAt != null &&
-      Date.now() - connection.lastSyncAttemptAt.getTime() < 3_600_000;
-    // A pending estimate-details upgrade (version 3) is left to the nightly
-    // sync when the data is already fresh; only stale data or a cost upgrade
-    // is worth a sync here.
-    if ((!fresh || mustWaitForUpgrade) && !failedRecently && Date.now() - runStartedAt < SKIP_SYNC_AFTER_MS) {
+      nowMs - connection.lastSyncAttemptAt.getTime() < 3_600_000;
+    // Nor when resending a summary already written: it describes the
+    // figures as they were synced then.
+    if (!storedSummary && !fresh && !wouldBeFull && !failedRecently && nowMs - runStartedAt < SKIP_SYNC_AFTER_MS) {
       try {
-        await runSyncForConnection(connection.id);
+        // incrementalOnly: if a full sync turns out to be needed after all
+        // (Settings asked for a rebuild a moment ago, or QuickBooks' change
+        // feed fails), the sync throws instead of reading everything here.
+        await runSyncForConnection(connection.id, { incrementalOnly: true });
       } catch (syncErr) {
         if (syncErr instanceof SyncAlreadyRunningError) {
           // Try again in 15 minutes, without using up an attempt.
@@ -196,39 +284,51 @@ async function sendOne(
           return { connectionId: connection.id, status: "deferred", detail: "a sync is running" };
         }
         // Otherwise carry on with what is already synced; the brief still goes.
+        // A full sync that was needed is left to the nightly job.
         console.error(
-          `weekly-email: sync failed for connection ${connection.id}:`,
+          syncErr instanceof FullSyncNotAllowedError
+            ? `weekly-email: full sync left to the nightly job for connection ${connection.id}:`
+            : `weekly-email: sync failed for connection ${connection.id}:`,
           syncErr instanceof Error ? syncErr.message : "Unknown error"
         );
       }
     }
-    if (mustWaitForUpgrade) {
-      const now = await prisma.quickBooksConnection.findUnique({ where: { id: connection.id }, select: { syncVersion: true } });
-      if ((now?.syncVersion ?? 0) < COST_SYNC_VERSION) {
-        // Not this brief's fault: the attempt is given back, and the
-        // nightly sync (or the next run) finishes the upgrade.
-        await release(refund);
-        claimed = false;
-        return { connectionId: connection.id, status: "deferred", detail: "waiting for the upgrade sync to finish" };
-      }
-    }
 
     const companyName = connection.companyName ?? "Your company";
-    const { narrative, kind, metrics, body, weekOverWeek, headline } = await generateWeeklyDigestForConnection(
-      connection.id,
-      weekStarting,
-      companyName
-    );
+    let built: Awaited<ReturnType<typeof generateWeeklyDigestForConnection>>;
+    try {
+      built = await generateWeeklyDigestForConnection(connection.id, weekStarting, companyName, {
+        allowMissingSummary: true,
+        deadline: runStartedAt + AI_DEADLINE_MS,
+        storedSummary,
+        deferWhenOutOfTime: withinCatchUp(new Date(Date.now() + DEFER_MARGIN_MS), scheduledAt),
+      });
+    } catch (err) {
+      if (!(err instanceof SummaryOutOfTimeError)) throw err;
+      // Started too late in this run to write the summary properly. That's
+      // the run's timing, not this company's fault: the attempt is given back
+      // and the next run, where it is near the front of the queue, sends the
+      // brief with its summary.
+      await release(refund);
+      claimed = false;
+      return { connectionId: connection.id, status: "deferred", detail: `no time left for the summary in this run (${err.message})` };
+    }
+    const { narrative, kind, metrics, body, weekOverWeek, headline, tiles, summaryMissing } = built;
+    const toStore = withSummaryForRetry(metrics, { kind, body, summaryMissing });
 
     const digest = await prisma.weeklyDigest.upsert({
       where: { connectionId_weekStarting: { connectionId: connection.id, weekStarting } },
-      create: { connectionId: connection.id, weekStarting, metrics: metrics as any, narrative, kind },
-      update: { metrics: metrics as any, narrative, kind },
+      create: { connectionId: connection.id, weekStarting, metrics: toStore as any, narrative, kind },
+      update: { metrics: toStore as any, narrative, kind },
     });
 
-    // One message per recipient, so each gets their own unsubscribe link.
+    // One message per recipient, so each gets their own unsubscribe link,
+    // and each recorded on its own: a recipient who already has this week's
+    // brief (from a run that died partway) isn't sent it again.
+    const hasOtherCompanies = (await facts.companyCount(connection.userId)) > 1;
     let sent = 0;
-    const errors: string[] = [];
+    const retryLater: string[] = [];
+    const refused: string[] = [];
     for (const recipient of connection.emailRecipients) {
       const email = renderBriefEmail({
         connectionId: connection.id,
@@ -239,14 +339,37 @@ async function sendOne(
         weekOverWeek,
         metrics,
         headline,
+        tiles,
+        summaryMissing,
         recipient,
         ownerEmail: owner.email,
+        hasOtherCompanies,
+        // Not held back for the "Is each job a Class?" answer: it points to the question.
+        jobSourceQuestionPending: jobSourceQuestionPending(connection),
       });
-      const result = await sendEmail({ to: recipient, subject: email.subject, html: email.html, text: email.text, headers: email.headers });
+      const result = await sendWeeklyBrief({
+        ownerId: connection.userId,
+        connectionId: connection.id,
+        weekStarting,
+        recipient,
+        email: { subject: email.subject, html: email.html, text: email.text, headers: email.headers },
+      });
       if (result.ok) sent++;
-      else errors.push(result.error ?? "unknown error");
+      else if (result.transient) retryLater.push(result.error ?? "unknown error");
+      else refused.push(result.error ?? "unknown error");
     }
+    const note = `${kind}${summaryMissing ? " without summary" : ""}, ${sent} of ${connection.emailRecipients.length} recipients`;
 
+    if (retryLater.length > 0) {
+      // The email provider couldn't take some of them: not this company's
+      // fault, so the attempt is given back, and the brief is tried again in
+      // an hour for whoever didn't get it. (A claim is honoured for
+      // CLAIM_TTL_MS, so setting it this far ahead holds the company until
+      // then.)
+      await release({ ...refund, briefClaimedAt: new Date(Date.now() + RETRY_SEND_AFTER_MS - CLAIM_TTL_MS) });
+      claimed = false;
+      return { connectionId: connection.id, status: "retry_later", detail: `${note}; will retry: ${retryLater.join("; ")}` };
+    }
     if (sent > 0) {
       await prisma.weeklyDigest.update({ where: { id: digest.id }, data: { emailedAt: new Date() } });
       await release();
@@ -254,12 +377,12 @@ async function sendOne(
       return {
         connectionId: connection.id,
         status: "sent",
-        detail: `${kind}, ${sent} of ${connection.emailRecipients.length} recipients${errors.length ? `; failed: ${errors.join("; ")}` : ""}`,
+        detail: `${note}${refused.length ? `; failed: ${refused.join("; ")}` : ""}`,
       };
     }
     await release();
     claimed = false;
-    return { connectionId: connection.id, status: "generated_not_sent", detail: errors.join("; ") };
+    return { connectionId: connection.id, status: "generated_not_sent", detail: refused.join("; ") };
   } catch (err) {
     // One company's failure must never take down the rest of the run.
     const message = err instanceof Error ? err.message : "Unknown error";

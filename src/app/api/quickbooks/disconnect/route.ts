@@ -1,9 +1,11 @@
 import { syncFirmQuantity } from "@/lib/stripe/firmQuantity";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAccount } from "@/lib/account";
+import { getAccount, refuseClient } from "@/lib/account";
 import { revokeToken } from "@/lib/quickbooks";
 import { decryptToken } from "@/lib/crypto";
+import { revokeAllSessions } from "@/lib/auth";
+import { removeClientLoginsForCompany } from "@/lib/teamRemoval";
 
 /**
  * POST /api/quickbooks/disconnect  { connectionId }
@@ -13,11 +15,17 @@ import { decryptToken } from "@/lib/crypto";
  * historical Jobs/CostEntries/Digests around in case the customer
  * reconnects). Reconnecting the same QuickBooks company later clears
  * `disconnectedAt` again (see /api/quickbooks/callback).
+ *
+ * Client logins for the company lose their access here, and are signed
+ * out. Reconnecting doesn't give it back: the owner invites them again, so
+ * nobody regains a view of a client's books without the owner choosing it.
  */
 export async function POST(req: NextRequest) {
   try {
     const account = await getAccount();
     if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    const refused = refuseClient(account);
+    if (refused) return refused;
     if (account.role !== "owner") {
       return NextResponse.json({ error: "Only the account owner can disconnect a QuickBooks company." }, { status: 403 });
     }
@@ -40,6 +48,8 @@ export async function POST(req: NextRequest) {
       where: { id: connection.id },
       data: { disconnectedAt: new Date() },
     });
+    const signOut = await removeClientLoginsForCompany(account.ownerId, connection.id);
+    for (const userId of signOut) await revokeAllSessions(userId).catch(() => {});
     // Firm: one company fewer to bill (never below the minimum).
     await syncFirmQuantity(account.ownerId);
 

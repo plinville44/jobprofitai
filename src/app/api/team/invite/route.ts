@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAccount, listCompanies } from "@/lib/account";
+import { getAccount, listCompanies, refuseClient } from "@/lib/account";
 import { createInvite, INVITE_TTL_DAYS, recordInviteEmail } from "@/lib/team";
 import { sendEmail } from "@/lib/email/client";
 import { appUrl, teamInviteEmail } from "@/lib/email/templates";
@@ -16,6 +16,8 @@ import { appUrl, teamInviteEmail } from "@/lib/email/templates";
 export async function POST(req: NextRequest) {
   const account = await getAccount();
   if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  const refused = refuseClient(account);
+  if (refused) return refused;
   if (account.role !== "owner") {
     return NextResponse.json({ error: "Only the account owner can invite team members." }, { status: 403 });
   }

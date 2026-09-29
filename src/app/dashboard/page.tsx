@@ -21,6 +21,7 @@ import OpportunitySummary from "@/components/opportunities/OpportunitySummary";
 import FeedItemCard from "@/components/opportunities/FeedItemCard";
 import { getOpportunityData } from "@/lib/opportunityData";
 import JobSourcePrompt from "@/components/dashboard/JobSourcePrompt";
+import { jobSourceQuestionPending } from "@/lib/jobSetup";
 
 export default async function DashboardPage(props: {
   // Next.js 16: searchParams arrives as a Promise. Awaited into a local of
@@ -141,7 +142,11 @@ export default async function DashboardPage(props: {
         )
       ) : (
         <>
-          {!viewOnly && connection.costTrackingMode === "classes" && connection.jobSource !== "classes" && connection.jobSourceConfirmedAt == null ? (
+          {/* Only once the first sync has finished (lastSyncedAt is set at
+              the end of a successful one): that sync can move a company with
+              no Projects to one customer per job, and a question answered
+              while it ran could be overwritten by it. */}
+          {!viewOnly && jobSourceQuestionPending(connection) ? (
             <JobSourcePrompt connectionId={connection.id} current={connection.jobSource === "customers" ? "customers" : "projects"} />
           ) : null}
           {/* Connection status + Sync/Digest actions. Disconnect lives on the
@@ -187,9 +192,14 @@ export default async function DashboardPage(props: {
                 They&apos;re probably finished. QuickBooks doesn&apos;t tell us when a project wraps up, so until they&apos;re
                 marked complete they count as active.
               </p>
-              <Link href="/dashboard/data-health" className="text-sm font-semibold text-brand hover:underline">
-                Review and mark them completed
-              </Link>
+              {/* A client's view-only login can see Data Health but can't mark anything. */}
+              {viewOnly ? (
+                <p className="text-sm text-amber-900">Your bookkeeper can mark them completed.</p>
+              ) : (
+                <Link href="/dashboard/data-health" className="text-sm font-semibold text-brand hover:underline">
+                  Review and mark them completed
+                </Link>
+              )}
             </div>
           ) : null}
 
@@ -223,9 +233,13 @@ export default async function DashboardPage(props: {
               ) : opportunities.feed.setup[0] ? (
                 <p className="mt-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
                   {opportunities.feed.setup[0].message}{" "}
-                  <Link href={opportunities.feed.setup[0].href} className="font-semibold text-brand hover:underline">
-                    {opportunities.feed.setup[0].linkText}
-                  </Link>
+                  {viewOnly ? (
+                    opportunities.feed.setup[0].clientNote
+                  ) : (
+                    <Link href={opportunities.feed.setup[0].href} className="font-semibold text-brand hover:underline">
+                      {opportunities.feed.setup[0].linkText}
+                    </Link>
+                  )}
                 </p>
               ) : null}
             </section>
@@ -316,7 +330,13 @@ export default async function DashboardPage(props: {
               <p className="mt-2 text-sm text-gray-500">
                 {profitData.jobsInTab === 0
                   ? statusFilter === "all"
-                    ? "No jobs have synced from QuickBooks yet, so there is nothing to check. JobProfitAI reads your QuickBooks Projects or sub-customers, or, if you make one customer per job, your customers. Choose which in Settings, then click Sync now."
+                    ? `No jobs have synced from QuickBooks yet, so there is nothing to check. JobProfitAI reads your jobs from QuickBooks Projects or sub-customers, from your customers if you make one customer per job, or from Classes if each job is a class. Right now it reads ${
+                        connection.jobSource === "classes"
+                          ? "your Classes"
+                          : connection.jobSource === "customers"
+                            ? "your customers"
+                            : "your Projects and sub-customers"
+                      }.${viewOnly ? " Your bookkeeper can change which in Settings." : " Choose which in Settings, then click Sync now."}`
                     : `No ${statusFilter === "open" ? "active" : "completed"} jobs to check. Try the All jobs tab.`
                   : `Nothing needs attention on any of your ${profitData.jobsInTab} ${
                       statusFilter === "open" ? "active " : statusFilter === "closed" ? "completed " : ""
@@ -418,7 +438,7 @@ export default async function DashboardPage(props: {
               </div>
               <div className="mt-3">
                 {trendDiagnosis ? (
-                  <MarginTrendEmptyState {...trendDiagnosis} />
+                  <MarginTrendEmptyState {...trendDiagnosis} viewOnly={viewOnly} />
                 ) : (
                   <MarginTrendChart
                     data={marginTrend.map((p) => ({ period: p.period, marginPct: p.marginPct == null ? null : p.marginPct * 100 }))}
@@ -523,20 +543,29 @@ function KpiCard({
 function MarginTrendEmptyState({
   totalJobs,
   completedJobs,
+  viewOnly,
 }: {
   totalJobs: number;
   completedJobs: number;
+  /** A client's view-only login: no Sync now button, and it can't mark jobs completed. */
+  viewOnly: boolean;
 }) {
   if (totalJobs === 0) {
     return (
       <p className="text-sm text-gray-500">
-        No jobs have synced from QuickBooks yet. Run a sync above and this fills in.
+        No jobs have synced from QuickBooks yet.{" "}
+        {viewOnly ? "This fills in after the next sync." : "Run a sync above and this fills in."}
       </p>
     );
   }
 
   if (completedJobs === 0) {
-    return (
+    return viewOnly ? (
+      <p className="text-sm text-gray-500">
+        None of the {totalJobs} jobs are marked completed yet, and this trend only compares finished
+        work. QuickBooks doesn&apos;t say when a project wraps up, so your bookkeeper marks them here.
+      </p>
+    ) : (
       <p className="text-sm text-gray-500">
         None of your {totalJobs} jobs are marked completed yet, and this trend only compares
         finished work. QuickBooks doesn&apos;t tell us when a project wraps up, so you mark them

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAccount, refuseClient } from "@/lib/account";
+import { canSeeConnection, getAccount, refuseClient } from "@/lib/account";
 import { getJobTypes } from "@/lib/jobTypesServer";
 
 const OVERHEAD_METHODS = new Set(["pct_of_revenue", "pct_of_direct_cost"]);
@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
     }
 
     const connection = await prisma.quickBooksConnection.findUnique({ where: { id: connectionId } });
-    if (!connection || connection.userId !== account.ownerId) {
+    if (!connection || !canSeeConnection(account, connection)) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
 
@@ -159,9 +159,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: errors.join(" ") }, { status: 400 });
     }
 
-    const rebuild =
-      (jobSource !== undefined && jobSource !== connection.jobSource) ||
-      (laborFromTimeEntries !== undefined && laborFromTimeEntries !== connection.laborFromTimeEntries);
+    const jobSourceChanged = jobSource !== undefined && jobSource !== connection.jobSource;
+    const timeEntriesChanged = laborFromTimeEntries !== undefined && laborFromTimeEntries !== connection.laborFromTimeEntries;
+    const burdenChanged = laborBurdenPct !== undefined && (laborBurdenPct ?? 0) !== Number(connection.laborBurdenPct ?? 0);
+    const rebuild = jobSourceChanged || timeEntriesChanged;
+    const now = new Date();
 
     await prisma.quickBooksConnection.update({
       where: { id: connection.id },
@@ -177,16 +179,22 @@ export async function POST(req: NextRequest) {
         emailTimezone,
         // Confirmed only by an actual choice: saving other settings leaves the
         // dashboard's "is each job a class?" question standing.
-        ...(jobSource !== undefined && jobSource !== connection.jobSource ? { jobSource, jobSourceConfirmedAt: new Date() } : {}),
+        ...(jobSourceChanged ? { jobSource, jobSourceConfirmedAt: now } : {}),
         ...(laborBurdenPct !== undefined ? { laborBurdenPct } : {}),
-        ...(laborBurdenPct !== undefined && (laborBurdenPct ?? 0) !== Number(connection.laborBurdenPct ?? 0)
-          ? { laborBurdenSetAt: new Date() }
-          : {}),
+        ...(burdenChanged ? { laborBurdenSetAt: now } : {}),
         ...(laborFromTimeEntries !== undefined ? { laborFromTimeEntries } : {}),
         ...(alertsEnabled !== undefined ? { alertsEnabled } : {}),
         // Forces a full sync next time: an incremental one only reads what
         // changed in QuickBooks, and this changes how everything is read.
-        ...(rebuild ? { lastFullSyncAt: null, rebuildRequestedAt: new Date() } : {}),
+        // The brief stops comparing with weeks stored before now, and
+        // treats a brief built before the rebuild syncs the same way (see
+        // basisChangeSince in weekOverWeek.ts).
+        ...(rebuild ? { lastFullSyncAt: null, rebuildRequestedAt: now, basisChangedAt: now } : {}),
+        // Every job's figures move at once (a setup switch even gives every
+        // job a new id), so the next alert check records conditions without
+        // emailing them. Otherwise the owner got a pile of "new" alerts
+        // the next night with nothing changed on the jobs.
+        ...(rebuild || burdenChanged ? { alertsBaselinedAt: null } : {}),
       },
     });
 

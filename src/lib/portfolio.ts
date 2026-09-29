@@ -59,7 +59,7 @@ export function portfolioRow(input: {
   revenue: number;
   /** Costs other than time-entry labor. */
   otherCost: number;
-  /** Time-entry labor at pay rates, before burden. */
+  /** Time-entry labor at each entry's cost rate, before burden. */
   timeLabor: number;
   laborBurden: number;
   targetPct: number | null;

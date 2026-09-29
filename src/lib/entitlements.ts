@@ -255,6 +255,22 @@ export async function getEntitlements(
         currentPeriodEnd: subscription.currentPeriodEnd,
       });
 
+    // A login that never had a trial of its own: a team member or client
+    // login that was removed, then signed in again (see ensureSubscription
+    // in trial.ts). Same as having no row at all.
+    case "none":
+      return buildEntitlements({
+        plan: storedPlan,
+        access: "none",
+        features: [],
+        limits: limitsForStoredPlan(storedPlan),
+        trialEndsAt: null,
+        now,
+        paymentIssue: false,
+        cancelAtPeriodEnd: false,
+        currentPeriodEnd: null,
+      });
+
     case "trialing": // status still says trialing, but trialEndsAt has passed
     case "trial_expired":
       return buildEntitlements({
@@ -402,19 +418,33 @@ export async function canConnectAnotherCompany(
   if (!entitlements.active) {
     return {
       allowed: false,
-      reason: "Your trial has ended. Choose a plan to connect a QuickBooks company.",
+      reason:
+        entitlements.access === "trial_expired"
+          ? "Your trial has ended. Choose a plan to connect a QuickBooks company."
+          : "Choose a plan to connect a QuickBooks company.",
       usage,
     };
   }
 
   if (usage.connections >= usage.maxConnections) {
     const planLabel = entitlements.trialing ? "Your free trial" : entitlements.planName;
+    const firm = firmPlanOffered();
+    const firmPrice = `${PLANS.firm.priceLabel} per company a month, ${PLANS.firm.perCompany!.minCompanies} minimum`;
+    const askSupport = "Email support@jobprofitai.com if you need to connect more.";
     const upgradeHint =
       entitlements.plan === "firm" || entitlements.access === "complimentary"
-        ? "Email support@jobprofitai.com if you need to connect more."
-        : entitlements.plan === "profit_intelligence_pro" && !entitlements.trialing
-          ? `Keeping the books for more contractors? The Firm plan is ${PLANS.firm.priceLabel} per company a month.`
-          : `Profit Intelligence Pro covers up to ${PLANS.profit_intelligence_pro.limits.maxConnections} companies, and the Firm plan more.`;
+        ? askSupport
+        : entitlements.trialing
+          ? // The trial already has Pro's company limit, so Pro is no way to
+            // more companies. Firm is, and choosing it ends the free trial.
+            firm
+            ? `For more, the Firm plan covers up to ${PLANS.firm.limits.maxConnections} companies (${firmPrice}). Choosing it during your trial starts billing that day.`
+            : askSupport
+          : entitlements.plan === "profit_intelligence_pro"
+            ? firm
+              ? `Keeping the books for more contractors? The Firm plan is ${firmPrice}.`
+              : askSupport
+            : `Profit Intelligence Pro covers up to ${PLANS.profit_intelligence_pro.limits.maxConnections} companies${firm ? ", and the Firm plan more" : ""}.`;
     return {
       allowed: false,
       reason: `${planLabel} covers ${usage.maxConnections} QuickBooks ${
@@ -425,6 +455,17 @@ export async function canConnectAnotherCompany(
   }
 
   return { allowed: true, usage };
+}
+
+/**
+ * Whether the Firm plan can be bought here, the same test as isPlanOffered
+ * in src/lib/stripe/client.ts. Repeated rather than imported so this module
+ * (loaded by nearly every page) doesn't pull in the Stripe SDK. Messages
+ * must not offer Firm when its Stripe price isn't set: Billing hides the
+ * Firm card then, and "the Firm plan covers more" would be a dead end.
+ */
+function firmPlanOffered(): boolean {
+  return Boolean(process.env.STRIPE_SECRET_KEY) && Boolean(process.env[PLANS.firm.stripePriceEnvVar]?.trim());
 }
 
 // --- Admin ---------------------------------------------------------------
@@ -453,6 +494,7 @@ export function isAdminEmail(email: string | null | undefined): boolean {
  */
 export function inactiveMessage(e: Pick<Entitlements, "access" | "paymentIssue">): string {
   if (e.access === "trial_expired") return "Your JobProfitAI trial has ended. Choose a plan to continue.";
+  if (e.access === "none") return "This login isn't on a JobProfitAI plan. Choose a plan on the Billing page to continue.";
   if (e.paymentIssue) {
     return "Your last payment didn't go through, so access is paused. Update your card on the Billing page to turn it back on.";
   }

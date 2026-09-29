@@ -67,8 +67,9 @@ const FAQ_ITEMS = [
         dollar figure, the jobs behind it and what to do, and when you make a change, JobProfitAI
         measures whether it worked. It also builds the WIP (over and under billing) report in the
         layout banks and bonding companies read, shows the money you&rsquo;re owed (work not billed
-        yet, possible change orders, unpaid invoices), emails you when a job goes over its estimate,
-        and shows what&rsquo;s missing from your books before you trust a number.
+        yet, possible change orders, unpaid invoices), emails you after the nightly sync when an
+        open job&rsquo;s costs go more than 10% over its estimate, and shows what&rsquo;s missing
+        from your books before you trust a number.
       </>
     ),
   },
@@ -105,11 +106,13 @@ const FAQ_ITEMS = [
       <>
         No. JobProfitAI reads your jobs from QuickBooks <strong>Projects</strong>{" "}
         (sub-customers), from your customers if you make one customer per job, or from your{" "}
-        <strong>Classes</strong> if each job is a class. It works out Projects or customers on the
-        first sync, and you can choose Classes, or switch, in Settings. Beyond that, you will get more out of it if costs are consistently tagged to jobs, and the
-        built-in Data Health page tells you exactly where that&rsquo;s incomplete rather than
-        quietly guessing. If your QuickBooks estimates put labor, materials and subs on separate
-        lines, JobProfitAI can also tell you which part of your price is thin.
+        <strong>Classes</strong> if each job is a class. It reads Projects and sub-customers by
+        default, and switches to one customer per job on the first sync if you have neither; you
+        can choose Classes, or switch, in Settings. Beyond that, you will get more out of it if
+        costs are consistently tagged to jobs, and the built-in Data Health page lists each cost
+        from the last 12 months that isn&rsquo;t, biggest first, rather than quietly guessing. If
+        your QuickBooks estimates put labor, materials and subs on separate lines, JobProfitAI can
+        also tell you which part of your price is thin.
       </>
     ),
   },
@@ -141,15 +144,21 @@ const FAQ_ITEMS = [
     q: "Can my accountant use JobProfitAI?",
     a: (
       <>
-        JobProfitAI is built for accountants, bookkeepers and fractional CFOs to use alongside
-        their contractor clients, and there&rsquo;s a{" "}
+        Yes. Give your accountant or bookkeeper their own login from Settings: Profit Intelligence
+        includes 3 team logins and Pro includes 10. They see the same jobs and reports you do;
+        billing and who has access stay with you. A bookkeeper who keeps the books for several
+        contractors can instead connect them all to their own account: Pro covers up to{" "}
+        {PLANS.profit_intelligence_pro.limits.maxConnections} companies, and the{" "}
+        <Link href="/pricing#firm" className="font-medium text-jp-blue hover:underline">
+          Firm plan
+        </Link>{" "}
+        ({PLANS.firm.priceLabel} per client company a month, {PLANS.firm.perCompany!.minCompanies}{" "}
+        minimum) covers more, with a view-only login for each client. Firms that would rather refer
+        clients who pay for themselves can join the{" "}
         <Link href="/partners" className="font-medium text-jp-blue hover:underline">
           partner program
-        </Link>{" "}
-        for firms that work with several. Give your accountant or bookkeeper their own login from
-        Settings: Profit Intelligence includes 3 team logins and Pro includes 10. They see the same
-        jobs and reports you do; billing and who has access stay with you. A QuickBooks company can
-        be connected to one JobProfitAI account at a time.
+        </Link>
+        . A QuickBooks company can be connected to one JobProfitAI account at a time.
       </>
     ),
   },
@@ -364,9 +373,11 @@ export default function HomePage() {
           />
         </div>
         <p className="mx-auto mt-10 max-w-3xl text-center text-[15px] leading-relaxed text-jp-slate">
-          Built on the basics, done properly: profit by job with labor at real pay rates plus your
-          labor burden, email alerts when a job goes over its estimate, and a Data Health page that
-          shows what&rsquo;s missing from your books before you trust a number. Jobs come from
+          Built on the basics, done properly: profit by job with labor at the cost rates in your
+          QuickBooks time entries, plus any labor burden they don&rsquo;t already include; email
+          alerts after the nightly sync when an open job goes more than 10% over its estimate; and
+          a Data Health page that shows what&rsquo;s missing from your books before you trust a
+          number. Jobs come from
           QuickBooks Projects, customers or Classes.
         </p>
       </Section>
@@ -537,8 +548,9 @@ export default function HomePage() {
                 On the <strong className="font-semibold text-jp-ink">Firm plan</strong>, every client is in one login
                 with a portfolio view of all of them, and each client can have a view-only login to their own company.
                 It&rsquo;s {PLANS.firm.priceLabel} per client company a month, {PLANS.firm.perCompany!.minCompanies}{" "}
-                minimum. Or refer clients who pay for themselves through the Partner Program and earn recurring
-                commission.
+                minimum. With 2 or 3 clients, {PLANS.profit_intelligence_pro.name} covers them for less, with the
+                same portfolio view but no client logins. Or refer clients who pay for themselves through the
+                Partner Program and earn recurring commission.
               </p>
               <p className="mt-3 text-sm leading-relaxed text-jp-muted">
                 Referring a client never gives you access to their financial data. That always
@@ -575,8 +587,8 @@ export default function HomePage() {
       <Section id="pricing" tone="surface">
         <SectionHeading
           eyebrow="Pricing"
-          title="Two plans. Both find the money."
-          intro="Every plan includes the Profit Opportunity Feed, the Estimate Check and results tracking. Up to 100 jobs open at once and one company: Profit Intelligence. More than 100, or 2 to 3 companies: Pro, which adds forecasts for jobs in progress and benchmarking against similar jobs. Bookkeeping firms have the Firm plan, priced per client company. Fix one underpriced job type and it can pay for itself."
+          title="Three plans. Every one finds the money."
+          intro="Every plan includes the Profit Opportunity Feed, the Estimate Check and results tracking. Up to 100 jobs open at once and one company: Profit Intelligence. More than 100, or 2 to 3 companies (a bookkeeper with 2 or 3 clients included): Pro, which adds forecasts for jobs in progress and benchmarking against similar jobs. Bookkeepers with 4 or more client companies have the Firm plan, priced per client company. Fix one underpriced job type and it can pay for itself."
           align="center"
         />
         <PricingCards compact />

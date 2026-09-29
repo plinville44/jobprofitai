@@ -7,6 +7,10 @@ import { OG_IMAGE } from "@/lib/siteMeta";
  * and set their own description/canonical - see each page's `metadata`
  * export. metadataBase is what makes relative Open Graph image paths resolve
  * to absolute URLs, which social platforms require.
+ *
+ * There is one share image, public/og-image.png, named in src/lib/siteMeta.ts.
+ * Don't add an app/opengraph-image file as well: Next.js would use that file
+ * instead of this metadata, and the two copies could drift apart.
  */
 const siteUrl = process.env.APP_URL ?? "https://jobprofitai.com";
 

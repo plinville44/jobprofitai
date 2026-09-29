@@ -12,7 +12,7 @@
  *   deterministic section.
  * - Replaces em and en dashes. House style is no dashes as punctuation in
  *   any copy; a spaced dash becomes a comma, a bare one (a range such as
- *   "Jan–Mar") becomes a hyphen.
+ *   "Jan to Mar" written with an en dash) becomes a hyphen.
  */
 export function cleanDigestText(text: string): string {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
@@ -28,8 +28,8 @@ export function cleanDigestText(text: string): string {
 
   return lines
     .join("\n")
-    .replace(/[ \t]+[—–][ \t]+/g, ", ")
-    .replace(/[—–]/g, "-")
+    .replace(/[ \t]+[\u2014\u2013][ \t]+/g, ", ")
+    .replace(/[\u2014\u2013]/g, "-")
     .trim();
 }
 

@@ -56,6 +56,21 @@ export default async function TrialBanner({ userId }: { userId: string }) {
     );
   }
 
+  // No plan and never a trial of its own: typically a team member or client
+  // login that was removed from someone else's account. "Your subscription
+  // is inactive" would be wrong, and so would a fresh free trial.
+  if (entitlements.access === "none") {
+    return (
+      <Strip tone="warning">
+        <span>
+          This login isn&rsquo;t on a JobProfitAI plan. Choose one to use JobProfitAI with your own QuickBooks
+          company. If you worked in someone else&rsquo;s account, ask its owner to invite you again.
+        </span>
+        <BannerLink href="/dashboard/billing">Choose Your Plan</BannerLink>
+      </Strip>
+    );
+  }
+
   if (entitlements.access === "trial_expired" || entitlements.access === "canceled") {
     // The feedback extension stays claimable for a few days after a trial
     // ends, and this banner used to be the one place that didn't say so.

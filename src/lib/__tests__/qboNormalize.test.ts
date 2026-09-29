@@ -11,6 +11,7 @@ import {
   classJobKey,
   estimateFromTxn,
   expenseLines,
+  isUnitPriced,
   journalRevenueLines,
   resolveJob,
   revenueByClass,
@@ -25,7 +26,7 @@ import {
 // API returns for each entity.
 
 describe("labor from time entries", () => {
-  it("costs time at the employee's pay rate, not the billing rate", () => {
+  it("costs time at the entry's cost rate, not the billing rate", () => {
     const r = timeActivityCost({
       Id: "9",
       Hours: 8,
@@ -53,7 +54,7 @@ describe("labor from time entries", () => {
     if (r.kind === "cost") expect(r.amount).toBe(126);
   });
 
-  it("skips time with no pay rate instead of guessing one", () => {
+  it("skips time with no cost rate instead of guessing one", () => {
     const r = timeActivityCost({ Hours: 8, HourlyRate: 85, EmployeeRef: { value: "1" }, CustomerRef: { value: "21" } });
     expect(r).toEqual({ kind: "skip", reason: "no_pay_rate" });
   });
@@ -441,7 +442,9 @@ describe("classes as jobs", () => {
   it("splits a sale across its classes by line value, tax and open balance too", () => {
     const invoice = {
       Id: "300",
+      DocNumber: "1042",
       TxnDate: "2026-09-01",
+      DueDate: "2026-10-01",
       TotalAmt: 10_800,
       Balance: 5_400,
       TxnTaxDetail: { TotalTax: 800 },
@@ -452,14 +455,15 @@ describe("classes as jobs", () => {
       ],
     };
     expect(revenueByClass(invoice, "Invoice")).toEqual([
-      { classQboId: "2", amount: 7_500, tax: 600, openBalance: 4_050 },
-      { classQboId: "4", amount: 2_500, tax: 200, openBalance: 1_350 },
+      // Both classes' shares are the same invoice, so both carry its number and due date.
+      { classQboId: "2", amount: 7_500, tax: 600, openBalance: 4_050, docNumber: "1042", dueDate: new Date("2026-10-01T00:00:00Z") },
+      { classQboId: "4", amount: 2_500, tax: 200, openBalance: 1_350, docNumber: "1042", dueDate: new Date("2026-10-01T00:00:00Z") },
     ]);
   });
 
   it("puts a sale with no line classes on the transaction's class", () => {
     const receipt = { TxnDate: "2026-09-01", TotalAmt: 500, ClassRef: { value: "4" }, Line: [{ Amount: 500, SalesItemLineDetail: {} }] };
-    expect(revenueByClass(receipt, "SalesReceipt")).toEqual([{ classQboId: "4", amount: 500, tax: 0, openBalance: null }]);
+    expect(revenueByClass(receipt, "SalesReceipt")).toEqual([{ classQboId: "4", amount: 500, tax: 0, openBalance: null, docNumber: null, dueDate: null }]);
   });
 
   it("gives an estimate its own class, or the class with most of its value", () => {
@@ -483,6 +487,20 @@ describe("what's still owed on an invoice", () => {
     expect(open.openBalance).toBe(3_210);
     expect(revenueFromTxn({ TxnDate: "2026-09-01", TotalAmt: 500, Balance: 0 }, "Invoice").openBalance).toBeNull();
     expect(revenueFromTxn({ TxnDate: "2026-09-01", TotalAmt: 500 }, "SalesReceipt").openBalance).toBeNull();
+  });
+
+  it("keeps the invoice number and due date for Money Owed", () => {
+    const inv = revenueFromTxn({ TxnDate: "2026-09-01", DocNumber: "1042", DueDate: "2026-10-01", TotalAmt: 500, Balance: 500 }, "Invoice");
+    expect(inv.docNumber).toBe("1042");
+    expect(inv.dueDate).toEqual(new Date("2026-10-01T00:00:00Z"));
+    // No number or due date set in QuickBooks: null, never a made-up one.
+    const bare = revenueFromTxn({ TxnDate: "2026-09-01", TotalAmt: 500, Balance: 500 }, "Invoice");
+    expect(bare.docNumber).toBeNull();
+    expect(bare.dueDate).toBeNull();
+    // Only invoices have a due date.
+    const receipt = revenueFromTxn({ TxnDate: "2026-09-01", DocNumber: "88", DueDate: "2026-10-01", TotalAmt: 500 }, "SalesReceipt");
+    expect(receipt.docNumber).toBe("88");
+    expect(receipt.dueDate).toBeNull();
   });
 });
 
@@ -522,6 +540,36 @@ describe("estimate quantities", () => {
     };
     const [line] = estimateFromTxn(est, lookups).details.lines;
     expect(line).toMatchObject({ n: "Labor", a: 7_200, q: 40, qa: 3_200 });
+  });
+
+  it("counts item units only when priced within 3 times the item cost, labor within 10", () => {
+    // Shingles at $110 a square: $300 a square is supply only, $450 is sold installed.
+    expect(isUnitPriced("materials", 300, 110)).toBe(true);
+    expect(isUnitPriced("materials", 330, 110)).toBe(true);
+    expect(isUnitPriced("materials", 450, 110)).toBe(false);
+    expect(isUnitPriced("subcontractor", 400, 100)).toBe(false);
+    // Priced far below cost is a different unit, as before.
+    expect(isUnitPriced("materials", 10, 110)).toBe(false);
+    // Labor with a cost keeps the wider range: $30 an hour billed at $95 is still hours.
+    expect(isUnitPriced("labor", 95, 30)).toBe(true);
+    expect(isUnitPriced("labor", 4_000, 35)).toBe(false);
+    // Labor with no cost: an hourly rate, unchanged.
+    expect(isUnitPriced("labor", 90, null)).toBe(true);
+    expect(isUnitPriced("labor", 4_000, null)).toBe(false);
+    expect(isUnitPriced("materials", 90, null)).toBe(false);
+  });
+
+  it("leaves items sold installed to the past-jobs method", () => {
+    const lookups = emptyLookups();
+    lookups.items.set("3", { name: "Shingles", expenseAccountId: null, purchaseCost: 110 });
+    const est = {
+      TxnDate: "2026-09-01",
+      TotalAmt: 13_500,
+      CustomerRef: { value: "58" },
+      Line: [{ Amount: 13_500, SalesItemLineDetail: { ItemRef: { value: "3" }, Qty: 30 } }],
+    };
+    const [line] = estimateFromTxn(est, lookups).details.lines;
+    expect(line).toMatchObject({ n: "Shingles", a: 13_500, u: 110, q: null, qa: null });
   });
 });
 

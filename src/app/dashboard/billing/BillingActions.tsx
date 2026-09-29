@@ -46,14 +46,18 @@ export function CheckoutButton({
   label,
   variant = "primary",
   className = "",
+  disabledReason,
 }: {
   plan: PlanId;
   label: string;
   variant?: "primary" | "secondary";
   className?: string;
+  /** Set when this plan can't cover what the account already uses: the button is disabled and this says why. */
+  disabledReason?: string | null;
 }) {
   const { pending, error, go } = useRedirectAction();
   const busy = pending === plan;
+  const unavailable = Boolean(disabledReason);
 
   const styles =
     variant === "primary"
@@ -65,11 +69,17 @@ export function CheckoutButton({
       <button
         type="button"
         onClick={() => go(plan, "/api/billing/checkout", { plan })}
-        disabled={busy}
+        disabled={busy || unavailable}
+        aria-describedby={unavailable ? `checkout-unavailable-${plan}` : undefined}
         className={`inline-flex w-full items-center justify-center rounded-lg px-5 py-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${styles}`}
       >
         {busy ? "Opening secure checkout…" : label}
       </button>
+      {unavailable ? (
+        <p id={`checkout-unavailable-${plan}`} className="mt-2 text-sm text-gray-600">
+          {disabledReason}
+        </p>
+      ) : null}
       {error ? (
         <p role="alert" className="mt-2 text-sm text-red-700">
           {error}

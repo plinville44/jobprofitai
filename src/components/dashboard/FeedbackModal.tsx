@@ -46,13 +46,13 @@ export default function FeedbackModal() {
         data = null;
       }
       if (res.ok) {
-        setResult({ ok: true, message: "Thanks - your feedback was sent." });
+        setResult({ ok: true, message: "Thanks, your feedback was sent." });
         setMessage("");
       } else {
         setResult({ ok: false, message: data?.error ?? `Server returned status ${res.status}.` });
       }
     } catch (err) {
-      setResult({ ok: false, message: err instanceof Error ? err.message : "Network error - please try again." });
+      setResult({ ok: false, message: err instanceof Error ? err.message : "Network error. Please try again." });
     }
     setSubmitting(false);
   }

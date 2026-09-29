@@ -3,7 +3,7 @@ import Link from "next/link";
 import { getAccount, getActiveConnection } from "@/lib/account";
 import { getEntitlements } from "@/lib/entitlements";
 import { getConnectionProfitData, laborBurdenOf } from "@/lib/profitability";
-import { buildWipSchedule } from "@/lib/wipSchedule";
+import { buildWipSchedule, NOT_SCHEDULED_NEED_TEXT } from "@/lib/wipSchedule";
 import { prisma } from "@/lib/prisma";
 import { formatCurrency, formatDate } from "@/lib/format";
 import PrintButton from "./PrintButton";
@@ -34,6 +34,8 @@ export default async function WipReportPage() {
   ]);
   const s = buildWipSchedule(data.lifetimeJobs, now, new Set(filled.map((j) => j.id)));
   const anyFromTarget = s.inProgress.some((r) => r.costFromTarget);
+  const anyPastContract = s.inProgress.some((r) => r.billedPastContract > 0);
+  const anyEstimatePassed = s.notScheduled.some((j) => j.needs === "estimate_passed");
   const burden = laborBurdenOf(connection);
   const company = connection.companyName ?? "Your company";
 
@@ -79,6 +81,7 @@ export default async function WipReportPage() {
                 <th className="px-1 py-1 font-semibold">Over billed</th>
                 <th className="px-1 py-1 font-semibold">Under billed</th>
                 <th className="px-1 py-1 font-semibold">Cost to complete</th>
+                <th className="px-1 py-1 font-semibold">Provision for loss</th>
                 <th className="py-1 pl-1 font-semibold">Gross profit to date</th>
               </tr>
             </thead>
@@ -88,6 +91,9 @@ export default async function WipReportPage() {
                   <td className="py-1 pr-2 text-left">
                     {r.jobName}
                     {r.customerName ? <span className="block text-[10px] text-gray-500">{r.customerName}</span> : null}
+                    {r.billedPastContract > 0 ? (
+                      <span className="block text-[10px] text-gray-700">Billed {money(r.billedPastContract)} past the contract‡</span>
+                    ) : null}
                   </td>
                   <td className="px-1 py-1">{money(r.contract)}</td>
                   <td className="px-1 py-1">
@@ -105,6 +111,7 @@ export default async function WipReportPage() {
                   <td className="px-1 py-1">{r.overBilled > 0 ? money(r.overBilled) : "-"}</td>
                   <td className="px-1 py-1">{r.underBilled > 0 ? money(r.underBilled) : "-"}</td>
                   <td className="px-1 py-1">{money(r.costToComplete)}</td>
+                  <td className="px-1 py-1">{r.provisionForLoss > 0 ? money(r.provisionForLoss) : "-"}</td>
                   <td className="py-1 pl-1">{money(r.grossProfitToDate)}</td>
                 </tr>
               ))}
@@ -120,6 +127,7 @@ export default async function WipReportPage() {
                 <td className="px-1 py-1">{money(s.totals.overBilled)}</td>
                 <td className="px-1 py-1">{money(s.totals.underBilled)}</td>
                 <td className="px-1 py-1">{money(s.totals.costToComplete)}</td>
+                <td className="px-1 py-1">{money(s.totals.provisionForLoss)}</td>
                 <td className="py-1 pl-1">{money(s.totals.grossProfitToDate)}</td>
               </tr>
             </tbody>
@@ -170,34 +178,59 @@ export default async function WipReportPage() {
         )}
       </section>
 
-      {s.notScheduled.length > 0 ? (
+      {s.notScheduled.length > 0 || s.idle.length > 0 ? (
         <section className="mt-8 break-inside-avoid">
           <h2 className="text-base font-semibold">Open jobs not on the schedule</h2>
-          <p className="mt-1 text-xs text-gray-600">
-            These need a contract value, and a cost estimate or percent complete, before progress can be measured. Open
-            jobs with no cost or invoice in the last 90 days aren&apos;t listed.
-          </p>
-          <p className="mt-2 text-xs">
-            {s.notScheduled.map((j) => `${j.jobName} (${j.needs === "contract" ? "needs a contract value" : "needs a cost estimate or percent complete"})`).join(", ")}
+          {s.notScheduled.length > 0 ? (
+            <>
+              <p className="mt-1 text-xs text-gray-600">
+                Left out of the schedule and its totals until progress can be measured: each needs a contract value, and a
+                cost estimate or percent complete.
+                {anyEstimatePassed
+                  ? " Where costs have passed the estimate, cost to date can no longer measure progress, so the job is left out rather than shown as 100% complete until the estimate is updated or a percent complete is entered."
+                  : ""}
+              </p>
+              <p className="mt-2 text-xs">{s.notScheduled.map((j) => `${j.jobName} (${NOT_SCHEDULED_NEED_TEXT[j.needs]})`).join("; ")}</p>
+            </>
+          ) : null}
+          <p className="mt-2 text-xs text-gray-600">
+            Open jobs with no cost or invoice in the last 90 days are left out too: they are usually finished and not yet
+            marked complete.
+            {s.idle.length > 0
+              ? ` ${s.idle.length} such ${s.idle.length === 1 ? "job has" : "jobs have"} a contract value: ${s.idle.map((j) => j.jobName).join(", ")}.`
+              : ""}
           </p>
         </section>
       ) : null}
 
       <footer className="mt-8 border-t border-gray-300 pt-3 text-[11px] leading-relaxed text-gray-600">
         <p>
-          Percent complete is cost to date divided by the estimated total cost (cost-to-cost). Where cost to date has
-          passed the estimate, the estimated total cost is cost to date and the job shows as 100% complete. Where marked *,
-          percent complete is the contractor&apos;s own figure, and the estimated total cost is the larger of the estimate
-          and what that figure implies (cost to date divided by percent complete). A dash means there isn&apos;t enough to
-          work a figure out, and its total is then left blank too.
+          Percent complete is cost to date divided by the estimated total cost (cost-to-cost). A job whose cost to date has
+          passed its estimate, with no percent complete entered, is not on the schedule or in its totals: cost can no longer
+          measure its progress, and it is listed under &quot;Open jobs not on the schedule&quot;. Where marked *, percent
+          complete is the contractor&apos;s own figure, and the estimated total cost is the larger of the estimate and what
+          that figure implies (cost to date divided by percent complete). Below 25% complete that figure is too early to
+          rely on, so the estimate is used; a job below 25% with no estimate, or whose cost has already passed it, is
+          listed under &quot;Open jobs not on the schedule&quot; instead. A dash means there isn&apos;t enough to work a figure out, and its total is then left
+          blank too.
+        </p>
+        <p className="mt-2">
+          Earned revenue is the contract times percent complete. Over billed (billings in excess of costs and estimated
+          earnings) and under billed (costs and estimated earnings in excess of billings) are billed to date less earned
+          revenue. Where the estimated total cost is above the contract, the whole expected loss is recognized now: the
+          provision for loss is the part not yet in earned revenue less cost to date, and gross profit to date is the full
+          expected loss.
         </p>
         <p className="mt-2">
           Contract value is the job&apos;s accepted QuickBooks estimates, including change orders; with none accepted, the
           latest pending estimate; or the value entered in JobProfitAI.
+          {anyPastContract
+            ? " Where marked ‡, billing has gone past that contract, usually a change order not yet added to it; the schedule uses the contract as recorded, and over billing and estimated gross profit on those jobs are measured against it."
+            : ""}
           {anyFromTarget
-            ? " Where marked †, there was no cost estimate, so one was set from the target margin (the job type's, or the company's); estimated gross profit on those jobs reflects that target rather than a separate estimate, until costs pass it."
+            ? " Where marked †, there was no cost estimate, so one was set from the target margin (the job type's, or the company's); estimated gross profit on those jobs reflects that target rather than a separate estimate."
             : ""}{" "}
-          Revenue excludes sales tax. Costs are those tagged to each job in QuickBooks, with employee time at the pay rate
+          Revenue excludes sales tax. Costs are those tagged to each job in QuickBooks, with employee time at the cost rate
           on each time entry{burden > 0 ? ` plus a ${Math.round(burden * 1000) / 10}% labor burden` : ""}. Figures come
           from the books as recorded and have not been reviewed or audited.
         </p>

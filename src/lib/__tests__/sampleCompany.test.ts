@@ -35,6 +35,6 @@ describe("sample company shown on the website", () => {
 
   it("uses no em or en dashes anywhere a visitor reads", () => {
     const text = JSON.stringify([s.feed, s.estimates.map((e) => e.check), s.tracked]);
-    expect(/[–—]/.test(text)).toBe(false);
+    expect(/[\u2013\u2014]/.test(text)).toBe(false);
   });
 });

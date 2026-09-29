@@ -2,10 +2,16 @@ import crypto from "crypto";
 import type { Referral } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { REFERRAL_QUALIFY_DAYS, monthlyPriceCents } from "@/lib/plans";
-import { applyCustomerCredit, findCreditByRewardId } from "@/lib/stripe/billing";
+import {
+  applyCustomerCredit,
+  findCreditByRewardId,
+  paidSubscriptionHistory,
+  type PaidSubscriptionHistory,
+} from "@/lib/stripe/billing";
 
-// The customer referral program: refer a paying customer, earn one free
-// month of your own current plan as an account credit.
+// The customer referral program: refer a paying customer, earn an account
+// credit worth one month of your own current plan, capped at what the
+// referred account has paid (see cappedRewardCents).
 //
 // The integrity rules that matter, and where each is actually enforced:
 //
@@ -241,6 +247,24 @@ export async function disqualifyReferral(
 
 // --- Qualification and rewards ------------------------------------------
 
+/**
+ * A referral reward: one month of the referrer's plan, but never more than
+ * the referred account actually paid. Pure, for tests.
+ */
+export function cappedRewardCents(referrerMonthCents: number, referredPaidCents: number): number {
+  return Math.max(0, Math.min(Math.round(referrerMonthCents), Math.floor(referredPaidCents)));
+}
+
+/**
+ * Whether the referred account has paid for its first renewal: at least two
+ * subscription invoices paid and kept (the first month and a renewal), one
+ * of them a renewal. Two invoices alone could be the first month and a
+ * mid-month plan change. Pure, for tests.
+ */
+export function renewalPaid(paid: Pick<PaidSubscriptionHistory, "paidInvoices" | "paidRenewals">): boolean {
+  return paid.paidInvoices >= 2 && paid.paidRenewals >= 1;
+}
+
 export interface QualifyResult {
   referralId: string;
   rewardId: string;
@@ -288,7 +312,7 @@ export async function qualifyDueReferrals(now: Date = new Date()): Promise<Quali
       const referredSubscription = referral.referredUserId
         ? await prisma.subscription.findUnique({
             where: { userId: referral.referredUserId },
-            select: { status: true, cancelAtPeriodEnd: true, currentPeriodEnd: true },
+            select: { status: true, cancelAtPeriodEnd: true, stripeCustomerId: true },
           })
         : null;
       const referredStatus = referredSubscription?.status;
@@ -303,22 +327,10 @@ export async function qualifyDueReferrals(now: Date = new Date()): Promise<Quali
       // subscription to unpaid or canceled and the branch below ends it then.
       if (referredStatus === "past_due") continue;
 
-      // Still "active" but already set to cancel, or not yet past its first
-      // renewal: not a qualification yet, and not a disqualification. The
-      // credit is a month of the REFERRER's plan, so a $299 customer could
-      // otherwise refer an account of their own at $149, cancel it at once,
-      // and be credited $299 when it's still "active" at day 30. Waiting for
-      // the first renewal to be paid means that costs at least as much as it
-      // earns ($298 paid for a $299 credit), so it no longer pays.
-      // Re-checked each run; if the subscription ends, the branch below
-      // disqualifies it.
-      if (referredStatus === "active") {
-        const renewed =
-          referral.firstPaidAt != null &&
-          referredSubscription?.currentPeriodEnd != null &&
-          referredSubscription.currentPeriodEnd.getTime() >= referral.firstPaidAt.getTime() + 45 * 86_400_000;
-        if (referredSubscription?.cancelAtPeriodEnd || !renewed) continue;
-      }
+      // Still "active" but already set to cancel: not a qualification yet,
+      // and not a disqualification. Re-checked each run; if the subscription
+      // ends, the branch below disqualifies it.
+      if (referredStatus === "active" && referredSubscription?.cancelAtPeriodEnd) continue;
 
       if (referredStatus !== "active") {
         await prisma.referral.update({
@@ -342,7 +354,40 @@ export async function qualifyDueReferrals(now: Date = new Date()): Promise<Quali
       const plan = referrerSub?.plan ?? "profit_intelligence";
       // Firm: a month at its minimum, whatever the firm is billed. A reward
       // that grew with a large firm's bill would make fake referrals pay.
-      const amountCents = monthlyPriceCents(plan, null);
+      // And never more than the referred account has actually paid: a fake
+      // $149 referral that renews once pays $298, and a Firm referrer's
+      // month is $316, so without the cap it turned a profit. A Stripe error
+      // here throws, and the referral is simply tried again next run.
+      const paid: PaidSubscriptionHistory = referredSubscription?.stripeCustomerId
+        ? await paidSubscriptionHistory(referredSubscription.stripeCustomerId)
+        : { revenueCents: 0, paidInvoices: 0, paidRenewals: 0 };
+
+      // Not past a PAID first renewal yet: wait, re-checked each run. The
+      // credit is a month of the REFERRER's plan, so a $299 customer could
+      // otherwise refer an account of their own at $149, cancel it at once,
+      // and be credited $299 when it's still "active" at day 30. Waiting for
+      // the first renewal to be paid means that costs at least as much as it
+      // earns ($298 paid for a $299 credit), so it no longer pays. The
+      // subscription's period end can't show this: Stripe moves it when it
+      // creates the renewal invoice, before the card is charged, so a renewal
+      // that then fails looked renewed and the cap came out at one month.
+      if (paid.revenueCents > 0 && !renewalPaid(paid)) continue;
+
+      const amountCents = cappedRewardCents(monthlyPriceCents(plan, null), paid.revenueCents);
+      if (amountCents <= 0) {
+        // Every payment was covered by credits or refunded: nothing was paid
+        // to share. Ended rather than retried, so it can't sit at the front
+        // of this query forever.
+        await prisma.referral.update({
+          where: { id: referral.id },
+          data: {
+            status: "disqualified",
+            disqualifiedAt: now,
+            disqualifiedReason: "Referred account had paid nothing at the qualification check (all credits or refunds).",
+          },
+        });
+        continue;
+      }
 
       const reward = await prisma.$transaction(async (tx) => {
         const created = await tx.referralReward.create({
@@ -428,7 +473,7 @@ export async function tryApplyReward(rewardId: string): Promise<boolean> {
     const txn = await applyCustomerCredit({
       customerId,
       amountCents: reward.amountCents,
-      description: "JobProfitAI referral reward - one free month",
+      description: "JobProfitAI referral credit",
       idempotencyKey: `referral-reward:${reward.id}`,
       metadata: { rewardId: reward.id, referralId: reward.referralId },
     });

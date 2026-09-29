@@ -53,13 +53,17 @@ describe("weekly brief email", () => {
       body: "Harborview is the one to watch.\n\nEverything else is on track.",
       weekOverWeek: wow,
       metrics: m,
+      tiles: { overEstimate: [], unbilled: [{ jobId: "j1", jobName: "Harborview <Roof>", amount: 31000 }] },
       recipient: "pm@example.com",
       ownerEmail: "owner@example.com",
     });
     expect(email.subject).toBe("Acme & Sons: Weekly Profit Brief, week of Sep 21, 2026");
     expect(email.html).toContain("Acme &amp; Sons");
     expect(email.html).toContain("Work done, not yet billed");
-    expect(email.html).toContain("/dashboard");
+    // The money comes with the job it's on.
+    expect(email.html).toContain("Not yet billed: <a");
+    expect(email.text).toContain("Not yet billed: Harborview <Roof> ($31,000).");
+    expect(email.html).toContain(`/api/company/open?company=conn1&amp;next=${encodeURIComponent("/dashboard")}"`);
     expect(email.html).not.toContain("<Roof>");
     expect(email.text).toContain("Everything else is on track.");
     expect(email.html).toContain("owner@example.com added you");
@@ -88,7 +92,114 @@ describe("profit alert email", () => {
       ownerEmail: "owner@example.com",
     });
     expect(email.subject).toBe("Acme: Harborview needs a look");
-    expect(email.html).toContain("/dashboard/jobs/j1");
+    expect(email.html).toContain(`next=${encodeURIComponent("/dashboard/jobs/j1")}`);
     expect(email.text).toContain("$10,200");
+  });
+});
+
+describe("links in the brief and alert emails open the email's own company", () => {
+  const m = metrics([job("j1", "Harborview Roof", { varianceVsEstimatePct: 0.2, varianceVsEstimate: 14000 })]);
+  const hrefs = (html: string) => Array.from(html.matchAll(/href="([^"]+)"/g), (x) => x[1].replace(/&amp;/g, "&"));
+  const open = "https://jobprofitai.com/api/company/open?company=conn1&next=";
+
+  it("sends every dashboard and Settings link through the company switch", () => {
+    const brief = renderBriefEmail({
+      connectionId: "conn1",
+      companyName: "Acme",
+      weekStarting: m.weekStarting,
+      kind: "narrative",
+      body: "Summary.",
+      weekOverWeek: computeWeekOverWeek(null, m),
+      metrics: m,
+      tiles: { overEstimate: [{ jobId: "j1", jobName: "Harborview Roof", pct: 0.2 }], unbilled: [] },
+      recipient: "owner@example.com",
+      ownerEmail: "owner@example.com",
+    });
+    const alert = renderAlertEmail({
+      connectionId: "conn1",
+      companyName: "Acme",
+      alerts: [{ jobId: "j1", jobName: "Harborview Roof", kind: "over_budget", issue: "Over", financialImpact: 1 }],
+      recipient: "owner@example.com",
+      ownerEmail: "owner@example.com",
+    });
+    for (const html of [brief.html, alert.html]) {
+      // Every link into the app, other than the unsubscribe links.
+      const toApp = hrefs(html).filter((h) => h.startsWith("https://jobprofitai.com") && !h.includes("/api/brief/unsubscribe"));
+      expect(toApp.length).toBeGreaterThan(2);
+      for (const h of toApp) expect(h.startsWith(open)).toBe(true);
+    }
+    expect(hrefs(brief.html)).toContain(`${open}${encodeURIComponent("/dashboard/settings")}`);
+    expect(brief.text).toContain(`Change the day and time: ${open}${encodeURIComponent("/dashboard/settings")}`);
+    expect(alert.text).not.toContain("https://jobprofitai.com/dashboard");
+  });
+
+  it("offers stopping the emails for every company only when the account has more than one", () => {
+    const input = {
+      connectionId: "conn1",
+      companyName: "Acme",
+      weekStarting: m.weekStarting,
+      kind: "narrative" as const,
+      body: "Summary.",
+      weekOverWeek: computeWeekOverWeek(null, m),
+      metrics: m,
+      recipient: "pm@example.com",
+      ownerEmail: "owner@example.com",
+    };
+    expect(renderBriefEmail(input).html).not.toContain("every company on this account");
+    const many = renderBriefEmail({ ...input, hasOtherCompanies: true });
+    expect(many.html).toContain("Stop it for every company on this account");
+    const all = hrefs(many.html).find((h) => h.includes("all=1"))!;
+    const url = new URL(all);
+    // Same signature as the one-company link: it can only remove this address.
+    expect(verifyUnsubscribe(url.searchParams.get("c")!, url.searchParams.get("e")!, url.searchParams.get("t")!)).toBe("pm@example.com");
+  });
+});
+
+describe("the brief's tiles", () => {
+  const input = (m: ConnectionMetrics, extra: Record<string, unknown> = {}) => ({
+    connectionId: "conn1",
+    companyName: "Acme",
+    weekStarting: m.weekStarting,
+    kind: "narrative" as const,
+    body: "Summary.",
+    weekOverWeek: computeWeekOverWeek(null, m),
+    metrics: m,
+    recipient: "a@example.com",
+    ownerEmail: "a@example.com",
+    ...extra,
+  });
+
+  it("never shows unbilled money without the jobs it's on", () => {
+    // Unbilled on the brief's own figures, but the feed (which leaves out
+    // jobs past their estimate and small amounts) wasn't available.
+    const m = metrics([job("j1", "Harborview", { overUnderBilling: -48000 })]);
+    const email = renderBriefEmail(input(m));
+    expect(email.html).not.toContain("Work done, not yet billed");
+    const withFeed = renderBriefEmail(input(m, { tiles: { overEstimate: [], unbilled: [] } }));
+    expect(withFeed.html).not.toContain("Work done, not yet billed");
+  });
+
+  it("names the jobs over their estimate, and says when there are more", () => {
+    const over = Array.from({ length: 7 }, (_, i) => ({ jobId: `j${i}`, jobName: `Job ${i}`, pct: 0.3 - i * 0.01 }));
+    const m = metrics([]);
+    const email = renderBriefEmail(input(m, { tiles: { overEstimate: over, unbilled: null } }));
+    expect(email.text).toContain("Jobs 10%+ over estimate: 7");
+    expect(email.text).toContain("10%+ over estimate: Job 0 (30% over), Job 1 (29% over), Job 2 (28% over), Job 3 (27% over), Job 4 (26% over), and 2 more.");
+  });
+
+  it("points to the 'Is each job a Class?' question while it's unanswered", () => {
+    const m = metrics([]);
+    expect(renderBriefEmail(input(m)).text).not.toContain("Is each job a Class in your QuickBooks?");
+    const pending = renderBriefEmail(input(m, { jobSourceQuestionPending: true }));
+    expect(pending.text).toContain("Is each job a Class in your QuickBooks?");
+    expect(pending.html).toContain("Is each job a Class in your QuickBooks?");
+  });
+
+  it("doesn't call a brief without its written summary an AI summary", () => {
+    const m = metrics([]);
+    expect(renderBriefEmail(input(m)).html).toContain("The summary is written by AI");
+    const without = renderBriefEmail(input(m, { summaryMissing: true, body: "The written summary couldn't be produced this week." }));
+    expect(without.html).not.toContain("written by AI");
+    expect(without.html).toContain("calculated from your QuickBooks data");
   });
 });

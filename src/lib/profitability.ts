@@ -2,7 +2,9 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import { requireFeature } from "./entitlements";
 import { effectiveJobStatus, CLOSED_JOB_WHERE, OPEN_JOB_WHERE, VISIBLE_JOB_WHERE } from "./jobStatus";
-import { forecastIsActionable } from "./forecastRules";
+import { forecastIsActionable, MIN_ENTERED_PERCENT_TO_PROJECT } from "./forecastRules";
+import { wipCountsInTotals, wipScheduleNeed } from "./wipSchedule";
+import { basisCutoff } from "./weekOverWeek";
 export { forecastIsActionable } from "./forecastRules";
 
 // ============================================================================
@@ -154,7 +156,12 @@ export interface WipFigures {
  * Needs a contract value, and either a percent complete or an estimated
  * cost. When cost to date has passed the estimate, cost can no longer say
  * how far along the job is; percent complete is capped at 100% and the
- * figure is marked (costPastEstimate) so nobody reads it as "finished".
+ * figure is marked (costPastEstimate). Those capped figures are not a
+ * measurement: at 100% the whole contract reads as earned, so a job that
+ * ran over shows as finished and under billed. Everything that reports or
+ * adds up over and under billing skips a job marked costPastEstimate (see
+ * wipCountsInTotals); it's kept here only so the forecast rules and the job
+ * page can tell this case apart from "no estimate at all".
  */
 export function computeWip(input: {
   contractValue: number | null;
@@ -191,9 +198,11 @@ export function computeWip(input: {
 
 /**
  * A cost row's amount with labor burden added to time-entry labor.
- * QuickBooks pay rates are wages only; payroll taxes, workers' comp and
- * benefits are the contractor's labor burden setting (a fraction, 0.25 for
- * 25%). Every other cost is as QuickBooks has it.
+ * Time-entry labor is hours at the cost rate on each entry, whatever the
+ * contractor set in QuickBooks: often the wage alone, sometimes more. The
+ * labor burden setting (a fraction, 0.25 for 25%) adds what the rate leaves
+ * out, such as payroll taxes, workers' comp and benefits. Every other cost is
+ * as QuickBooks has it.
  */
 export function burdenedAmount(c: { amount: unknown; qboSourceType?: string | null }, laborBurden: number): number {
   const amount = toNum(c.amount as any);
@@ -410,6 +419,13 @@ export function computeNeedsAttentionForJob(
     peerCompletedCostByCategory?: Record<string, number[]>; // category -> list of totals from peer completed jobs
     /** The job's forecast, when the plan includes forecasting and one is available. */
     forecast?: ForecastResult | null;
+    /**
+     * The cost estimate was filled in from the target margin (Job.estimatedCostSource
+     * "target_margin"), not priced by the contractor. Running over it only says the
+     * margin is below target, which the margin and forecast rules already judge, so
+     * no "over its estimate" item or alert, the same as the brief's tile.
+     */
+    estimateFromTargetMargin?: boolean;
   } = {}
 ): NeedsAttentionItem[] {
   const items: NeedsAttentionItem[] = [];
@@ -465,7 +481,12 @@ export function computeNeedsAttentionForJob(
     });
   }
 
-  if (f.flags.includes("over_budget_10pct_plus") && f.varianceVsEstimate != null && f.varianceVsEstimatePct != null) {
+  if (
+    f.flags.includes("over_budget_10pct_plus") &&
+    f.varianceVsEstimate != null &&
+    f.varianceVsEstimatePct != null &&
+    !opts.estimateFromTargetMargin
+  ) {
     items.push({
       jobId: f.jobId,
       jobName: f.jobName,
@@ -503,8 +524,10 @@ export function computeNeedsAttentionForJob(
 
   // Work done but not billed yet. Cash the contractor has already spent and
   // hasn't asked for. Flagged past $1,000 and 5% of the contract, so
-  // ordinary timing between draws doesn't raise it.
-  if (f.status === "open" && f.wip && f.estimatedRevenue != null && !f.wip.costPastEstimate) {
+  // ordinary timing between draws doesn't raise it. Only on a job the WIP
+  // schedule measures (wipScheduleNeed): not on one whose costs have passed
+  // the estimate, or one entered as under 25% complete with no estimate.
+  if (f.status === "open" && f.wip && f.estimatedRevenue != null && wipScheduleNeed(f) == null) {
     const under = -f.wip.overUnderBilling;
     if (under > 1000 && under > f.estimatedRevenue * 0.05) {
       items.push({
@@ -679,13 +702,17 @@ export function computeForecastAtCompletion(job: JobInput, f: JobFinancials, now
   const forecastCostAtCompletion = Math.max(projected, f.estimatedCost ?? 0, f.costs);
   const forecastProfit = contract - forecastCostAtCompletion;
   const forecastMarginPct = forecastProfit / contract;
+  // A small entered percent is low confidence, like a small share billed:
+  // materials bought early divided by 10% reads as a job three times over
+  // budget. Low confidence keeps it out of the feed and the alerts.
+  const earlyEntry = progressSource === "manual" && progress < MIN_ENTERED_PERCENT_TO_PROJECT;
   const confidence: "high" | "medium" | "low" =
-    progressSource === "manual" ? (progress >= 0.25 ? "high" : "medium") : progress >= 0.5 ? "medium" : "low";
+    progressSource === "manual" ? (earlyEntry ? "low" : "high") : progress >= 0.5 ? "medium" : "low";
 
   const pct = Math.round(progress * 100);
   const method =
     progressSource === "manual"
-      ? `Cost to date divided by your ${pct}% complete${f.estimatedCost != null ? ", and never less than the estimated cost" : ""}.`
+      ? `Cost to date divided by your ${pct}% complete${f.estimatedCost != null ? ", and never less than the estimated cost" : ""}.${earlyEntry ? " Under 25% complete this is an early read: costs bought ahead of the work make it run high." : ""}`
       : `Cost to date divided by the ${pct}% of the contract billed so far${f.estimatedCost != null ? ", and never less than the estimated cost" : ""}. Entering a percent complete makes this more exact.`;
 
   return {
@@ -810,9 +837,9 @@ export interface DataHealthReport {
   costsMatchedViaParentCount: number | null;
   costsMatchedViaParentAmount: number | null;
   /**
-   * Employee time entries in the last 12 months with no pay rate on the
+   * Employee time entries in the last 12 months with no cost rate on the
    * employee, so their hours have no cost. Fixed in QuickBooks by setting
-   * the employee's pay rate (cost rate).
+   * the employee's cost rate.
    */
   timeEntriesWithoutPayRate: number | null;
   // When the sync-derived counters above were measured (the last full sync).
@@ -1297,7 +1324,7 @@ const estimateOrNull = (d: Prisma.Decimal | null | undefined): number | null => 
 /**
  * Jobs carrying labor from both timesheets and journal entries. A payroll
  * service that posts wages to jobs by journal entry, plus timesheets costed
- * at pay rates, counts the same hours twice. Only open jobs and jobs with
+ * at their cost rates, counts the same hours twice. Only open jobs and jobs with
  * activity in the last year are listed.
  */
 export function findDoubleLabor(
@@ -1391,8 +1418,8 @@ async function getPriorMarginsByJob(
   limit = 6,
   /**
    * Snapshots from before this are left out: they were worked out with a
-   * different labor burden, so a margin "decline" across it would only be
-   * the setting changing.
+   * different labor burden or from rows a later sync rebuilt (basisCutoff),
+   * so a margin "decline" across it would only be the basis changing.
    */
   since: Date | null = null
 ): Promise<Record<string, PriorMarginPoint[]>> {
@@ -1580,7 +1607,9 @@ export async function getConnectionProfitData(
     }
   }
 
-  const priorMarginsByJob = await getPriorMarginsByJob(connectionId, 6, connection.laborBurdenSetAt);
+  // Both basis changes (labor burden, and a sync that rebuilt the rows)
+  // end the trend, same as the brief's week-over-week comparison.
+  const priorMarginsByJob = await getPriorMarginsByJob(connectionId, 6, basisCutoff(connection));
   const completedByCategory: Record<string, JobFinancials[]> = {};
   // Peers come from every completed job, not the tab. On the Active tab the
   // tab contains no completed jobs, so the peer comparison silently switched
@@ -1588,6 +1617,7 @@ export async function getConnectionProfitData(
   for (const f of companyLifetimeFinancials) {
     if (f.status === "closed" && f.category) (completedByCategory[f.category] ??= []).push(f);
   }
+  const targetFilledEstimates = new Set(allJobs.filter((j) => j.estimatedCostSource === "target_margin").map((j) => j.id));
   const needsAttention = lifetimeFinancials.flatMap((f) => {
     const peerCompletedCostByCategory: Record<string, number[]> = {};
     if (canBenchmark && f.category && completedByCategory[f.category]) {
@@ -1602,6 +1632,7 @@ export async function getConnectionProfitData(
       priorMarginPcts: marginPctsOnly(priorMarginsByJob[f.jobId]),
       peerCompletedCostByCategory,
       forecast: forecastByJob.get(f.jobId) ?? null,
+      estimateFromTargetMargin: targetFilledEstimates.has(f.jobId),
     });
   });
 
@@ -1812,11 +1843,12 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
       }
     }
   }
-  const priorMarginsByJob = await getPriorMarginsByJob(connection.id, 6, connection.laborBurdenSetAt);
+  const priorMarginsByJob = await getPriorMarginsByJob(connection.id, 6, basisCutoff(connection));
   const needsAttention = computeNeedsAttentionForJob(financials, {
     priorMarginPcts: marginPctsOnly(priorMarginsByJob[job.id]),
     peerCompletedCostByCategory,
     forecast: canForecast ? forecast : null,
+    estimateFromTargetMargin: job.estimatedCostSource === "target_margin",
   });
 
   return {
@@ -1923,6 +1955,11 @@ export async function computeConnectionMetrics(connectionId: string, weekStartin
 
   const jobMetrics: JobMetrics[] = data.jobs.map((f) => {
     const forecast = data.forecasts.get(f.jobId);
+    // Only WIP figures the schedule itself would count: not a job whose cost
+    // has passed its estimate (capped at 100%, it reads as the whole contract
+    // earned and under billed), and not an idle open job's old under billing.
+    // The brief's "work done, not yet billed" tile and the AI both read these.
+    const wip = wipCountsInTotals(f, now) ? f.wip : null;
     return {
       jobId: f.jobId,
       jobName: f.jobName,
@@ -1936,8 +1973,8 @@ export async function computeConnectionMetrics(connectionId: string, weekStartin
       marginPct: f.grossMarginPct,
       varianceVsEstimate: f.varianceVsEstimate,
       varianceVsEstimatePct: f.varianceVsEstimatePct,
-      overUnderBilling: f.wip ? Math.round(f.wip.overUnderBilling) : null,
-      percentComplete: f.wip ? f.wip.percentComplete : null,
+      overUnderBilling: wip ? Math.round(wip.overUnderBilling) : null,
+      percentComplete: wip ? wip.percentComplete : null,
       forecastMarginPct: forecast?.available ? forecast.forecastMarginPct ?? null : null,
       flags: f.flags,
     };

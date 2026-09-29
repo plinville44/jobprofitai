@@ -94,7 +94,7 @@ export default function JobsTable({
         setMessage(`Failed: ${data?.error ?? `Server returned status ${res.status}.`}`);
       }
     } catch (err) {
-      setMessage(`Failed: ${err instanceof Error ? err.message : "Network error - please try again."}`);
+      setMessage(`Failed: ${err instanceof Error ? err.message : "Network error. Please try again."}`);
     }
     setBusy(false);
   }

@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { getAccount, getActiveConnection } from "@/lib/account";
-import { canConnectAnotherCompany } from "@/lib/entitlements";
+import { canConnectAnotherCompany, getEntitlements } from "@/lib/entitlements";
+import { connectNeedsOwner, OWNER_ONLY_CONNECT_MESSAGE, OWNER_ONLY_CONNECT_NOTICE } from "@/lib/connectCompany";
 import { StatusDot } from "@/components/dashboard/Badges";
 import { formatDateTime } from "@/lib/format";
 import SettingsForm from "./SettingsForm";
@@ -29,7 +30,11 @@ const SYNC_STATUS_LABEL: Record<string, string> = {
   error: "Last sync failed",
 };
 
-export default async function SettingsPage() {
+export default async function SettingsPage(props: {
+  // Next.js 16: searchParams arrives as a Promise.
+  searchParams: Promise<{ notice?: string }>;
+}) {
+  const { notice } = await props.searchParams;
   const account = await getAccount();
   if (!account) redirect("/login");
   const isOwner = account.role === "owner";
@@ -50,7 +55,26 @@ export default async function SettingsPage() {
   // The company picked in the company switcher (see src/lib/account.ts).
   // Settings below the companies list apply to that company only.
   const { connection, companies } = await getActiveConnection(account);
-  const permission = await canConnectAnotherCompany(account.ownerId);
+  const [permission, entitlements] = await Promise.all([
+    canConnectAnotherCompany(account.ownerId),
+    getEntitlements(account.ownerId),
+  ]);
+  // On a paid Firm plan each company is billed, so only the owner adds one.
+  const ownerOnlyConnect = !isOwner && connectNeedsOwner(entitlements);
+  const firmBilled = connectNeedsOwner(entitlements);
+  // Client logins (active or invited) per company, for the disconnect warning.
+  const clientLogins = new Map<string, number>();
+  if (isOwner && companies.length > 0) {
+    const now = new Date();
+    const rows = await prisma.teamMember.findMany({
+      where: { ownerUserId: account.ownerId, role: "client", connectionId: { in: companies.map((c) => c.id) } },
+      select: { connectionId: true, acceptedAt: true, expiresAt: true },
+    });
+    for (const r of rows) {
+      if (!r.connectionId || (!r.acceptedAt && r.expiresAt.getTime() <= now.getTime())) continue;
+      clientLogins.set(r.connectionId, (clientLogins.get(r.connectionId) ?? 0) + 1);
+    }
+  }
   const me = await prisma.user.findUnique({ where: { id: account.userId }, select: { intuitSub: true } });
   const marginTargets = connection
     ? await prisma.marginTarget.findMany({ where: { connectionId: connection.id } })
@@ -72,12 +96,24 @@ export default async function SettingsPage() {
     <main>
       <h1 className="text-2xl font-bold text-navy">Settings</h1>
 
+      {notice === OWNER_ONLY_CONNECT_NOTICE ? (
+        <p className="mt-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">{OWNER_ONLY_CONNECT_MESSAGE}</p>
+      ) : null}
+
       {!connection ? (
         <div className="mt-8 rounded-xl border border-gray-200 p-8 text-center">
-          <p className="text-gray-600">Connect your QuickBooks Online company to configure settings.</p>
-          <div className="mt-4 flex justify-center">
-            <ConnectToQuickBooksButton />
-          </div>
+          {ownerOnlyConnect ? (
+            <p className="text-gray-600">
+              No QuickBooks company is connected. On the Firm plan the account owner connects companies.
+            </p>
+          ) : (
+            <>
+              <p className="text-gray-600">Connect your QuickBooks Online company to configure settings.</p>
+              <div className="mt-4 flex justify-center">
+                <ConnectToQuickBooksButton />
+              </div>
+            </>
+          )}
         </div>
       ) : (
         <>
@@ -123,13 +159,25 @@ export default async function SettingsPage() {
                         <ConnectToQuickBooksButton href={`/api/quickbooks/connect?reconnect=${c.id}`} />
                       </div>
                     )}
-                    {isOwner && <ConnectionActions connectionId={c.id} />}
+                    {isOwner && (
+                      <ConnectionActions
+                        connectionId={c.id}
+                        companyName={c.companyName ?? "this company"}
+                        clientLogins={clientLogins.get(c.id) ?? 0}
+                        firmBilled={firmBilled}
+                      />
+                    )}
                   </li>
                 );
               })}
             </ul>
             <div className="mt-4 border-t border-gray-100 pt-4 text-sm">
-              {permission.allowed ? (
+              {ownerOnlyConnect ? (
+                <p className="text-gray-500">
+                  On the Firm plan the monthly bill follows how many companies are connected, so the account owner
+                  connects new ones.
+                </p>
+              ) : permission.allowed ? (
                 <div>
                   <p className="mb-2 font-medium text-navy">Add another company</p>
                   <ConnectToQuickBooksButton />
@@ -202,7 +250,7 @@ export default async function SettingsPage() {
         </>
       )}
 
-      <TeamSection account={account} />
+      <TeamSection account={account} activeConnectionId={connection?.id ?? null} />
 
       {personalSections(isOwner, Boolean(me?.intuitSub))}
     </main>

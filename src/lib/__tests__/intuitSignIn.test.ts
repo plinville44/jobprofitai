@@ -9,7 +9,9 @@ const jar = new Map<string, string>();
 const calls = {
   sessions: [] as string[],
   attach: [] as { ownerId: string; realmId: string }[],
+  attachRoles: [] as (string | undefined)[],
   attachResult: { ok: true, connectionId: "conn_1" } as any,
+  role: "owner" as "owner" | "member" | "client",
   userinfo: null as any,
   revoked: 0,
 };
@@ -52,14 +54,16 @@ vi.mock("@/lib/quickbooks", () => ({
   },
 }));
 vi.mock("@/lib/connectCompany", () => ({
-  attachCompany: async (input: { ownerId: string; realmId: string }) => {
+  OWNER_ONLY_CONNECT_NOTICE: "owner_only_connect",
+  attachCompany: async (input: { ownerId: string; realmId: string; actorRole?: string }) => {
     calls.attach.push({ ownerId: input.ownerId, realmId: input.realmId });
+    calls.attachRoles.push(input.actorRole);
     return calls.attachResult;
   },
 }));
 vi.mock("@/lib/account", () => ({
   ACTIVE_COMPANY_COOKIE: "jpai_company",
-  accountFor: async (userId: string) => ({ userId, ownerId: userId, role: "owner" }),
+  accountFor: async (userId: string) => ({ userId, ownerId: userId, role: calls.role }),
 }));
 vi.mock("@/lib/crypto", () => ({ hashRealmId: (r: string) => `hash:${r}`, legacyHashRealmId: (r: string) => `legacy:${r}` }));
 vi.mock("@/lib/trial", () => ({ newTrialSubscriptionData: () => ({ status: "trialing" }) }));
@@ -81,7 +85,9 @@ beforeEach(() => {
   jar.clear();
   calls.sessions = [];
   calls.attach = [];
+  calls.attachRoles = [];
   calls.attachResult = { ok: true, connectionId: "conn_1" };
+  calls.role = "owner";
   calls.userinfo = { ...verified };
   calls.revoked = 0;
 });
@@ -180,6 +186,18 @@ describe("handleIntuitFlow", () => {
     const { payload } = await begin("appstore");
     const res: any = await handleIntuitFlow("intuit_appstore", payload, "code", "123");
     expect(res.url).toContain("/dashboard/billing?limit=");
+  });
+
+  it("tells attachCompany who is connecting, and sends a team member it refuses to Settings", async () => {
+    // A Firm team member can't add a billed company from the App Store any
+    // more than from Settings: attachCompany decides, given the role.
+    await fake.client.user.create({ data: { id: "u1", email: "sam@builder.com", intuitSub: "intuit-sub-1" } });
+    calls.role = "member";
+    calls.attachResult = { ok: false, code: "owner_only", message: "Only the owner can." };
+    const { payload } = await begin("appstore");
+    const res: any = await handleIntuitFlow("intuit_appstore", payload, "code", "123");
+    expect(calls.attachRoles).toEqual(["member"]);
+    expect(res.url).toBe("https://app.example.com/dashboard/settings?notice=owner_only_connect");
   });
 
   it("rejects flows it doesn't know", async () => {

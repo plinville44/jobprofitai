@@ -120,7 +120,7 @@ export default function SettingsForm({ connectionId, jobTypes, initial }: Props)
         setStatus({ ok: false, message: data?.error ?? `Server returned status ${res.status}.` });
       }
     } catch (err) {
-      setStatus({ ok: false, message: err instanceof Error ? err.message : "Network error - please try again." });
+      setStatus({ ok: false, message: err instanceof Error ? err.message : "Network error. Please try again." });
     }
     setSaving(false);
   }
@@ -276,9 +276,10 @@ export default function SettingsForm({ connectionId, jobTypes, initial }: Props)
             className="mt-1 h-4 w-4 rounded border-gray-300"
           />
           <span>
-            <strong>Count labor from time entries.</strong> Employee hours tagged to a job, at each employee&apos;s pay
-            rate in QuickBooks. Turn off if you already put payroll on jobs another way (checks or journal entries tagged
-            to the job), so labor isn&apos;t counted twice.
+            <strong>Count labor from time entries.</strong> Employee hours tagged to a job, at the cost rate on each
+            time entry, which comes from the employee&apos;s cost rate in QuickBooks. Time for an employee with no cost
+            rate isn&apos;t counted. Turn off if you already put payroll on jobs another way (checks or journal entries
+            tagged to the job), so labor isn&apos;t counted twice.
           </span>
         </label>
 
@@ -299,10 +300,10 @@ export default function SettingsForm({ connectionId, jobTypes, initial }: Props)
               className="mt-1 w-32 rounded-lg border border-gray-300 px-3 py-2 text-sm"
             />
             <p className="mt-1 max-w-xl text-xs text-gray-500">
-              Payroll taxes, workers&apos; comp, insurance and benefits, as a percent of wages. QuickBooks pay rates are
-              wages only, so without this labor reads cheaper than it is. Many contractors&apos; burden falls somewhere
-              between 20% and 40%; your payroll provider or accountant can give you your own figure. Changes apply straight
-              away, with no re-sync.
+              Payroll taxes, workers&apos; comp, insurance and benefits, as a percent of wages. Check your employees&apos;
+              cost rates in QuickBooks first. If they already include these, leave this at 0, or labor is counted twice.
+              If a cost rate is just the hourly wage, enter your burden here; your payroll provider or accountant can give
+              you the figure. Changes apply straight away, with no re-sync.
             </p>
           </div>
         ) : null}
@@ -327,7 +328,8 @@ export default function SettingsForm({ connectionId, jobTypes, initial }: Props)
             onChange={(e) => setAlertsEnabled(e.target.checked)}
             className="h-4 w-4 rounded border-gray-300"
           />
-          Send profit alerts between briefs (a job goes 10% over its estimate, or work gets well ahead of billing)
+          Send profit alerts between briefs, after the nightly sync (an open job&apos;s costs go more than 10% over its
+          estimate, work gets well ahead of billing, or on Pro, a job&apos;s forecast drops below target)
         </label>
 
         <div className="mt-4">

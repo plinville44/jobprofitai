@@ -38,7 +38,7 @@
 
 import type { ForecastResult, JobFinancials } from "./profitability";
 import { forecastIsActionable } from "./forecastRules";
-import { isUnitPriced, type CostCategory, type EstimateLine } from "./qboNormalize";
+import { HOURLY_PRICE_MAX, HOURLY_PRICE_MIN, isUnitPriced, type CostCategory, type EstimateLine } from "./qboNormalize";
 import { formatCurrency } from "./format";
 
 export const CORE_CATEGORIES = ["labor", "materials", "subcontractor", "equipment"] as const;
@@ -453,6 +453,12 @@ export interface SetupHint {
   message: string;
   href: string;
   linkText: string;
+  /**
+   * Shown to a client's view-only login in place of the link, which leads
+   * to something it can't change. Null when there's nothing to add: the
+   * message itself is about how the books are kept in QuickBooks.
+   */
+  clientNote: string | null;
 }
 
 /**
@@ -503,6 +509,8 @@ export interface EstimateFeedEntry {
   historyJobs: number;
   /** How the estimate was checked; a whole-price check speaks to the job type, not the job. */
   method: "by_part" | "whole_job" | "quantities" | null;
+  /** What the quantities came to when they were set aside for being far above past jobs. */
+  quantityMarginOverruled?: number | null;
 }
 
 export interface FeedInput {
@@ -894,7 +902,9 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
     const firmForecast = forecastIsActionable(f, fc);
     const hasOwnEstimate = f.estimatedCost != null && !input.targetFilledEstimates?.has(f.jobId);
     if (target != null && (firmForecast || hasOwnEstimate)) openJobsChecked++;
-    if (f.wip && f.estimatedRevenue != null) billingChecked++;
+    // A job past its estimate can't have its billing checked (the underbilled
+    // test below skips it), so it doesn't count toward "billing checked".
+    if (f.wip && f.estimatedRevenue != null && !f.wip.costPastEstimate) billingChecked++;
     let forecastFlagged = false;
     if (
       target != null &&
@@ -1016,7 +1026,9 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
       cause:
         e.method === "quantities"
           ? null
-          : `Your ${typePhrase(e.typeLabel)} jobs as a group come in below target, so an estimate priced the way they were does too. The fix is likely your ${typePhrase(e.typeLabel)} pricing in general, not only this estimate.`,
+          : e.quantityMarginOverruled != null
+            ? `Costed from its quantities it would earn ${pct(e.quantityMarginOverruled)}, far more than your ${typePhrase(e.typeLabel)} jobs have. That usually means a line was read the wrong way, or labor or installation isn't on the estimate; the Estimate Check shows how each line was read.`
+            : `Your ${typePhrase(e.typeLabel)} jobs as a group come in below target, so an estimate priced the way they were does too. The fix is likely your ${typePhrase(e.typeLabel)} pricing in general, not only this estimate.`,
       action:
         e.method === "by_part"
           ? "Open the Estimate Check for the price that reaches your target and which line is thinnest, then update the estimate in QuickBooks."
@@ -1044,6 +1056,7 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
         : "Set a target margin. Every dollar figure here is measured against it, so without one most of this page stays empty.",
       href: "/dashboard/settings",
       linkText: "Set your target",
+      clientNote: "Your bookkeeper can set it.",
     });
   }
   const finishedUntyped = basis.filter((j) => !j.f.category).length;
@@ -1053,6 +1066,7 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
       message: `${plural(finishedUntyped, "finished job has", "finished jobs have")} no job type, so ${finishedUntyped === 1 ? "it's" : "they're"} left out of the job-type comparisons. We can suggest types for you to check.`,
       href: "/dashboard/jobs#job-types",
       linkText: "Review suggested job types",
+      clientNote: "Your bookkeeper can set job types.",
     });
   }
   const splitCount = usableSplits(basis.filter((j) => mixes.has(j.f.jobId)).map((j) => ({ f: j.f, mix: mixes.get(j.f.jobId)! }))).length;
@@ -1063,6 +1077,7 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
         "Your QuickBooks estimates don't split the price into labor, materials and subs in a way that lines up with your costs, so we can't tell which part of a price is thin. Put labor, materials and subcontracted work on separate lines, each using its own product or service, and this switches on.",
       href: "/dashboard/settings#cost-categories",
       linkText: "See how lines are sorted",
+      clientNote: null,
     });
   }
   if ((input.idleOpenJobs ?? 0) > 0) {
@@ -1071,6 +1086,7 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
       message: `${plural(input.idleOpenJobs!, "open job has", "open jobs have")} had no activity in 90 days. Finished jobs only count here once they're marked completed.`,
       href: "/dashboard/data-health",
       linkText: "Mark them completed",
+      clientNote: "Your bookkeeper can mark them completed.",
     });
   }
   if (basis.length < MIN_JOBS) {
@@ -1079,6 +1095,7 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
       message: `Pricing patterns come from finished jobs with revenue and costs in the last 12 months. You have ${basis.length}; they start at ${MIN_JOBS}.`,
       href: "/dashboard/jobs?status=open",
       linkText: "Mark finished jobs completed",
+      clientNote: "Your bookkeeper can mark finished jobs completed.",
     });
   }
 
@@ -1144,14 +1161,28 @@ export interface EstimateCheckInput {
   history: { f: JobFinancials; mix: PricedMix | null }[];
   now: Date;
   /**
-   * The company's average labor cost per hour (pay rate from time entries,
+   * The company's average labor cost per hour (cost rate from time entries,
    * with labor burden), for costing the hours on labor lines. Null when
    * there are no time entries with hours to average.
    */
   laborRate?: { perHour: number; hours: number; burden: number } | null;
-  /** The labor burden setting as a fraction, for labor items costed at their purchase cost. */
+  /**
+   * The labor burden setting as a fraction, for labor items costed at their
+   * purchase cost. 0 when time-entry labor is off: the setting is hidden
+   * then and applies to nothing else.
+   */
   laborBurden?: number;
+  /** The job type's name, so a result can say "your past roofing jobs". */
+  typeLabel?: string | null;
 }
+
+/**
+ * When the quantities come out this far (in margin, as a fraction) above
+ * the company's own finished jobs of the type, a line was most likely read
+ * the wrong way (an installed price costed as materials only, labor priced
+ * per square or per day read as hours), so the lower figure is used.
+ */
+export const QUANTITY_CROSS_CHECK_GAP = 0.15;
 
 /** An estimate line costed from its quantity. */
 export interface EstimateQuantityLine {
@@ -1160,22 +1191,97 @@ export interface EstimateQuantityLine {
   qty: number;
   /** item_cost: the product or service's purchase cost; labor_rate: hours at the average labor rate. */
   basis: "item_cost" | "labor_rate";
+  /** Cost per unit used, labor burden included where it was added. */
   unitCost: number;
+  /** The purchase cost set in QuickBooks, before any burden (item_cost only). */
+  itemCost: number | null;
+  /** Labor burden added on top of the item cost, as a fraction (0 when none was added). */
+  burdenAdded: number;
   cost: number;
   /** What the estimate charges for the line. */
   price: number;
+}
+
+/** How one estimate line was read, costed or not, in plain words. */
+export interface EstimateLineReading {
+  name: string | null;
+  category: CostCategory;
+  /** The line's whole price on the estimate. */
+  price: number;
+  /** The part of that price costed from the quantity (0 when none was). */
+  costedPrice: number;
+  /** Cost worked out for the costed part; null when the line wasn't costed. */
+  cost: number | null;
+  basis: "item_cost" | "labor_rate" | null;
+  /** "Read as 30 hours at your labor cost of $52.00 an hour, charged at $90.00 an hour." */
+  reading: string;
+}
+
+const qtyText = (n: number) => n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+/** A rate per hour or per unit: "$110", or "$52.33" when there are cents (a $0.45 unit cost isn't "$0"). */
+const rateMoney = (n: number) =>
+  Math.abs(n * 100 - Math.round(n) * 100) < 0.5
+    ? money(n)
+    : n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const burdenText = (f: number) => `${Math.round(f * 1000) / 10}%`;
+
+/** Why a line wasn't costed from its quantity, in the contractor's words. */
+function notCostedReason(l: EstimateLine, laborRate: EstimateCheckInput["laborRate"]): string {
+  const q = l.q ?? 0;
+  if (!(l.a > 0)) return "Not costed: a credit or discount, not a charge.";
+  if (q > 0 && l.qa == null && !isUnitPriced(l.c, l.a / q, l.u)) {
+    return `Not costed: priced as a lump sum (${money(l.a)} for ${qtyText(q)}), not per ${l.c === "labor" ? "hour" : "unit"}.`;
+  }
+  if (l.u != null && l.u > 0) {
+    return `Not costed: no quantity, or priced far from the item cost of ${rateMoney(l.u)} a unit, so it's read as a lump sum.`;
+  }
+  if (l.c === "labor") {
+    if (q > 0 && !(laborRate && laborRate.perHour > 0)) {
+      return "Not costed: there's no average labor cost per hour to cost the hours at. It comes from QuickBooks time entries with hours and cost rates.";
+    }
+    return `Not costed: no hours, or not priced at an hourly rate (${rateMoney(HOURLY_PRICE_MIN)} to ${rateMoney(HOURLY_PRICE_MAX)} an hour), so it's read as a lump sum.`;
+  }
+  if (!l.n) return "Not costed: no product or service on the line to take a cost from.";
+  return "Not costed: no purchase cost is set on this product or service in QuickBooks.";
+}
+
+/** How a costed line was read: the quantity, the cost per unit, and the price per unit it implies. */
+function costedReading(x: EstimateQuantityLine, wholePrice: number): string {
+  const per = x.price / x.qty;
+  let text: string;
+  if (x.basis === "labor_rate") {
+    text = `Read as ${qtyText(x.qty)} ${x.qty === 1 ? "hour" : "hours"} at your labor cost of ${rateMoney(x.unitCost)} an hour, charged at ${rateMoney(per)} an hour.`;
+  } else {
+    const units = `${qtyText(x.qty)} ${x.qty === 1 ? "unit" : "units"}`;
+    text =
+      x.burdenAdded > 0
+        ? `Read as ${units} at the item cost of ${rateMoney(x.itemCost ?? 0)} plus your ${burdenText(x.burdenAdded)} labor burden (item cost plus burden, ${rateMoney(x.unitCost)} a unit), charged at ${rateMoney(per)} a unit.`
+        : `Read as ${units} at the item cost of ${rateMoney(x.unitCost)} a unit, charged at ${rateMoney(per)} a unit.`;
+    // Materials don't usually sell for three times what they cost; an
+    // installed price does, and then the installing isn't in this cost.
+    if (x.category !== "labor" && x.unitCost > 0 && per >= 3 * x.unitCost) {
+      text += ` That's ${(per / x.unitCost).toFixed(1)} times the item cost: if it's sold installed, the installation isn't in this cost.`;
+    }
+  }
+  const rest = wholePrice - x.price;
+  if (rest >= 0.5) text += ` The other ${money(rest)} on this line is priced as a lump sum and isn't costed.`;
+  return text;
 }
 
 /**
  * The lines of an estimate that can be costed from their quantities: any
  * product or service with a purchase cost set in QuickBooks (quantity x
  * that cost, plus the labor burden on labor items, since a purchase cost is
- * a wage), and labor lines priced at an hourly rate (hours x the company's
- * average labor cost per hour, which already carries the burden). A $4,000
- * labor line with a quantity of 1 is a lump sum, not an hour, and is left
- * alone; so is a line priced far from its item's cost per unit. That's
- * judged on each QuickBooks line before same-named lines are merged (the
- * qa field); lines stored before then are judged here as merged.
+ * usually a wage), and labor lines priced at an hourly rate (hours x the
+ * company's average labor cost per hour, which already carries the burden).
+ * A $4,000 labor line with a quantity of 1 is a lump sum, not an hour, and
+ * is left alone; so is a line priced far from its item's cost per unit.
+ * That's judged on each QuickBooks line before same-named lines are merged
+ * (the qa field); lines stored before then are judged here as merged.
+ *
+ * Every line also gets a reading in plain words, costed or not, so a line
+ * read the wrong way (labor priced per square read as hours) shows on the
+ * page instead of hiding inside a total.
  */
 export function costFromQuantities(
   lines: EstimateLine[],
@@ -1185,24 +1291,50 @@ export function costFromQuantities(
   lines: EstimateQuantityLine[];
   cost: number;
   costedPrice: number;
+  readings: EstimateLineReading[];
 } {
   const out: EstimateQuantityLine[] = [];
+  const readings: EstimateLineReading[] = [];
   for (const l of lines) {
     const q = l.q ?? 0;
     const judged = l.qa != null;
     const price = judged ? l.qa! : l.a;
-    if (!(q > 0) || !(price > 0)) continue;
-    if (!judged && !isUnitPriced(l.c, price / q, l.u)) continue;
-    if (l.u != null && l.u > 0) {
-      const unitCost = l.c === "labor" && laborBurden > 0 ? l.u * (1 + laborBurden) : l.u;
-      out.push({ name: l.n, category: l.c, qty: q, basis: "item_cost", unitCost, cost: q * unitCost, price });
-      continue;
+    let costed: EstimateQuantityLine | null = null;
+    if (q > 0 && price > 0 && (judged || isUnitPriced(l.c, price / q, l.u))) {
+      if (l.u != null && l.u > 0) {
+        const burdenAdded = l.c === "labor" && laborBurden > 0 ? laborBurden : 0;
+        const unitCost = l.u * (1 + burdenAdded);
+        costed = { name: l.n, category: l.c, qty: q, basis: "item_cost", unitCost, itemCost: l.u, burdenAdded, cost: q * unitCost, price };
+      } else if (l.c === "labor" && laborRate && laborRate.perHour > 0) {
+        costed = {
+          name: l.n,
+          category: l.c,
+          qty: q,
+          basis: "labor_rate",
+          unitCost: laborRate.perHour,
+          itemCost: null,
+          burdenAdded: 0,
+          cost: q * laborRate.perHour,
+          price,
+        };
+      }
     }
-    if (l.c === "labor" && laborRate && laborRate.perHour > 0) {
-      out.push({ name: l.n, category: l.c, qty: q, basis: "labor_rate", unitCost: laborRate.perHour, cost: q * laborRate.perHour, price });
+    if (costed) {
+      out.push(costed);
+      readings.push({
+        name: l.n,
+        category: l.c,
+        price: l.a,
+        costedPrice: costed.price,
+        cost: costed.cost,
+        basis: costed.basis,
+        reading: costedReading(costed, l.a),
+      });
+    } else {
+      readings.push({ name: l.n, category: l.c, price: l.a, costedPrice: 0, cost: null, basis: null, reading: notCostedReason(l, laborRate) });
     }
   }
-  return { lines: out, cost: out.reduce((s, x) => s + x.cost, 0), costedPrice: out.reduce((s, x) => s + x.price, 0) };
+  return { lines: out, cost: out.reduce((s, x) => s + x.cost, 0), costedPrice: out.reduce((s, x) => s + x.price, 0), readings };
 }
 
 export interface EstimateCategoryCheck {
@@ -1241,10 +1373,18 @@ export interface EstimateCheckResult {
    * page says so.
    */
   methodNote: string | null;
-  /** The lines costed from their quantities (method "quantities"). */
+  /** The lines costed from their quantities (method "quantities", or quantities overruled by past jobs). */
   quantityLines: EstimateQuantityLine[];
   /** Share of the price costed from quantities (0 to 1), when that method was used. */
   quantityCoverage: number | null;
+  /** How every line was read, costed or not, whenever the quantities were worked out. */
+  lineReadings: EstimateLineReading[];
+  /**
+   * The margin the quantities came to when it was far above the company's
+   * past jobs of the type, so the check went by the past jobs instead.
+   * Null otherwise.
+   */
+  quantityMarginOverruled: number | null;
 }
 
 /**
@@ -1295,6 +1435,8 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
     methodNote: null,
     quantityLines: [],
     quantityCoverage: null,
+    lineReadings: [],
+    quantityMarginOverruled: null,
   });
   if (input.amount <= 0) return empty("no_amount", "This estimate has no amount to check.");
   if (target == null) return empty("no_target", "Set a target margin (in Settings) to check estimates against it.");
@@ -1306,46 +1448,60 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
   const qc = costFromQuantities(input.lines, input.laborRate ?? null, input.laborBurden ?? input.laborRate?.burden ?? 0);
   const coverage = qc.costedPrice / input.amount;
   const histOk = history.length >= MIN_JOBS;
+  const pastTypeJobs = input.typeLabel ? `your past ${typePhrase(input.typeLabel)} jobs` : "your past jobs of this type";
+  // Set when the quantities are overruled by the past jobs, below.
+  let overruled: { quantityMarginPct: number; pastMarginPct: number } | null = null;
   if (coverage >= 0.999 || (coverage >= 0.5 && histOk)) {
     const histRatio = histOk ? history.reduce((s, h) => s + h.f.costs, 0) / history.reduce((s, h) => s + h.f.revenue, 0) : null;
     const remainder = Math.max(0, input.amount - qc.costedPrice);
     const expectedCost = qc.cost + (histRatio != null ? remainder * histRatio : 0);
     const expectedMarginPct = 1 - expectedCost / input.amount;
-    const priceAtTarget = expectedCost / (1 - target);
-    const below = expectedMarginPct < target - 1e-9;
-    const shortfall = below ? Math.max(0, priceAtTarget - input.amount) : 0;
-    const share = Math.round(Math.min(1, coverage) * 100);
-    const partial = coverage < 0.999;
-    const hours = qc.lines.filter((l) => l.basis === "labor_rate").reduce((s, l) => s + l.qty, 0);
-    const rate = input.laborRate;
-    const past = histRatio != null ? ` Your past jobs of this type came in at ${pct(1 - histRatio)}.` : "";
-    const lead = `Costed from its quantities, this job costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}`;
-    return {
-      ...base,
-      status: below ? "below_target" : "on_target",
-      method: "quantities",
-      expectedCost,
-      expectedMarginPct,
-      targetMarginPct: target,
-      priceAtTarget,
-      shortfall,
-      confidence: coverage >= 0.8 ? "medium" : "low",
-      confidenceReason: `${plural(qc.lines.length, "line")} costed from quantities, ${share}% of the price${partial ? "; the rest at your usual rate for this type of job" : ""}.`,
-      methodNote:
-        "Lines with a quantity are costed directly: products and services at the purchase cost set on them in QuickBooks" +
-        (qc.lines.some((l) => l.basis === "item_cost" && l.category === "labor") && (input.laborBurden ?? rate?.burden ?? 0) > 0
-          ? " (labor ones plus your labor burden)"
-          : "") +
-        (hours > 0 && rate
-          ? `, and labor hours at your average labor cost of ${money(rate.perHour)} an hour (pay rates from time entries over the last 12 months${rate.burden > 0 ? `, plus your ${Math.round(rate.burden * 1000) / 10}% labor burden` : ""})`
-          : "") +
-        ". Waste, extra trips and work that isn't on the estimate aren't in the quantities, so real jobs usually cost a little more than this; compare it with how your past jobs of this type came in.",
-      quantityLines: qc.lines,
-      quantityCoverage: Math.min(1, coverage),
-      summary: below
-        ? `${lead}. Reaching your ${fmtTarget(target)} target takes about ${money(priceAtTarget)}, ${money(shortfall)} more than quoted.${past}`
-        : `${lead}, at or above your ${fmtTarget(target)} target.${past}`,
-    };
+    // A sanity check against the company's own finished jobs. The quantities
+    // only know what each line is read as: "Shingles installed" costed at a
+    // materials-only item cost, or roofing labor at $90 a square read as
+    // hours, comes out far above anything the company has earned on the
+    // type. False reassurance is the worst way this check can fail, so when
+    // the quantities beat the past jobs by that much, it goes by the lower
+    // of the two (the past jobs' rate, worked out below) and says why.
+    if (histRatio != null && expectedMarginPct - (1 - histRatio) > QUANTITY_CROSS_CHECK_GAP) {
+      overruled = { quantityMarginPct: expectedMarginPct, pastMarginPct: 1 - histRatio };
+    } else {
+      const priceAtTarget = expectedCost / (1 - target);
+      const below = expectedMarginPct < target - 1e-9;
+      const shortfall = below ? Math.max(0, priceAtTarget - input.amount) : 0;
+      const share = Math.round(Math.min(1, coverage) * 100);
+      const partial = coverage < 0.999;
+      const hours = qc.lines.filter((l) => l.basis === "labor_rate").reduce((s, l) => s + l.qty, 0);
+      const rate = input.laborRate;
+      const past = histRatio != null ? ` ${capitalize(pastTypeJobs)} came in at ${pct(1 - histRatio)}.` : "";
+      const lead = `Costed from its quantities, this job costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}`;
+      return {
+        ...base,
+        status: below ? "below_target" : "on_target",
+        method: "quantities",
+        expectedCost,
+        expectedMarginPct,
+        targetMarginPct: target,
+        priceAtTarget,
+        shortfall,
+        confidence: coverage >= 0.8 ? "medium" : "low",
+        confidenceReason: `${plural(qc.lines.length, "line")} costed from quantities, ${share}% of the price${partial ? "; the rest at your usual rate for this type of job" : ""}.`,
+        methodNote:
+          "Lines with a quantity are costed directly: products and services at the purchase cost set on them in QuickBooks" +
+          (qc.lines.some((l) => l.burdenAdded > 0) ? " (labor ones at that cost plus your labor burden)" : "") +
+          (hours > 0 && rate
+            ? `, and labor hours at your average labor cost of ${money(rate.perHour)} an hour (cost rates from time entries over the last 12 months${rate.burden > 0 ? `, plus your ${burdenText(rate.burden)} labor burden` : ""})`
+            : "") +
+          ". Waste, extra trips and work that isn't on the estimate aren't in the quantities, so real jobs usually cost a little more than this; compare it with how your past jobs of this type came in.",
+        quantityLines: qc.lines,
+        quantityCoverage: Math.min(1, coverage),
+        lineReadings: qc.readings,
+        quantityMarginOverruled: null,
+        summary: below
+          ? `${lead}. Reaching your ${fmtTarget(target)} target takes about ${money(priceAtTarget)}, ${money(shortfall)} more than quoted.${past}`
+          : `${lead}, at or above your ${fmtTarget(target)} target.${past}`,
+      };
+    }
   }
 
   if (!histOk) {
@@ -1434,6 +1590,9 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
       ? ` The ${PART_NAMES[thin.p.category]} line is the thinnest: about ${money(thin.gap)} under what ${PART_NAMES[thin.p.category]} usually costs on these jobs at your target.`
       : ` Its ${PART_NAMES[thin.p.category]} line is about ${money(thin.gap)} under what ${PART_NAMES[thin.p.category]} usually costs on these jobs at your target, made up by the other lines.`
     : "";
+  const summary = below
+    ? `If this job goes like your past ones, it costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}. Reaching your ${fmtTarget(target)} target takes about ${money(priceAtTarget)}, ${money(shortfall)} more than quoted.${thinText}`
+    : `If this job goes like your past ones, it costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}, at or above your ${fmtTarget(target)} target.${thinText}`;
   return {
     ...base,
     parts,
@@ -1444,14 +1603,32 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
     targetMarginPct: target,
     priceAtTarget,
     shortfall: below ? shortfall : 0,
-    confidence,
-    confidenceReason,
+    ...(overruled
+      ? {
+          // The quantities and the past jobs disagree too much for either to
+          // be trusted, so the lower is used and the page says why, with how
+          // each line was read beside it.
+          confidence: "low" as const,
+          confidenceReason: `Costed from its quantities it comes to ${pct(overruled.quantityMarginPct)}, far above the ${pct(overruled.pastMarginPct)} ${pastTypeJobs} came in at, so it's judged on the lower figure.`,
+          summary:
+            `Costed from its quantities this comes to ${pct(overruled.quantityMarginPct)}, but ${pastTypeJobs} came in at ${pct(overruled.pastMarginPct)}. ` +
+            `That's too far apart to trust, so it's judged on the lower figure. ${summary} ` +
+            "Check that labor and installation are on the estimate, and that each line below was read the way you meant it.",
+          quantityLines: qc.lines,
+          quantityCoverage: Math.min(1, coverage),
+          lineReadings: qc.readings,
+          quantityMarginOverruled: overruled.quantityMarginPct,
+        }
+      : {
+          confidence,
+          confidenceReason,
+          summary,
+          quantityLines: [],
+          quantityCoverage: null,
+          lineReadings: [],
+          quantityMarginOverruled: null,
+        }),
     methodNote,
-    quantityLines: [],
-    quantityCoverage: null,
-    summary: below
-      ? `If this job goes like your past ones, it costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}. Reaching your ${fmtTarget(target)} target takes about ${money(priceAtTarget)}, ${money(shortfall)} more than quoted.${thinText}`
-      : `If this job goes like your past ones, it costs about ${money(expectedCost)} and earns ${pct(expectedMarginPct)}, at or above your ${fmtTarget(target)} target.${thinText}`,
   };
 }
 
@@ -1482,6 +1659,30 @@ export interface ActionOutcome {
   confidence: "high" | "medium" | "low";
   message: string;
   jobIds: string[];
+  /**
+   * Set when job figures were worked out on other terms after tracking
+   * started: "labor_burden" when the labor burden setting changed, and
+   * "job_figures" for any other rebuild (job setup, time-entry labor, a new
+   * way of reading QuickBooks). The margin saved on the day can't be set
+   * against today's figures then, so the "before" margin is worked out again
+   * from today's figures (baselineRebuilt). Only when that isn't possible is
+   * extraProfit null, with no gain or loss shown.
+   */
+  basisChanged: "labor_burden" | "job_figures" | null;
+  /** The "before" margin the result is set against: the one saved on the day, or the one worked out again. */
+  baselineMarginPct: number;
+  /** Finished jobs behind baselineMarginPct. */
+  baselineJobs: number;
+  /** True when baselineMarginPct was worked out again from today's figures because basisChanged is set. */
+  baselineRebuilt: boolean;
+}
+
+/** When stored job figures last changed terms, from the QuickBooks connection. */
+export interface OutcomeBasis {
+  /** connection.laborBurdenSetAt */
+  laborBurdenSetAt?: Date | null;
+  /** connection.basisChangedAt */
+  basisChangedAt?: Date | null;
 }
 
 function matchesAction(a: TrackedAction, f: JobFinancials): boolean {
@@ -1509,13 +1710,108 @@ function matchesAction(a: TrackedAction, f: JobFinancials): boolean {
 }
 
 /**
+ * The "before" margin of a tracked change, worked out again from today's
+ * stored figures: for when the terms job figures are worked out on (the
+ * labor burden, the job setup, how QuickBooks is read) changed after the
+ * margin was saved, so before and after are figured the same way.
+ *
+ * The jobs are picked by the rule the feed used on the day tracking started:
+ * finished jobs set up before that day whose last cost or invoice fell in
+ * the 12 months up to it, grouped as the tracked item grouped them (its job
+ * type, customer, size or part of the price), with the same minimum number
+ * of jobs. A job with a cost or invoice dated after that day is left out,
+ * since it may not have been finished then. Null when too few jobs are left
+ * to rebuild it from.
+ */
+export function rebuildBaseline(
+  action: TrackedAction,
+  jobs: JobFinancials[],
+  mixes: Map<string, PricedMix>
+): { marginPct: number; jobs: number } | null {
+  const start = action.startedAt.getTime();
+  const basis = finishedBasis(jobs, action.startedAt, PRICING_WINDOW_DAYS).filter(
+    (j) => j.f.lastFinancialActivity!.getTime() <= start && (j.f.qboCreatedAt == null || j.f.qboCreatedAt.getTime() < start)
+  );
+  const judged = basis.filter((j) => j.target != null);
+  let group: BasisJob[];
+  switch (action.kind) {
+    case "job_type":
+      group = basis.filter((j) => j.f.category === action.subjectKey);
+      break;
+    case "customer":
+      group = judged.filter((j) => (j.f.customerName ?? "").trim() === action.subjectKey);
+      break;
+    case "small_jobs": {
+      // New changes store the cost ceiling their baseline was measured with;
+      // older ones the price threshold.
+      const byCost = action.subjectKey.startsWith("cost:");
+      const limit = Number(byCost ? action.subjectKey.slice(5) : action.subjectKey);
+      group = Number.isFinite(limit) && limit > 0 ? judged.filter((j) => (byCost ? j.cost : j.revenue) <= limit) : [];
+      break;
+    }
+    case "cost_category":
+      group = judged;
+      break;
+  }
+  if (action.costCategory) {
+    const splits = usableSplits(group.filter((j) => mixes.has(j.f.jobId)).map((j) => ({ f: j.f, mix: mixes.get(j.f.jobId)! })));
+    if (splits.length < MIN_JOBS) return null;
+    const part = categoryResults(splits).find((r) => r.category === action.costCategory);
+    return part ? { marginPct: part.marginPct, jobs: splits.length } : null;
+  }
+  if (group.length < MIN_JOBS) return null;
+  return { marginPct: groupStats(group).margin, jobs: group.length };
+}
+
+/**
  * Before and after for a pricing change the contractor said they'd make.
  * "After" is jobs set up in QuickBooks after the change started, which is
  * the closest the books come to "priced under it". Their margin (or, for a
  * change to one part of the price, that part's margin) is set against the
  * baseline recorded when the change was tracked.
+ *
+ * The baseline is a number saved on the day tracking started, and job
+ * figures today are worked out on today's terms. When those terms changed
+ * in between (a 30% labor burden when the baseline was saved, 0% now), the
+ * saved number would make the setting look like a gain or a loss, so the
+ * baseline is worked out again from today's figures (rebuildBaseline). Only
+ * when it can't be is no gain or loss shown.
  */
-export function computeActionOutcome(action: TrackedAction, jobs: JobFinancials[], mixes: Map<string, PricedMix>): ActionOutcome {
+export function computeActionOutcome(
+  action: TrackedAction,
+  jobs: JobFinancials[],
+  mixes: Map<string, PricedMix>,
+  basis: OutcomeBasis = {}
+): ActionOutcome {
+  const changedSince = (d: Date | null | undefined) => d != null && d.getTime() > action.startedAt.getTime();
+  // The burden only touches labor, so a change tracked on another part of
+  // the price (materials, subs) is still measured on the same terms.
+  const burdenMatters = action.costCategory == null || action.costCategory === "labor";
+  const basisChanged: ActionOutcome["basisChanged"] =
+    burdenMatters && changedSince(basis.laborBurdenSetAt) ? "labor_burden" : changedSince(basis.basisChangedAt) ? "job_figures" : null;
+  const rebuilt = basisChanged ? rebuildBaseline(action, jobs, mixes) : null;
+  const baseline = {
+    baselineMarginPct: rebuilt ? rebuilt.marginPct : action.baselineMarginPct,
+    baselineJobs: rebuilt ? rebuilt.jobs : action.baselineJobs,
+    baselineRebuilt: rebuilt != null,
+  };
+  const saved = pct(action.baselineMarginPct);
+  // Said when the before figure was worked out again.
+  const rebuiltNote = rebuilt
+    ? `${
+        basisChanged === "labor_burden"
+          ? "Your labor burden setting changed after this started, so the before figure was worked out again with today's setting"
+          : "Your job figures were worked out again after this started, so the before figure was too, from today's figures"
+      } on the ${plural(rebuilt.jobs, "job")} finished in the 12 months before you started tracking: ${pct(rebuilt.marginPct)}, where it read ${saved} on the day you started.`
+    : "";
+  // Said when it couldn't be.
+  const figuredDifferently =
+    basisChanged === "labor_burden"
+      ? `Your labor burden setting changed after this started, so labor was costed one way for the ${saved} before and another way for jobs today.`
+      : basisChanged === "job_figures"
+        ? `Your job figures were worked out again after this started (the way jobs are set up, labor from time entries, or how JobProfitAI reads QuickBooks changed), so the ${saved} before and jobs today were figured different ways.`
+        : "";
+  const cantRebuild = " Too few of the jobs it was based on are left to work it out again on today's figures.";
   const after = jobs.filter(
     (f) =>
       f.qboCreatedAt != null &&
@@ -1550,30 +1846,58 @@ export function computeActionOutcome(action: TrackedAction, jobs: JobFinancials[
       extraProfit: null,
       confidence: "low",
       message:
-        unsplitFinished > 0 && part
+        (unsplitFinished > 0 && part
           ? `${plural(unsplitFinished, "job")} set up since then ${unsplitFinished === 1 ? "has" : "have"} finished, but ${unsplitFinished === 1 ? "its estimate doesn't" : "their estimates don't"} split the price in a way that lines up with the costs, so the ${part} can't be measured on ${unsplitFinished === 1 ? "it" : "them"}.`
           : inProgress > 0
             ? `${plural(inProgress, "job")} set up since then ${inProgress === 1 ? "is" : "are"} still in progress. The result shows when the first one is marked completed.`
-            : "No jobs of this kind have been set up in QuickBooks since then. The result shows once one is priced and finished.",
+            : "No jobs of this kind have been set up in QuickBooks since then. The result shows once one is priced and finished.") +
+        (rebuilt
+          ? ` ${rebuiltNote}`
+          : basisChanged
+            ? ` ${figuredDifferently}${cantRebuild} When jobs finish, their margin will show, but it can't be compared with the ${saved} before.`
+            : ""),
       jobIds: after.map((f) => f.jobId),
+      basisChanged,
+      ...baseline,
     };
   }
 
-  const extraProfit = measured.revenue * (measured.margin - action.baselineMarginPct);
-  const better = measured.margin > action.baselineMarginPct;
+  if (basisChanged && !rebuilt) {
+    return {
+      status: "measured",
+      afterJobs: measured.n,
+      inProgress,
+      afterMarginPct: measured.margin,
+      extraProfit: null,
+      confidence: "low",
+      message: `${plural(measured.n, "finished job")} set up since then earned ${pct(measured.margin)}. ${figuredDifferently}${cantRebuild} The two can't be compared, so no gain or loss is shown.`,
+      jobIds: measured.ids,
+      basisChanged,
+      ...baseline,
+    };
+  }
+
+  const before = baseline.baselineMarginPct;
+  const extraProfit = measured.revenue * (measured.margin - before);
+  const better = measured.margin > before;
+  const confidence = measured.n >= 5 ? "high" : measured.n >= MIN_JOBS ? "medium" : "low";
   return {
     status: "measured",
     afterJobs: measured.n,
     inProgress,
     afterMarginPct: measured.margin,
     extraProfit,
-    confidence: measured.n >= 5 ? "high" : measured.n >= MIN_JOBS ? "medium" : "low",
-    message: `${plural(measured.n, "finished job")} set up since then earned ${pct(measured.margin)}, against ${pct(action.baselineMarginPct)} before. ${
+    // A rebuilt before figure stands on jobs picked again by rule, not the
+    // exact list saved on the day, so it is never called high.
+    confidence: rebuilt && confidence === "high" ? "medium" : confidence,
+    message: `${plural(measured.n, "finished job")} set up since then earned ${pct(measured.margin)}, against ${pct(before)} before. ${
       better
         ? `That's ${money(extraProfit)} more gross profit than the old margin would have made.`
         : `That's ${money(-extraProfit)} less than the old margin would have made, so the change hasn't shown up yet.`
-    }${measured.n < MIN_JOBS ? " Early days: one or two jobs can swing either way." : ""}`,
+    }${measured.n < MIN_JOBS ? " Early days: one or two jobs can swing either way." : ""}${rebuilt ? ` ${rebuiltNote}` : ""}`,
     jobIds: measured.ids,
+    basisChanged,
+    ...baseline,
   };
 }
 

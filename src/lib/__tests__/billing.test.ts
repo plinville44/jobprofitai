@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 vi.mock("stripe", () => ({ default: class {} }));
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 
-import { subscriptionRevenueCents } from "../stripe/billing";
+import { paidSubscriptionHistoryFrom, subscriptionRevenueCents } from "../stripe/billing";
 import { planForPriceId, priceIdForPlan, isStripeConfigured } from "../stripe/client";
 
 /** Builds an invoice in the shape the webhook handler receives. */
@@ -174,5 +174,43 @@ describe("plan ↔ Stripe price mapping", () => {
   it("treats a blank env var as unset", () => {
     process.env.STRIPE_PRICE_PROFIT_INTELLIGENCE_MONTHLY = "   ";
     expect(priceIdForPlan("profit_intelligence")).toBeNull();
+  });
+});
+
+describe("paid subscription history, for referral qualification", () => {
+  function paid(amount: number, reason: string, refunded = 0) {
+    return {
+      lines: { data: [{ type: "subscription", amount, price: { type: "recurring" } }] },
+      amount_paid: amount,
+      billing_reason: reason,
+      charge: { amount_refunded: refunded },
+    } as never;
+  }
+
+  it("counts the first month and a paid renewal", () => {
+    expect(paidSubscriptionHistoryFrom([paid(14_900, "subscription_cycle"), paid(14_900, "subscription_create")])).toEqual({
+      revenueCents: 29_800,
+      paidInvoices: 2,
+      paidRenewals: 1,
+    });
+  });
+
+  it("doesn't count a refunded invoice or one covered entirely by credit", () => {
+    const creditOnly = {
+      lines: { data: [{ type: "subscription", amount: 14_900, price: { type: "recurring" } }] },
+      amount_paid: 0,
+      billing_reason: "subscription_cycle",
+    } as never;
+    expect(
+      paidSubscriptionHistoryFrom([paid(14_900, "subscription_cycle", 14_900), creditOnly, paid(14_900, "subscription_create")])
+    ).toEqual({ revenueCents: 14_900, paidInvoices: 1, paidRenewals: 0 });
+  });
+
+  it("keeps a partly refunded renewal, at what was kept", () => {
+    expect(paidSubscriptionHistoryFrom([paid(14_900, "subscription_cycle", 4_900)])).toEqual({
+      revenueCents: 10_000,
+      paidInvoices: 1,
+      paidRenewals: 1,
+    });
   });
 });

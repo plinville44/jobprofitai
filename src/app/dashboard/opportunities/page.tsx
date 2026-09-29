@@ -108,9 +108,14 @@ export default async function OpportunitiesPage() {
           {feed.setup.map((h) => (
             <p key={h.code} className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
               {h.message}{" "}
-              <Link href={h.href} className="font-semibold text-brand hover:underline">
-                {h.linkText}
-              </Link>
+              {/* A client's view-only login can't change what the link leads to. */}
+              {viewOnly ? (
+                h.clientNote
+              ) : (
+                <Link href={h.href} className="font-semibold text-brand hover:underline">
+                  {h.linkText}
+                </Link>
+              )}
             </p>
           ))}
         </div>
@@ -176,7 +181,9 @@ export default async function OpportunitiesPage() {
             {latestRun ? ` Last written ${formatDateTime(latestRun.generatedAt, connection.emailTimezone)}.` : ""}
           </p>
           {insights.length === 0 ? (
-            <p className="mt-3 text-sm text-gray-500">No notes yet. Click Refresh Analysis to have them written.</p>
+            <p className="mt-3 text-sm text-gray-500">
+              {viewOnly ? "No notes written yet." : "No notes yet. Click Refresh Analysis to have them written."}
+            </p>
           ) : (
             <div className="mt-4 space-y-4">
               {insights.map((insight) => (

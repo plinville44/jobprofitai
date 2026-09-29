@@ -1,6 +1,7 @@
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
-import { getAccount } from "@/lib/account";
+import { connectionForAccount, getAccount } from "@/lib/account";
+import { prisma } from "@/lib/prisma";
 import { getJobProfitData } from "@/lib/profitability";
 import { getEntitlements, requireFeature } from "@/lib/entitlements";
 import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
@@ -12,6 +13,7 @@ import MarginTrendChart from "@/components/charts/MarginTrendChart";
 import JobEditForm from "@/components/dashboard/JobEditForm";
 import { getJobTypes } from "@/lib/jobTypesServer";
 import QuickBooksCheck from "@/components/dashboard/QuickBooksCheck";
+import { NOT_SCHEDULED_NEED_TEXT } from "@/lib/wipSchedule";
 
 export default async function JobDetailPage({
   params,
@@ -32,6 +34,12 @@ export default async function JobDetailPage({
     return <UpgradeRequired access={entitlements.access} />;
   }
 
+  // The job's company through the same check every other page and route
+  // uses: this account's, still connected, and a client login's own company.
+  // A disconnected company's jobs don't open, even from an old link.
+  const job = await prisma.job.findUnique({ where: { id: jobId }, select: { connectionId: true } });
+  if (!job || !(await connectionForAccount(account, job.connectionId))) notFound();
+
   const data = await getJobProfitData(jobId);
   if (!data || data.connectionUserId !== account.ownerId) notFound();
   // A client login sees only its own company's jobs.
@@ -44,6 +52,7 @@ export default async function JobDetailPage({
   const canForecast = Boolean(await requireFeature(account.ownerId, "forecast_at_completion"));
 
   const f = data.financials;
+  const viewOnly = account.role === "client";
 
   return (
     <main>
@@ -71,7 +80,7 @@ export default async function JobDetailPage({
 
       <QuickBooksCheck jobId={f.jobId} />
 
-      {account.role === "client" ? null : <JobEditForm
+      {viewOnly ? null : <JobEditForm
         jobId={f.jobId}
         jobName={f.jobName}
         initialCategory={f.category}
@@ -111,7 +120,7 @@ export default async function JobDetailPage({
       <Section title="Financial Summary">
         <dl className="grid grid-cols-2 gap-4 sm:grid-cols-3">
           <Stat label="Revenue" value={formatCurrency(f.revenue)} help="Invoices and sales receipts for this job, less credit memos and refunds, excluding sales tax." />
-          <Stat label="Actual Cost" value={formatCurrency(f.costs)} help="Bills, expenses, checks and journal entries tagged to this job, less refunds and vendor credits, plus employee time at each employee's pay rate." />
+          <Stat label="Actual Cost" value={formatCurrency(f.costs)} help="Bills, expenses, checks and journal entries tagged to this job, less refunds and vendor credits, plus employee time at the cost rate on each time entry." />
           {f.estimatedRevenue != null && (
             <Stat
               label="Contract Value"
@@ -182,7 +191,19 @@ export default async function JobDetailPage({
       {/* Work in progress: over/under billing for an open job. */}
       {f.status === "open" && (
         <Section title="Work in Progress">
-          {f.wip ? (
+          {f.wip?.costPastEstimate ? (
+            // Past the estimate, percent complete is capped at 100%, so the
+            // whole contract reads as earned and the job looks under billed.
+            // That isn't a measurement: say what the WIP report says instead.
+            <p className="text-sm text-amber-700">
+              {sentence(NOT_SCHEDULED_NEED_TEXT.estimate_passed)} Cost to date can no longer measure progress, so this job
+              is left off the WIP schedule and its totals rather than shown as 100% complete.
+              {/* A client's view-only login has no Job Details form. */}
+              {viewOnly
+                ? " Your bookkeeper can update the estimated cost or enter a percent complete."
+                : " Update the estimated cost or enter a percent complete in Job Details."}
+            </p>
+          ) : f.wip ? (
             <>
               <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                 <Stat
@@ -202,11 +223,12 @@ export default async function JobDetailPage({
                 {f.wip.overUnderBilling >= 0
                   ? `Billed ${formatCurrency(f.wip.overUnderBilling)} ahead of the work done. Good for cash, and a reminder that the remaining work is partly paid for already.`
                   : `About ${formatCurrency(-f.wip.overUnderBilling)} of work is done but not billed yet.`}
-                {f.wip.costPastEstimate
-                  ? " Cost to date is already past the estimate, so cost can no longer measure progress: enter a percent complete in Job Details for an accurate figure."
-                  : f.wip.percentCompleteSource === "cost"
-                    ? " Progress is measured by cost against the estimate; enter a percent complete if the work is further along or behind than spending suggests."
-                    : ""}
+                {/* A client's view-only login has no Job Details form. */}
+                {f.wip.percentCompleteSource === "cost"
+                  ? viewOnly
+                    ? " Progress is measured by cost against the estimate."
+                    : " Progress is measured by cost against the estimate; enter a percent complete if the work is further along or behind than spending suggests."
+                  : ""}
               </p>
             </>
           ) : (
@@ -313,7 +335,7 @@ export default async function JobDetailPage({
         {data.laborBurden > 0 && data.rawCostEntries.some((c) => c.qboSourceType === "TimeActivity") ? (
           <p className="mb-3 text-xs text-gray-500">
             Time-entry labor includes your {Math.round(data.laborBurden * 1000) / 10}% labor burden (set in Settings) on top of
-            the pay rate QuickBooks has.
+            the cost rate on each time entry in QuickBooks.
           </p>
         ) : null}
         <div className="overflow-x-auto">
@@ -331,7 +353,7 @@ export default async function JobDetailPage({
               {data.rawCostEntries.slice(0, 50).map((c) => (
                 <tr key={c.id}>
                   <td className="px-3 py-2 text-gray-500">{formatDate(c.txnDate)}</td>
-                  <td className="px-3 py-2 text-gray-500">{c.qboSourceType}</td>
+                  <td className="px-3 py-2 text-gray-500">{costLabel(c.qboSourceType)}</td>
                   <td className="px-3 py-2 text-gray-600">
                     {categoryLabel(c.category)}
                     {c.accountName ? <span className="block text-xs text-gray-400">{c.accountName}</span> : null}
@@ -343,7 +365,7 @@ export default async function JobDetailPage({
               {data.rawInvoices.slice(0, 50).map((i) => (
                 <tr key={i.id}>
                   <td className="px-3 py-2 text-gray-500">{formatDate(i.txnDate)}</td>
-                  <td className="px-3 py-2 text-gray-500">{revenueLabel(i.qboSourceType, i.status)}</td>
+                  <td className="px-3 py-2 text-gray-500">{revenueLabel(i.qboSourceType, i.status, i.amount)}</td>
                   <td className="px-3 py-2 text-gray-600">Revenue</td>
                   <td className="px-3 py-2 text-gray-600">
                     {i.taxAmount ? `Excludes ${formatCurrency(Math.abs(i.taxAmount))} sales tax` : NO_VALUE}
@@ -401,13 +423,36 @@ export default async function JobDetailPage({
   );
 }
 
-function revenueLabel(type: string, status: string): string {
+function revenueLabel(type: string, status: string, amount: number): string {
   if (type === "SalesReceipt") return "Sales receipt";
   if (type === "CreditMemo") return "Credit memo";
   if (type === "RefundReceipt") return "Refund";
   if (type === "Deposit") return "Bank deposit";
   if (type === "JournalEntry") return "Journal entry";
-  return `Invoice (${status})`;
+  // Income-account lines on checks, expenses, bills and vendor credits
+  // (sync version 6): a refund check to the customer, say. A card credit
+  // brings money back, so it's positive.
+  if (type === "Purchase") return amount < 0 ? "Refund paid" : "Refund received";
+  if (type === "Bill") return "Bill";
+  if (type === "VendorCredit") return "Vendor credit";
+  if (type === "Invoice") return `Invoice (${status})`;
+  return type;
+}
+
+/** QuickBooks' transaction type names, in words. */
+function costLabel(type: string): string {
+  // A supplier refund deposited to a cost account takes cost off the job.
+  if (type === "Deposit") return "Deposit (supplier refund)";
+  if (type === "TimeActivity") return "Time entry";
+  if (type === "JournalEntry") return "Journal entry";
+  if (type === "VendorCredit") return "Vendor credit";
+  if (type === "Purchase") return "Expense";
+  return type;
+}
+
+/** "costs have passed..." as a sentence: capital first letter, full stop. */
+function sentence(text: string): string {
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)}.`;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

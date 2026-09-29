@@ -157,7 +157,8 @@ export default function TermsPage() {
       <LegalSection id="trial" title="4. Free trial">
         <p>
           New accounts get a free trial of {TRIAL_DAYS} days with the features and limits of{" "}
-          {pro.name}. No payment details are needed to start. Near the end of the trial we may
+          {pro.name}, plus the view-only client logins of the {firm.name} plan. No payment details
+          are needed to start. Near the end of the trial we may
           offer a one-time extension of {TRIAL_EXTENSION_DAYS} days in exchange for completing a
           short feedback survey. The extension is available once per account.
         </p>
@@ -181,7 +182,9 @@ export default function TermsPage() {
             <Link href="/pricing" className="font-medium text-jp-blue hover:underline">
               Pricing page
             </Link>{" "}
-            and in your Billing page. Prices are in US dollars and do not include taxes. You are
+            and in your Billing page. If you have more open jobs than {pi.name} covers, we will ask
+            you to move to {pro.name}; nothing stops working. Prices are in US dollars and do not
+            include taxes. You are
             responsible for any sales, use or similar taxes that apply, and where we are required
             to collect them they will be shown on your invoice.
           </p>
@@ -210,9 +213,10 @@ export default function TermsPage() {
         </LegalSub>
         <LegalSub title="Changing plans">
           <p>
-            You can switch plans from the Stripe billing portal. Stripe prorates the change, which
-            means you may be charged the difference right away or receive a credit toward future
-            invoices. If you move to a plan with lower limits, nothing is deleted, but some
+            You can switch between {pi.name} and {pro.name} from the Stripe billing portal. To move
+            to or from the {firm.name} plan, email <SupportEmail /> and we will switch it for you.
+            Stripe prorates a change, which means you may be charged the difference right away or
+            receive a credit toward future invoices. If you move to a plan with lower limits, nothing is deleted, but some
             features may stop working, and you cannot connect additional QuickBooks companies while
             you are over your plan’s limit.
           </p>
@@ -335,7 +339,8 @@ export default function TermsPage() {
           </li>
           <li>
             resell, sublicense or rent the Service, or use it to provide a service to others, or
-            to build a competing product;
+            to build a competing product, except that a {firm.name} account may use the Service to
+            serve the clients whose QuickBooks companies it connects, as Section 2 describes;
           </li>
           <li>
             create multiple accounts or use false information to obtain additional trials,
@@ -448,10 +453,14 @@ export default function TermsPage() {
       <LegalSection id="programs" title="15. Referral and partner programs">
         <LegalSub title="Customer referral program">
           <p>
-            If someone signs up through your referral link, subscribes, and remains a paying
-            customer for {REFERRAL_QUALIFY_DAYS} days without a full refund or chargeback, you earn
-            a credit equal to one month of your own current plan (on {firm.name}, one month at its{" "}
-            {firm.perCompany!.minCompanies}-company minimum). Credits are applied to your
+            If someone signs up through your referral link and subscribes, you earn a credit once
+            at least {REFERRAL_QUALIFY_DAYS} days have passed since their first payment, their first
+            monthly renewal has been paid, their subscription is still active and not set to
+            cancel, and no payment has been fully refunded or charged back. The credit equals one
+            month of your own current plan (on {firm.name}, one month at its{" "}
+            {firm.perCompany!.minCompanies}-company minimum), or what the referred account has
+            paid for its subscription so far, less refunds and taxes, if that is less. Credits are
+            applied to your
             Stripe account balance and come off future JobProfitAI invoices automatically. If you
             are not subscribed when a credit is earned, it is held and applied when you subscribe.
             Credits have no cash value, cannot be transferred, and are not refundable. A referred
@@ -463,7 +472,8 @@ export default function TermsPage() {
         <LegalSub title="Partner program">
           <p>
             Accounting and bookkeeping firms approved into our partner program earn a commission
-            on the subscription payments of clients they refer. The commission rate is {tierSentence}
+            on the subscription payments of clients they refer, except on the {firm.name} plan. The
+            commission rate is {tierSentence}
             , counted at the time each payment is made. Commission is calculated on subscription
             revenue actually collected, excluding taxes, for each referred client’s first{" "}
             {PARTNER_COMMISSION_MONTHS} paid months. The rate that applies when a payment is made
@@ -479,8 +489,11 @@ export default function TermsPage() {
             withhold commissions connected with fraud, self-referral, misleading promotion or a
             breach of these Terms. Partners may not describe JobProfitAI inaccurately, offer
             discounts we have not authorized, or make claims on our behalf. Commission is
-            paid only on subscriptions a referred customer pays for; QuickBooks companies on a{" "}
-            {firm.name} account are paid for by that account and earn no commission for it. Any
+            paid only on subscriptions a referred customer pays for, and never on the {firm.name}{" "}
+            plan: not on QuickBooks companies on a {firm.name} account, which that account pays
+            for, and not on a referred firm&rsquo;s own {firm.name} subscription. {firm.name}{" "}
+            accounts also don&rsquo;t count toward the number of paying referred clients that sets
+            your commission rate. Any
             complimentary account offered to partners is provided at our discretion, set up with
             you directly, and limited to the plan we tell you (currently {pro.name}, for up to{" "}
             {pro.limits.maxConnections} companies); it does not include the {firm.name} plan.

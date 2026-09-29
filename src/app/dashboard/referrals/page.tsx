@@ -29,7 +29,7 @@ const STATUS_COPY: Record<string, { label: string; tone: string; help: string }>
   paid: {
     label: "Subscribed",
     tone: "bg-blue-50 text-blue-700",
-    help: `Your credit is earned after ${REFERRAL_QUALIFY_DAYS} days of paid subscription.`,
+    help: `Your credit is earned once they've paid their first monthly renewal, at least ${REFERRAL_QUALIFY_DAYS} days after their first payment.`,
   },
   qualified: {
     label: "Credit earned",
@@ -96,12 +96,13 @@ export default async function ReferralsPage() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-2xl font-bold text-navy">Refer a contractor, get a free month</h1>
+        <h1 className="text-2xl font-bold text-navy">Refer a contractor, earn a month&apos;s credit</h1>
         <p className="mt-1 max-w-2xl text-sm text-gray-600">
-          Share your link. When someone you refer becomes a paying customer and stays subscribed for{" "}
-          {REFERRAL_QUALIFY_DAYS} days, into their second paid month, you earn a free month of your current plan as an account
-          credit{entitlements.plan === "firm" ? " (for Firm, a month at the 4-company minimum)" : ""}, currently {money(rewardAmount)}. Credits stack and come off future invoices
-          automatically.
+          Share your link. When someone you refer subscribes, pays their first monthly renewal, and is still subscribed and
+          not set to cancel at least {REFERRAL_QUALIFY_DAYS} days after their first payment, you earn an account credit worth
+          one month of your current plan{entitlements.plan === "firm" ? " (for Firm, a month at the 4-company minimum)" : ""},
+          currently {money(rewardAmount)}. If they&apos;ve paid us less than that so far (after refunds, before tax), the
+          credit is what they&apos;ve paid. Credits stack and come off future invoices automatically.
         </p>
       </header>
 
@@ -244,10 +245,11 @@ export default async function ReferralsPage() {
       <section className="rounded-xl border border-gray-200 bg-gray-50 p-6">
         <h2 className="text-base font-semibold text-navy">Are you an accountant or bookkeeper?</h2>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-gray-600">
-          If you bring JobProfitAI to several contractor clients, free months aren&rsquo;t the right
-          deal for you. The Partner Program pays {PARTNER_TIERS[PARTNER_TIERS.length - 1].ratePct}% to{" "}
-          {PARTNER_TIERS[0].ratePct}% recurring commission on subscription revenue for each
-          client&rsquo;s first {PARTNER_COMMISSION_MONTHS} paid months instead.
+          If you bring JobProfitAI to several contractor clients, a month&rsquo;s credit per referral
+          isn&rsquo;t the right deal for you. The Partner Program pays{" "}
+          {PARTNER_TIERS[PARTNER_TIERS.length - 1].ratePct}% to {PARTNER_TIERS[0].ratePct}% recurring
+          commission on subscription revenue for each client&rsquo;s first {PARTNER_COMMISSION_MONTHS} paid
+          months instead (not on the Firm plan).
         </p>
         <Link
           href="/dashboard/partner"

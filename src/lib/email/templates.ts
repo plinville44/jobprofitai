@@ -9,6 +9,7 @@ import {
   TRIAL_EXTENSION_DAYS,
 } from "@/lib/plans";
 import { DEFAULT_TIME_ZONE, formatDateTime } from "@/lib/format";
+import { JOB_SOURCE_QUESTION } from "@/lib/jobSetup";
 
 // Branded transactional email templates.
 //
@@ -413,12 +414,16 @@ export function setupReminderEmail(name: string | null, daysLeft: number): Rende
  * Intelligence stay empty, and they would be looking at the evidence when
  * they conclude the product does not work.
  */
-export function analysisReadyEmail(companyName: string): RenderedEmail {
+export function analysisReadyEmail(companyName: string, opts: { jobSourceQuestionPending?: boolean } = {}): RenderedEmail {
   return buildEmail("Your numbers are in. Here's where to start", {
     preheader: "Your first analysis is done, plus the three things that unlock the rest.",
     heading: "Your numbers are in",
     body: [
       `We've analyzed the job data in ${companyName}. Start on the dashboard: revenue, cost, gross profit and margin for every job, with the ones that need attention listed first.`,
+      // Sent without waiting for the answer, so it points to the question.
+      ...(opts.jobSourceQuestionPending
+        ? [`One question is waiting at the top of your dashboard: "${JOB_SOURCE_QUESTION}" Your answer decides how your jobs are read from QuickBooks, so answer it first.`]
+        : []),
       "Three things are worth five minutes now, because until they're set, parts of JobProfitAI have nothing to work with. QuickBooks doesn't have a field for any of them, which is why they're entered here.",
     ],
     bullets: [
@@ -522,16 +527,52 @@ export function trialExtendedEmail(newEndDate: Date, timeZone?: string): Rendere
   });
 }
 
-export function trialExpiredEmail(): RenderedEmail {
+/**
+ * `firmOffered` is whether Billing offers the Firm plan in this environment
+ * (its Stripe price is set), so the email never names a plan that can't be
+ * chosen there.
+ */
+export function trialExpiredEmail(opts: { firmOffered?: boolean } = {}): RenderedEmail {
+  const firm = PLANS.firm;
   return buildEmail("Your JobProfitAI trial has ended", {
     preheader: "Choose a plan to turn your profit intelligence back on.",
     heading: "Your trial has ended",
     body: [
       "Your free trial is over, so the profit intelligence features are paused for now.",
       "Nothing has been deleted. Your account, your QuickBooks connection and every job we've analyzed are all still here. Choosing a plan turns everything back on exactly as you left it.",
+      ...(opts.firmOffered
+        ? [
+            `Keeping the books for several contractors? The ${firm.name} plan is ${firm.priceLabel} per client company a month, ${firm.perCompany!.minCompanies} companies minimum, with a view-only login for each client. It's on the same page.`,
+          ]
+        : []),
     ],
     cta: { label: "Choose Your Plan", url: appUrl("/dashboard/billing") },
-    footnote: `${PLANS.profit_intelligence.name} is ${PLANS.profit_intelligence.priceLabel}/month, ${PLANS.profit_intelligence_pro.name} is ${PLANS.profit_intelligence_pro.priceLabel}/month. Cancel anytime.`,
+    footnote: `${PLANS.profit_intelligence.name} is ${PLANS.profit_intelligence.priceLabel}/month, ${PLANS.profit_intelligence_pro.name} is ${PLANS.profit_intelligence_pro.priceLabel}/month${
+      opts.firmOffered ? `, ${firm.name} is ${firm.priceLabel} per company/month (${firm.perCompany!.minCompanies} minimum)` : ""
+    }. Cancel anytime.`,
+  });
+}
+
+/**
+ * The weekly brief for a company can't go out because its data can't be
+ * brought up to date from QuickBooks (a class-mode company whose QuickBooks
+ * has no classes, say). Sent to the owner once per problem, not every week
+ * (see sendBriefOnHold), so a brief never just stops with nobody told.
+ * `reason` is shown only when it's a plain sentence meant for customers.
+ */
+export function briefOnHoldEmail(companyName: string, reason: string | null, settingsUrl: string): RenderedEmail {
+  return buildEmail(`${companyName}: the Weekly Profit Brief is on hold`, {
+    preheader: "We couldn't update this company from QuickBooks, so its brief didn't go out.",
+    heading: "The Weekly Profit Brief is on hold",
+    body: [
+      `We couldn't bring ${companyName} up to date from QuickBooks, so its Weekly Profit Brief didn't go out this week. Its figures are still from before our latest update to how QuickBooks is read, and a brief built from them could be wrong.`,
+      reason
+        ? `The last attempt stopped with this message: "${reason}"`
+        : "The last few attempts to read QuickBooks didn't finish. Settings shows the latest message for this company.",
+      "Once QuickBooks can be read again, the brief starts again on its usual schedule. We'll only email you about this once, not every week.",
+    ],
+    cta: { label: "Open Settings", url: settingsUrl },
+    footnote: "If it keeps happening and you can't see why, reply to this email and we'll look into it.",
   });
 }
 
@@ -603,7 +644,7 @@ export function referralSignupEmail(): RenderedEmail {
     heading: "Someone joined through your link",
     body: [
       "A new contractor started a JobProfitAI trial using your referral link.",
-      `If they become a paying customer and stay subscribed for ${REFERRAL_QUALIFY_DAYS} days, into their second paid month, you'll earn a free month of your current plan as an account credit.`,
+      `If they become a paying customer, pay their first monthly renewal, and are still subscribed ${REFERRAL_QUALIFY_DAYS} days after their first payment, you'll earn an account credit worth one month of your current plan, or what they've paid so far if that's less.`,
     ],
     cta: { label: "See your referrals", url: appUrl("/dashboard/referrals") },
     footnote: "We don't share who they are. That's their business, not ours to pass along.",
@@ -612,29 +653,29 @@ export function referralSignupEmail(): RenderedEmail {
 
 export function referralConvertedEmail(): RenderedEmail {
   return buildEmail("One of your referrals just subscribed", {
-    preheader: `${REFERRAL_QUALIFY_DAYS} days of paid subscription and your free month is earned.`,
+    preheader: "Once they've paid their first renewal, you earn a month's credit.",
     heading: "Your referral subscribed",
     body: [
       "Someone who signed up through your link is now a paying JobProfitAI customer.",
-      `Once they've been subscribed for ${REFERRAL_QUALIFY_DAYS} days, your free month is earned automatically and shows up as a credit on your account.`,
+      `Once they've paid their first monthly renewal and are still subscribed ${REFERRAL_QUALIFY_DAYS} days after their first payment, your credit is earned automatically and shows up on your account. It's worth one month of your current plan, or what they've paid so far if that's less.`,
     ],
     cta: { label: "See your referrals", url: appUrl("/dashboard/referrals") },
   });
 }
 
 export function referralRewardEarnedEmail(amountCents: number, applied: boolean): RenderedEmail {
-  return buildEmail("You earned a free month of JobProfitAI", {
+  return buildEmail("You earned a JobProfitAI referral credit", {
     preheader: `A ${formatMoney(amountCents)} credit is on your account.`,
-    heading: "You earned a free month",
+    heading: "You earned a referral credit",
     body: [
-      `One of your referrals has been a paying customer for ${REFERRAL_QUALIFY_DAYS} days, so you've earned a free month of your current plan.`,
+      `One of your referrals has paid their first renewal and is still subscribed, so you've earned a credit of ${formatMoney(amountCents)}: one month of your current plan, or what they had paid so far if that was less.`,
       applied
         ? "The credit is on your account now and will automatically come off your next invoice. If it's larger than one invoice, the remainder carries over."
         : "The credit is recorded and will be applied automatically as soon as you have an active subscription.",
     ],
     callout: { label: "Credit earned", value: formatMoney(amountCents) },
     cta: { label: "See your referrals", url: appUrl("/dashboard/referrals") },
-    footnote: "Credits stack, every qualified referral adds another month.",
+    footnote: "Credits stack: every qualified referral adds another.",
   });
 }
 

@@ -1,5 +1,7 @@
 import { formatCurrency } from "./format";
 import type { OpportunityFeed } from "./opportunities";
+import type { ConnectionMetrics } from "./profitability";
+import { basisChangeSince, type BasisInfo } from "./weekOverWeek";
 
 /**
  * The line the Weekly Profit Brief leads with: money, not a report.
@@ -28,17 +30,28 @@ export interface BriefOpportunitySnapshot {
   billingChecked?: number;
   /** Risk on each open job, to find what's new next week. */
   openRiskByJob: Record<string, number>;
+  /**
+   * The jobs behind unbilledWork, biggest first: the feed's own list, so
+   * the brief's "not yet billed" figure always comes with the jobs in it.
+   * Optional because older snapshots don't have it.
+   */
+  unbilledJobs?: { jobId: string; amount: number }[];
   /** The biggest few items, for the email. */
   top: { title: string; impact: number | null; impactLabel: string; impactKind: "profit" | "cash"; href: string }[];
 }
 
 export function snapshotFromFeed(feed: OpportunityFeed): BriefOpportunitySnapshot {
   const openRiskByJob: Record<string, number> = {};
+  const unbilledJobs: { jobId: string; amount: number }[] = [];
   for (const i of feed.items) {
     if ((i.kind === "open_job_forecast" || i.kind === "open_job_over_estimate") && i.jobIds[0] && i.impact != null) {
       openRiskByJob[i.jobIds[0]] = (openRiskByJob[i.jobIds[0]] ?? 0) + i.impact;
     }
+    if (i.kind === "underbilled" && i.jobIds[0] && i.impact != null) {
+      unbilledJobs.push({ jobId: i.jobIds[0], amount: round(i.impact) });
+    }
   }
+  unbilledJobs.sort((a, b) => b.amount - a.amount);
   const top = feed.items
     .filter((i) => i.section !== "working" && i.impact != null && i.impactKind === "profit")
     .sort((a, b) => (b.impact ?? 0) - (a.impact ?? 0))
@@ -63,6 +76,7 @@ export function snapshotFromFeed(feed: OpportunityFeed): BriefOpportunitySnapsho
     openJobsChecked: s.openJobsChecked,
     billingChecked: s.billingChecked,
     openRiskByJob,
+    unbilledJobs,
     top,
   };
 }
@@ -89,8 +103,22 @@ function priorRiskByJob(priorMetrics: unknown): Record<string, number> | null {
 const MIN_NEWS = 500;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-export function computeBriefHeadline(snapshot: BriefOpportunitySnapshot, priorMetrics: unknown, companyName: string): BriefHeadline {
-  const prior = priorRiskByJob(priorMetrics);
+export function computeBriefHeadline(
+  snapshot: BriefOpportunitySnapshot,
+  priorMetrics: unknown,
+  companyName: string,
+  /**
+   * When the prior snapshot was stored and what has changed since, by the
+   * same rule as "What changed" (basisChangeSince). Risk worked out on other
+   * terms (a new labor burden, a new job setup) isn't "new margin risk":
+   * setting a 30% burden used to put "$17,250 of new margin risk" in the
+   * subject line with nothing changed on the jobs.
+   */
+  basis?: { priorCreatedAt?: Date | null } & BasisInfo
+): BriefHeadline {
+  const comparable =
+    priorMetrics == null || !basis || basisChangeSince({ metrics: priorMetrics, createdAt: basis.priorCreatedAt ?? null }, basis) == null;
+  const prior = comparable ? priorRiskByJob(priorMetrics) : null;
   let newRisk: number | null = null;
   if (prior) {
     newRisk = 0;
@@ -138,6 +166,62 @@ export function computeBriefHeadline(snapshot: BriefOpportunitySnapshot, priorMe
     };
   }
   return { snapshot, newRisk, headline: allClearHeadline(snapshot), subject: null };
+}
+
+// --- The brief's job tiles --------------------------------------------------
+
+/** Past this share over its estimate an open job is flagged, as on the dashboard and in alerts. */
+const OVER_ESTIMATE_PCT = 0.1;
+
+export interface BriefTileJobs {
+  /**
+   * Open jobs 10% or more over a cost estimate the contractor entered or
+   * imported. An estimate filled in from the target margin isn't a budget
+   * anyone agreed to, so the feed leaves it out and so does the brief.
+   */
+  overEstimate: { jobId: string; jobName: string; pct: number }[];
+  /**
+   * Work done and not billed, exactly as the Profit Opportunity feed lists
+   * it: no job whose cost has passed its estimate (its percent complete
+   * can't be measured), no small amounts, no idle jobs. Null when the feed
+   * couldn't be worked out this week: the tile is left off rather than
+   * shown on other rules.
+   */
+  unbilled: { jobId: string; jobName: string; amount: number }[] | null;
+}
+
+/**
+ * The jobs behind the brief's "10%+ over estimate" and "not yet billed"
+ * tiles. Pure. These used to be counted from the brief's own job list on
+ * looser rules than the feed's, so one email could show $48,000 of
+ * unbilled work and name no job anywhere in it.
+ */
+export function briefTileJobs(
+  metrics: Pick<ConnectionMetrics, "jobs" | "briefJobIds">,
+  opts: { targetFilledEstimates?: Iterable<string>; feed?: BriefOpportunitySnapshot | null } = {}
+): BriefTileJobs {
+  const targetFilled = new Set(opts.targetFilledEstimates ?? []);
+  const inBrief = new Set(metrics.briefJobIds);
+  const overEstimate = metrics.jobs
+    .filter(
+      (j) =>
+        inBrief.has(j.jobId) &&
+        j.status === "open" &&
+        j.estimatedCost != null &&
+        j.varianceVsEstimatePct != null &&
+        j.varianceVsEstimatePct > OVER_ESTIMATE_PCT &&
+        !targetFilled.has(j.jobId)
+    )
+    .map((j) => ({ jobId: j.jobId, jobName: j.jobName, pct: j.varianceVsEstimatePct as number }))
+    .sort((a, b) => b.pct - a.pct);
+
+  const names = new Map(metrics.jobs.map((j) => [j.jobId, j.jobName]));
+  const unbilled = opts.feed?.unbilledJobs
+    ? opts.feed.unbilledJobs
+        .filter((u) => u.amount > 0)
+        .map((u) => ({ jobId: u.jobId, jobName: names.get(u.jobId) ?? "A job", amount: u.amount }))
+    : null;
+  return { overEstimate, unbilled };
 }
 
 /**
