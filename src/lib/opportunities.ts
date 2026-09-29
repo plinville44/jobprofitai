@@ -1380,6 +1380,12 @@ export interface EstimateCheckResult {
   /** How every line was read, costed or not, whenever the quantities were worked out. */
   lineReadings: EstimateLineReading[];
   /**
+   * True when lineReadings are shown only to explain why the quantities
+   * weren't used: too little of the price could be costed from them (lump
+   * sums, or no purchase cost on the item), so the check went by past jobs.
+   */
+  readingsUnused?: boolean;
+  /**
    * The margin the quantities came to when it was far above the company's
    * past jobs of the type, so the check went by the past jobs instead.
    * Null otherwise.
@@ -1625,7 +1631,11 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
           summary,
           quantityLines: [],
           quantityCoverage: null,
-          lineReadings: [],
+          // Still shown, so the contractor can see why the lines weren't
+          // costed one by one (a lump sum, or an item with no purchase cost)
+          // and what would let them be.
+          lineReadings: qc.readings,
+          readingsUnused: qc.readings.length > 0,
           quantityMarginOverruled: null,
         }),
     methodNote,

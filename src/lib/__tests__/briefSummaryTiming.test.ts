@@ -10,13 +10,15 @@ import path from "path";
 const ai = {
   calls: [] as { timeoutMs: number; retries: number }[],
   fail: null as Error | null,
+  lastParams: null as any,
 };
 vi.mock("@/lib/ai", () => ({
   AI_MODEL: "test-model",
   aiClient: (timeoutMs: number, retries: number) => ({
     messages: {
-      create: async () => {
+      create: async (params: any) => {
         ai.calls.push({ timeoutMs, retries });
+        ai.lastParams = params;
         if (ai.fail) throw ai.fail;
         return { stop_reason: "end_turn", content: [{ type: "text", text: "Torres Kitchen is over its estimate." }] };
       },
@@ -111,6 +113,24 @@ describe("writing the summary against a deadline", () => {
     const err = await generateWeeklyDigest(metrics as any, "Acme", {} as any, Date.now() + 200_000).catch((e) => e);
     expect(err).not.toBeInstanceOf(SummaryOutOfTimeError);
     expect(err.message).toBe("overloaded");
+  });
+});
+
+describe("what the model is told about estimates", () => {
+  it("marks estimates set from the target margin, and only those", async () => {
+    ai.fail = null;
+    const job = (jobId: string) => ({
+      jobId, jobName: jobId, status: "completed", estimatedCost: 23_800, actualCost: 30_400,
+      varianceVsEstimate: 6_600, varianceVsEstimatePct: 0.277,
+    });
+    const withJobs = { ...metrics, briefJobIds: ["filled", "priced"], jobs: [job("filled"), job("priced")], topConcerns: [job("filled")] };
+    await generateWeeklyDigest(withJobs as any, "Acme", {} as any, Date.now() + 200_000, new Set(["filled"]));
+    const text: string = ai.lastParams.messages[0].content;
+    const data = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
+    expect(data.jobs.find((j: any) => j.jobId === "filled").estimateSetFromTargetMargin).toBe(true);
+    expect(data.jobs.find((j: any) => j.jobId === "priced").estimateSetFromTargetMargin).toBeUndefined();
+    expect(data.topConcerns[0].estimateSetFromTargetMargin).toBe(true);
+    expect(ai.lastParams.system).toMatch(/estimateSetFromTargetMargin/);
   });
 });
 

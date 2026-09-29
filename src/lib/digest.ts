@@ -104,6 +104,7 @@ Accuracy rules, no exceptions:
 - Only a completed job can be under budget. An open job that has spent less than its estimate is not under budget, it is unfinished. Where an open job has spentOfEstimatePct instead of a variance, describe it as spend so far against the estimate ("$8,000 spent of an $11,500 estimate").
 - Do not guess at causes. Say what the numbers show, not why they might be that way. If something looks worth checking, say what to check.
 - There is one cost estimate per job and no estimate per category. costByCategory says where the money went, never which category ran over. Never say an overrun "came from" a category, or from all of them.
+- When a job has "estimateSetFromTargetMargin": true, its estimatedCost is a budget worked out from the target margin, not an estimate the contractor priced. Never say that job went over its estimate or overran it, and never lead with it for that reason. If its cost is above that figure, say it cost more than the target margin allows, and give its marginPct.
 - If a number is missing (no estimate on file, for example), say so plainly instead of guessing.
 - Do not give tax, legal, or accounting advice. Only report what happened on these jobs.
 
@@ -123,9 +124,16 @@ export async function generateWeeklyDigest(
   companyName: string,
   weekOverWeek: WeekOverWeekReport,
   /** Epoch ms the write-up must be finished by (see aiAttemptPlan). */
-  deadline?: number
+  deadline?: number,
+  /** Jobs whose cost estimate was set from the target margin, not priced by the contractor. */
+  targetFilledEstimates: ReadonlySet<string> = new Set()
 ): Promise<string> {
   const inBrief = new Set(metrics.briefJobIds);
+  // Running over a budget worked out from the target margin isn't an
+  // estimate overrun: the contractor never priced it. The model is told
+  // which estimates those are, so it can say what's true.
+  const marked = <T extends { jobId: string }>(j: T) =>
+    targetFilledEstimates.has(j.jobId) ? { ...j, estimateSetFromTargetMargin: true } : j;
   const dh = metrics.briefDataHealth;
   const prompt = `Company: ${companyName}
 Week starting: ${metrics.weekStarting.toISOString().slice(0, 10)}
@@ -135,8 +143,8 @@ Job-to-date figures for the jobs that matter now, plus what changed since the pr
 ${JSON.stringify(
   {
     totals: metrics.totals,
-    jobs: metrics.jobs.filter((j) => inBrief.has(j.jobId)).map(withoutOpenJobUnderspend),
-    topConcerns: metrics.topConcerns.map(withoutOpenJobUnderspend),
+    jobs: metrics.jobs.filter((j) => inBrief.has(j.jobId)).map(withoutOpenJobUnderspend).map(marked),
+    topConcerns: metrics.topConcerns.map(withoutOpenJobUnderspend).map(marked),
     // Counts only. The full lists are on the Data Health page.
     dataHealth: {
       openJobsMissingEstimates: dh.jobsMissingEstimates.length,
@@ -405,7 +413,7 @@ export async function generateWeeklyDigestForConnection(
   try {
     body = opts.storedSummary?.trim()
       ? opts.storedSummary
-      : await generateWeeklyDigest(metrics, companyName, weekOverWeek, deadline);
+      : await generateWeeklyDigest(metrics, companyName, weekOverWeek, deadline, new Set(targetFilled.map((j) => j.id)));
   } catch (err) {
     if (!opts.allowMissingSummary) throw err;
     if (opts.deferWhenOutOfTime && err instanceof SummaryOutOfTimeError) throw err;
