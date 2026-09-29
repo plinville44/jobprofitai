@@ -1381,6 +1381,42 @@ export interface DateRange {
   to: Date;
 }
 
+/**
+ * Whether a cost or invoice dated `txnDate` counts in figures as of the
+ * calendar day `asOf`. QuickBooks dates carry no time and are stored as UTC
+ * midnight of the date (qboDate in src/lib/qboNormalize.ts), and `asOf` is a
+ * date stored the same way. So the whole of the as-of day counts and nothing
+ * dated after it: the company's time zone decides which day is the as-of day
+ * (src/lib/wipSnapshots.ts), not which dates fall on it. Comparing with the
+ * instant the day ended in the company's zone instead would count the next
+ * day's entries for any company west of UTC. Pure.
+ */
+export function datedOnOrBefore(txnDate: Date, asOf: Date): boolean {
+  return txnDate.getTime() < Date.UTC(asOf.getUTCFullYear(), asOf.getUTCMonth(), asOf.getUTCDate() + 1);
+}
+
+/**
+ * Job rows as the books stood at the end of the calendar day `asOf`: costs
+ * and invoices dated after it are dropped, and so is a job QuickBooks created
+ * after it with nothing dated on or before it, since it didn't exist yet (its
+ * creation time is an instant, so this is right to within the company's
+ * offset from UTC). Contract values, cost estimates, percent complete and job
+ * status stay as stored now, because no history of them is kept. Pure.
+ */
+export function jobRowsAsOf<
+  J extends { qboCreatedAt?: Date | null; costEntries: { txnDate: Date }[]; invoices: { txnDate: Date }[] }
+>(jobs: J[], asOf: Date): J[] {
+  const out: J[] = [];
+  for (const j of jobs) {
+    const costEntries = j.costEntries.filter((c) => datedOnOrBefore(c.txnDate, asOf)) as J["costEntries"];
+    const invoices = j.invoices.filter((i) => datedOnOrBefore(i.txnDate, asOf)) as J["invoices"];
+    const createdLater = j.qboCreatedAt != null && !datedOnOrBefore(j.qboCreatedAt, asOf);
+    if (createdLater && costEntries.length === 0 && invoices.length === 0) continue;
+    out.push({ ...j, costEntries, invoices });
+  }
+  return out;
+}
+
 export type JobStatusFilter = "open" | "closed" | "all";
 
 export interface ConnectionProfitData {
@@ -1457,13 +1493,21 @@ const marginPctsOnly = (points: PriorMarginPoint[] | undefined): number[] | unde
  * `dateRange` limits which cost/invoice transactions count toward each job's
  * totals (for the dashboard's date filter); `statusFilter` limits which jobs
  * are included at all. Both default to "everything" when omitted.
+ *
+ * `asOf` (a calendar date, stored as UTC midnight like QuickBooks dates)
+ * works everything out as the books stood at the end of that day: costs and
+ * invoices dated after it are dropped before any figure is worked out, so
+ * lifetimeJobs, Data Health and the rest all see the same books. Contract
+ * values, cost estimates, percent complete and job status are as stored now
+ * (see jobRowsAsOf). For the month-end WIP snapshots; pass `now` as the end
+ * of that day too. Omitted, nothing is dropped.
  */
 export async function getConnectionProfitData(
   connectionId: string,
   now: Date = new Date(),
-  options: { dateRange?: DateRange; statusFilter?: JobStatusFilter } = {}
+  options: { dateRange?: DateRange; statusFilter?: JobStatusFilter; asOf?: Date } = {}
 ): Promise<ConnectionProfitData> {
-  const { dateRange, statusFilter = "all" } = options;
+  const { dateRange, statusFilter = "all", asOf } = options;
 
   const connection = await prisma.quickBooksConnection.findUniqueOrThrow({
     where: { id: connectionId },
@@ -1480,10 +1524,13 @@ export async function getConnectionProfitData(
   //
   // The tab uses effectiveJobStatus, never the raw `status` column, which
   // mirrors QuickBooks and ignores a job the contractor marked complete here.
-  const allJobs = await prisma.job.findMany({
+  const loadedJobs = await prisma.job.findMany({
     where: { connectionId, ...VISIBLE_JOB_WHERE },
     include: { costEntries: true, invoices: true },
   });
+  // Filtered here, before anything below reads a row, so no figure can
+  // include a cost or invoice dated after the as-of day.
+  const allJobs = asOf ? jobRowsAsOf(loadedJobs, asOf) : loadedJobs;
   const laborBurden = laborBurdenOf(connection);
   const jobs =
     statusFilter === "all" ? allJobs : allJobs.filter((j) => effectiveJobStatus(j) === statusFilter);

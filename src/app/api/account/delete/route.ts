@@ -20,7 +20,8 @@ import { getStripe } from "@/lib/stripe/client";
  *   2. Cancel any Stripe subscription, so deleting an account can never
  *      leave someone being billed for a product they no longer have.
  *   3. Delete the user row, which cascades to connections, jobs, cost
- *      entries, invoices, digests, insights, feedback and referral data.
+ *      entries, invoices, digests, month-end WIP snapshots, insights,
+ *      feedback and referral data.
  *
  * Re-authentication with the current password is required. Account deletion
  * is irreversible, and a session cookie alone (on a shared or unattended
@@ -89,7 +90,8 @@ export async function POST(req: NextRequest) {
     }
 
     // 3. Delete the account. Cascades handle connections, jobs, cost
-    //    entries, invoices, digests, insights, trial feedback, referral codes
+    //    entries, invoices, digests, month-end WIP snapshots (through the
+    //    connection), insights, trial feedback, referral codes
     //    and email events - see the onDelete: Cascade rules in schema.prisma.
     //    In-app feedback rows carry the user's id and email but have no
     //    foreign key to User (so they are not cascaded), which is why they
