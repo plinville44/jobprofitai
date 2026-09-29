@@ -184,7 +184,9 @@ export default function PrivacyPage() {
             forecasts and comparisons, and we store the Weekly Profit Briefs, profit alerts and
             insights we generate for you. We also keep records of sync runs, the emails we send you
             (type, recipient, time and delivery status), your subscription status, and referral and
-            partner program activity.
+            partner program activity. We also save month-end copies of your Work in Progress schedule
+            (job and customer names, each job&rsquo;s contract, cost, billing and profit figures, and
+            the totals), and delete them when you delete your account.
           </p>
           <p>
             To limit password guessing we record sign-in attempts as keyed one-way hashes of the

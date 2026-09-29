@@ -264,6 +264,7 @@ model QuickBooksConnection {
   feedback          Feedback[]
   clientLogins      TeamMember[]
   untaggedCosts     UntaggedCost[]
+  wipSnapshots      WipSnapshot[]
 
   @@index([userId])
 }
@@ -1105,4 +1106,65 @@ model JobAlert {
   emailed  Boolean  @default(false)
 
   @@unique([jobId, kind])
+}
+
+// A company's Work in Progress schedule as the books stood at the end of a
+// month, kept so a month-end report can show how each job's expected profit
+// moved from one month to the next ("profit fade"), which sureties and banks
+// watch. That history can't be rebuilt later, so it is saved as it happens.
+// Taken and written by the nightly sync (src/lib/wipSnapshots.ts).
+//
+// Only costs and invoices dated on or before periodEnd count. Contract
+// values, cost estimates, percent complete and job status are whatever was
+// stored when the figures were worked out (takenAt), since no history of
+// those is kept.
+//
+// Worked out again once a day until the 20th of the following month
+// (company time), as bookkeepers finish the month's entries, then frozen
+// (frozenAt) and never changed again. A month that was missed is taken once,
+// frozen at once and marked takenLate.
+//
+// Removed with the company (cascade), so deleting the account removes them.
+// Disconnecting a company keeps them, like its jobs and briefs.
+model WipSnapshot {
+  id            String    @id @default(cuid())
+  connectionId  String
+  connection    QuickBooksConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  // The last day of the month, in the company's time zone (emailTimezone).
+  periodEnd     DateTime  @db.Date
+  // When the figures below were last worked out. createdAt is the first time.
+  takenAt       DateTime
+  frozenAt      DateTime?
+  // Taken after the month's refresh window had closed (a missed run, or a
+  // company that couldn't be taken in time), so it was frozen at once.
+  takenLate     Boolean   @default(false)
+
+  // The basis the figures were worked out on, copied from the company at
+  // takenAt, so a report can tell when two months aren't comparable (see the
+  // matching fields on QuickBooksConnection).
+  syncVersion          Int
+  laborBurdenPct       Decimal?  @db.Decimal(5, 2)
+  jobSource            String
+  laborFromTimeEntries Boolean
+  basisChangedAt       DateTime?
+  laborBurdenSetAt     DateTime?
+
+  // Exactly what buildWipSchedule (src/lib/wipSchedule.ts) produced:
+  inProgress      Json // WipScheduleRow[]: one row per job on the schedule
+  totals          Json // WipScheduleTotals
+  notScheduled    Json // { jobId, jobName, needs }[]
+  completedTotals Json // contracts completed in the 12 months to periodEnd: { revenue, cost, grossProfit, margin }
+  // Those completed contracts one by one (CompletedContractRow[]), so a job
+  // in progress one month and finished the next can have its final gross
+  // profit set against the month before's estimate. And the open jobs left
+  // off for no cost or invoice in 90 days ({ jobId, jobName }[]). Nullable
+  // only because they were added after the table.
+  completed       Json?
+  idle            Json?
+
+  createdAt     DateTime  @default(now())
+
+  @@unique([connectionId, periodEnd])
+  @@index([frozenAt, periodEnd])
 }

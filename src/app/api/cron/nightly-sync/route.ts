@@ -9,6 +9,7 @@ import { evaluateAlerts, markAlertsSent } from "@/lib/alerts";
 import { renderAlertEmail } from "@/lib/email/briefEmail";
 import { sendProfitAlerts } from "@/lib/email/lifecycle";
 import { alertsDelivered, alertSendFailure } from "@/lib/briefSend";
+import { freezeClosedSnapshots, takeWipSnapshot } from "@/lib/wipSnapshots";
 
 /**
  * GET /api/cron/nightly-sync  (Vercel Cron, hourly; see vercel.json)
@@ -30,6 +31,13 @@ import { alertsDelivered, alertSendFailure } from "@/lib/briefSend";
  * the rest (see FULL_SYNC_STEPS in src/lib/quickbooksSync.ts). Before, one
  * that outlasted the time limit was cut off, retried every hour, and took
  * every other sync and alert email in that run down with it.
+ *
+ * Month-end WIP snapshots (src/lib/wipSnapshots.ts) come last, for the
+ * companies this run synced cleanly, once every sync and alert email in the
+ * run is done, so they can never hold one up. They start only while there's
+ * time left (SNAPSHOTS_STOP_STARTING_AFTER_MS); any not reached wait for the
+ * company's next sync, which is fine, as a month's snapshot is taken again
+ * daily for weeks.
  */
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
@@ -57,6 +65,13 @@ const FULL_SYNC_DONE_BY_MS = 220_000;
 const FULL_SYNC_MIN_TIME_MS = 60_000;
 /** A sync still "in progress" after this long was cut off; it's retried like a failed one. */
 const INTERRUPTED_AFTER_MS = 15 * 60_000;
+/**
+ * No WIP snapshot starts after this, leaving a minute before the 300 s limit
+ * for the one being worked out (one company's figures, the same work as a
+ * view of its WIP page) and the response. Later than the full sync's
+ * deadline, and only reached once every sync is done.
+ */
+const SNAPSHOTS_STOP_STARTING_AFTER_MS = 240_000;
 
 type SyncOptions = { deadline?: number; deferFullSync?: boolean; windowStart?: number };
 
@@ -152,6 +167,9 @@ export async function GET(req: NextRequest) {
   };
 
   const results: { connectionId: string; status: string; detail?: string }[] = [];
+  /** Companies whose sync in this run finished cleanly, for the WIP snapshots. */
+  const synced: QuickBooksConnection[] = [];
+  const onSynced = (connection: QuickBooksConnection) => synced.push(connection);
   /** A worker over one queue; workers made from the same call share it. */
   const drain = (queue: QuickBooksConnection[], options: SyncOptions, mayStart: () => boolean) => {
     let next = 0;
@@ -159,7 +177,7 @@ export async function GET(req: NextRequest) {
       while (next < queue.length) {
         if (!mayStart()) return;
         const connection = queue[next++];
-        results.push(await syncAndAlert(connection, pausedFor, options));
+        results.push(await syncAndAlert(connection, pausedFor, options, onSynced));
       }
     };
   };
@@ -168,19 +186,47 @@ export async function GET(req: NextRequest) {
   const fullWorker = drain(fullQueue, { deadline: fullDeadline, windowStart: startedAt }, () => Date.now() + FULL_SYNC_MIN_TIME_MS <= fullDeadline);
   await Promise.all([...Array.from({ length: CONCURRENCY }, () => incrementalWorker()), fullWorker()]);
 
+  // Only now, with every sync and alert email done: one at a time, while
+  // there's time. Freezing first, so a snapshot whose window has closed is
+  // frozen even for a company that wasn't synced (paused, disconnected).
+  const snapshots: { connectionId: string; status: string; detail?: string }[] = [];
+  const snapshotTime = () => Date.now() - startedAt <= SNAPSHOTS_STOP_STARTING_AFTER_MS;
+  let snapshotsFrozen = 0;
+  if (snapshotTime()) {
+    try {
+      snapshotsFrozen = await freezeClosedSnapshots(new Date());
+    } catch (err) {
+      console.error(`nightly-sync: freezing WIP snapshots failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    }
+  }
+  for (const connection of synced) {
+    if (!snapshotTime()) break;
+    let paused: boolean;
+    try {
+      paused = (await pausedFor(connection.userId)).has(connection.id);
+    } catch {
+      continue;
+    }
+    snapshots.push(await takeWipSnapshot(connection.id, { paused }));
+  }
+
   return NextResponse.json({
     ok: true,
     candidates: fullQueue.length + incrementalQueue.length,
     fullSyncs: fullQueue.length,
     processed: results.length,
     results,
+    snapshotsFrozen,
+    snapshots,
   });
 }
 
 async function syncAndAlert(
   connection: QuickBooksConnection,
   pausedFor: (ownerId: string) => Promise<Set<string>>,
-  options: SyncOptions
+  options: SyncOptions,
+  /** Called once the company's sync has finished cleanly (not partway, not deferred). */
+  onSynced: (connection: QuickBooksConnection) => void
 ) {
   // To the back of the queue until tomorrow, and a full sync that's owed
   // waits as long.
@@ -224,6 +270,9 @@ async function syncAndAlert(
       const left = Array.isArray(sync.remaining) ? sync.remaining.length : 0;
       return { connectionId: connection.id, status: "synced", detail: `full sync partway, ${left} step(s) left for the next run` };
     }
+    // Before the alerts, so a failed alert email doesn't cost the company
+    // its WIP snapshot.
+    onSynced(connection);
 
     if (!connection.alertsEnabled || !connection.emailEnabled || connection.emailRecipients.length === 0) {
       return { connectionId: connection.id, status: "synced" };
