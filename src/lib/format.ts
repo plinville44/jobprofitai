@@ -82,6 +82,23 @@ export function formatShortDate(date: Date | null | undefined): string {
  * to UTC rather than throwing, because a page must not 500 over a bad
  * settings string.
  */
+/**
+ * Today's date (or any moment) as the calendar date in the company's time
+ * zone: "Sep 28, 2026". formatDate reads stored dates in UTC on purpose,
+ * because QuickBooks transaction dates are stored as UTC midnight; a moment
+ * like "now" needs the company's own zone, or a report run at 9 pm in
+ * Indiana is dated tomorrow.
+ */
+export function formatDateIn(date: Date | null | undefined, timeZone: string | null | undefined): string {
+  if (!date) return NO_VALUE;
+  const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" };
+  try {
+    return new Date(date).toLocaleDateString("en-US", { ...opts, timeZone: timeZone || "America/New_York" });
+  } catch {
+    return new Date(date).toLocaleDateString("en-US", { ...opts, timeZone: "America/New_York" });
+  }
+}
+
 export function formatDateTime(
   date: Date | null | undefined,
   timeZone: string | null | undefined

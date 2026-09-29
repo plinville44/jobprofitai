@@ -407,3 +407,27 @@ describe("tracked changes: the before figure worked out again on today's figures
     expect(out.message).not.toContain("can't be compared");
   });
 });
+
+describe("Estimate Check: lines shown even when the past jobs decide", () => {
+  it("lists lump-sum lines as not costed, and marks the readings as unused (Estimate 1007 on the test company)", () => {
+    // Labor $4,000, materials $3,000, subs $2,000, each a quantity of 1 with no purchase cost.
+    const lines: EstimateLine[] = [
+      { n: "Labor", c: "labor", a: 4_000, q: 1, u: null, qa: 4_000 },
+      { n: "Materials", c: "materials", a: 3_000, q: 1, u: null, qa: 3_000 },
+      { n: "Subcontracted Work", c: "subcontractors", a: 2_000, q: 1, u: null, qa: 2_000 },
+    ] as EstimateLine[];
+    const r = computeEstimateCheck({ amount: 9_000, lines, targetPct: 20, history: roofingAt18(), now: NOW, typeLabel: "Remodel" });
+    expect(r.method).not.toBe("quantities");
+    expect(r.readingsUnused).toBe(true);
+    expect(r.lineReadings).toHaveLength(3);
+    expect(r.lineReadings.every((l) => l.cost == null)).toBe(true);
+    expect(r.quantityCoverage).toBeNull();
+  });
+
+  it("uses no readings flag when the quantities decide", () => {
+    const lines: EstimateLine[] = [{ n: "Shingles", c: "materials", a: 3_300, q: 30, u: 100, qa: 3_300 }];
+    const r = computeEstimateCheck({ amount: 3_300, lines, targetPct: 5, history: [], now: NOW, typeLabel: "Roofing" });
+    expect(r.method).toBe("quantities");
+    expect(r.readingsUnused).toBeUndefined();
+  });
+});

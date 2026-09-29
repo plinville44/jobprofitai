@@ -464,6 +464,10 @@ function UntaggedCostList({
               ? "Open each one in QuickBooks, pick the job's class on the line, and save. It leaves this list after your next sync."
               : "Open each one in QuickBooks, pick the customer or project on the line, and save. It leaves this list after your next sync."}
           </p>
+          <p className="mt-1 text-xs text-gray-500">
+            If QuickBooks asks you to sign in first, it may open a blank form instead of the cost. Once you&apos;re signed in,
+            click the link again.
+          </p>
         </div>
         <a
           href={`/api/data-health/untagged-costs?connectionId=${encodeURIComponent(connectionId)}`}

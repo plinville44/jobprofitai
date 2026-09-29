@@ -5,7 +5,7 @@ import { getEntitlements } from "@/lib/entitlements";
 import { getConnectionProfitData, laborBurdenOf } from "@/lib/profitability";
 import { buildWipSchedule, NOT_SCHEDULED_NEED_TEXT } from "@/lib/wipSchedule";
 import { prisma } from "@/lib/prisma";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatCurrency, formatDateIn } from "@/lib/format";
 import PrintButton from "./PrintButton";
 
 export const metadata = { title: "Work in Progress Schedule", robots: { index: false } };
@@ -59,7 +59,7 @@ export default async function WipReportPage() {
       <header className="border-b border-gray-300 pb-4">
         <h1 className="text-2xl font-bold">{company}</h1>
         <p className="text-lg">Work in Progress Schedule</p>
-        <p className="mt-1 text-sm text-gray-600">As of {formatDate(now)}. Prepared from QuickBooks Online data with JobProfitAI. Unaudited.</p>
+        <p className="mt-1 text-sm text-gray-600">As of {formatDateIn(now, connection.emailTimezone)}. Prepared from QuickBooks Online data with JobProfitAI. Unaudited.</p>
       </header>
 
       <section className="mt-6">
@@ -217,9 +217,9 @@ export default async function WipReportPage() {
         <p className="mt-2">
           Earned revenue is the contract times percent complete. Over billed (billings in excess of costs and estimated
           earnings) and under billed (costs and estimated earnings in excess of billings) are billed to date less earned
-          revenue. Where the estimated total cost is above the contract, the whole expected loss is recognized now: the
-          provision for loss is the part not yet in earned revenue less cost to date, and gross profit to date is the full
-          expected loss.
+          revenue. Where the estimated total cost is above the contract, the whole expected loss is recognized now: gross
+          profit to date is the full expected loss, and the provision for loss is the part of it still to come from the
+          work left to do.
         </p>
         <p className="mt-2">
           Contract value is the job&apos;s accepted QuickBooks estimates, including change orders; with none accepted, the

@@ -87,8 +87,17 @@ export async function GET(req: NextRequest) {
   return new NextResponse(toCsv([header, ...rows]), {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="wip-${name}-${now.toISOString().slice(0, 10)}.csv"`,
+      "Content-Disposition": `attachment; filename="wip-${name}-${isoDateIn(now, connection.emailTimezone)}.csv"`,
       "Cache-Control": "no-store",
     },
   });
+}
+
+/** YYYY-MM-DD in the company's time zone, so a file saved at 9 pm isn't dated tomorrow. */
+function isoDateIn(date: Date, timeZone: string | null | undefined): string {
+  try {
+    return date.toLocaleDateString("en-CA", { timeZone: timeZone || "America/New_York" });
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
 }

@@ -186,7 +186,9 @@ function EstimateCard({ e, options, readOnly }: { e: CheckedEstimate; options: {
       {c.lineReadings.length > 0 && (
         <div className="mt-3 max-w-4xl overflow-x-auto">
           <p className="text-xs font-medium text-gray-600">
-            {c.quantityMarginOverruled != null
+            {c.readingsUnused
+              ? unusedReadingsText(c.lineReadings)
+              : c.quantityMarginOverruled != null
               ? `How each line was read from its quantity. Costed this way the estimate comes to ${formatPct(c.quantityMarginOverruled)}, which is why it was set aside; a line read the wrong way usually explains it.`
               : "How each line was read from its quantity. If a line was read the wrong way (a price per square or per day read as hours, or an installed price costed as materials only), the result above is off too."}
           </p>
@@ -291,4 +293,19 @@ function EstimateCard({ e, options, readOnly }: { e: CheckedEstimate; options: {
       )}
     </article>
   );
+}
+
+/**
+ * The line table's heading when the lines were read but too little of the
+ * price could be costed from them, so the check went by past jobs. Says how
+ * much could be, and what lets a line be costed.
+ */
+function unusedReadingsText(lines: { price: number; costedPrice: number }[]): string {
+  const price = lines.reduce((t, l) => t + l.price, 0);
+  const costed = lines.reduce((t, l) => t + l.costedPrice, 0);
+  const lead =
+    costed <= 0 || price <= 0
+      ? "How each line was read. None of them could be costed line by line"
+      : `How each line was read. Only ${formatPct(costed / price, 0)} of the price could be costed line by line`;
+  return `${lead}, so the check above goes by your past jobs. A line can be costed when it's priced per hour or per unit rather than as a lump sum and, for a product or service, has a purchase cost set in QuickBooks.`;
 }
