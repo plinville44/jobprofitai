@@ -1496,7 +1496,7 @@ export function computeEstimateCheck(input: EstimateCheckInput): EstimateCheckRe
           "Lines with a quantity are costed directly: products and services at the purchase cost set on them in QuickBooks" +
           (qc.lines.some((l) => l.burdenAdded > 0) ? " (labor ones at that cost plus your labor burden)" : "") +
           (hours > 0 && rate
-            ? `, and labor hours at your average labor cost of ${money(rate.perHour)} an hour (cost rates from time entries over the last 12 months${rate.burden > 0 ? `, plus your ${burdenText(rate.burden)} labor burden` : ""})`
+            ? `, and labor hours at your average labor cost of ${rateMoney(rate.perHour)} an hour (cost rates from time entries over the last 12 months${rate.burden > 0 ? `, plus your ${burdenText(rate.burden)} labor burden` : ""})`
             : "") +
           ". Waste, extra trips and work that isn't on the estimate aren't in the quantities, so real jobs usually cost a little more than this; compare it with how your past jobs of this type came in.",
         quantityLines: qc.lines,
