@@ -360,29 +360,37 @@ export default async function JobDetailPage({
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {data.rawCostEntries.slice(0, 50).map((c) => (
-                <tr key={c.id}>
-                  <td className="px-3 py-2 text-gray-500">{formatDate(c.txnDate)}</td>
-                  <td className="px-3 py-2 text-gray-500">{costLabel(c.qboSourceType)}</td>
-                  <td className="px-3 py-2 text-gray-600">
-                    {categoryLabel(c.category)}
-                    {c.accountName ? <span className="block text-xs text-gray-400">{c.accountName}</span> : null}
-                  </td>
-                  <td className="px-3 py-2 text-gray-600">{c.description ?? NO_VALUE}</td>
-                  <td className="px-3 py-2 text-right text-navy">{formatCurrency(c.amount)}</td>
-                </tr>
-              ))}
-              {data.rawInvoices.slice(0, 50).map((i) => (
-                <tr key={i.id}>
-                  <td className="px-3 py-2 text-gray-500">{formatDate(i.txnDate)}</td>
-                  <td className="px-3 py-2 text-gray-500">{revenueLabel(i.qboSourceType, i.status, i.amount)}</td>
-                  <td className="px-3 py-2 text-gray-600">Revenue</td>
-                  <td className="px-3 py-2 text-gray-600">
-                    {i.taxAmount ? `Excludes ${formatCurrency(Math.abs(i.taxAmount))} sales tax` : NO_VALUE}
-                  </td>
-                  <td className={`px-3 py-2 text-right ${i.amount < 0 ? "text-red-700" : "text-green-700"}`}>{formatCurrency(i.amount)}</td>
-                </tr>
-              ))}
+              {/* One list, newest first, costs and revenue together, so the
+                  table reads in date order. Each side is still capped at 50. */}
+              {[
+                ...data.rawCostEntries.slice(0, 50).map((c) => ({ kind: "cost" as const, at: new Date(c.txnDate).getTime(), c })),
+                ...data.rawInvoices.slice(0, 50).map((i) => ({ kind: "revenue" as const, at: new Date(i.txnDate).getTime(), i })),
+              ]
+                .sort((a, b) => b.at - a.at)
+                .map((row) =>
+                  row.kind === "cost" ? (
+                    <tr key={`c-${row.c.id}`}>
+                      <td className="px-3 py-2 text-gray-500">{formatDate(row.c.txnDate)}</td>
+                      <td className="px-3 py-2 text-gray-500">{costLabel(row.c.qboSourceType)}</td>
+                      <td className="px-3 py-2 text-gray-600">
+                        {categoryLabel(row.c.category)}
+                        {row.c.accountName ? <span className="block text-xs text-gray-400">{row.c.accountName}</span> : null}
+                      </td>
+                      <td className="px-3 py-2 text-gray-600">{row.c.description ?? NO_VALUE}</td>
+                      <td className="px-3 py-2 text-right text-navy">{formatCurrency(row.c.amount)}</td>
+                    </tr>
+                  ) : (
+                    <tr key={`r-${row.i.id}`}>
+                      <td className="px-3 py-2 text-gray-500">{formatDate(row.i.txnDate)}</td>
+                      <td className="px-3 py-2 text-gray-500">{revenueLabel(row.i.qboSourceType, row.i.status, row.i.amount)}</td>
+                      <td className="px-3 py-2 text-gray-600">Revenue</td>
+                      <td className="px-3 py-2 text-gray-600">
+                        {row.i.taxAmount ? `Excludes ${formatCurrency(Math.abs(row.i.taxAmount))} sales tax` : NO_VALUE}
+                      </td>
+                      <td className={`px-3 py-2 text-right ${row.i.amount < 0 ? "text-red-700" : "text-green-700"}`}>{formatCurrency(row.i.amount)}</td>
+                    </tr>
+                  )
+                )}
             </tbody>
           </table>
           {data.rawCostEntries.length === 0 && data.rawInvoices.length === 0 && (
