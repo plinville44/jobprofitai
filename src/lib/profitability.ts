@@ -227,6 +227,14 @@ export function computeJobFinancials(job: JobInput, ctx: FinancialContext): JobF
   for (const c of job.costEntries) {
     costByCategory[c.category] = (costByCategory[c.category] ?? 0) + c.amount;
   }
+  // A category whose costs cancel out has no cost on the job. A bill held in
+  // Construction in Progress and the journal entry that moves it to cost of
+  // goods sold net to nothing in the asset's category: listed, it read "Other
+  // $0" in the job's cost breakdown (QuickBooks' own report shows nothing),
+  // and it counted as a second category, raising the job's data confidence.
+  for (const [category, amount] of Object.entries(costByCategory)) {
+    if (Math.abs(amount) < 0.005) delete costByCategory[category];
+  }
 
   const lastCostDate = job.costEntries.reduce<Date | null>(
     (latest, c) => (!latest || c.txnDate > latest ? c.txnDate : latest),
@@ -1850,9 +1858,16 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
   // saw "Forecast at Completion is part of Profit Intelligence" beside a
   // chart whose last bar was labelled "Forecast profit".
   const canForecast = Boolean(await requireFeature(connection.userId, "forecast_at_completion"));
+  // Only a forecast firm enough to act on ends the bridge. A low-confidence
+  // one (a small share billed, a small percent entered, or costs further
+  // along than the bills) can read as a job three times over budget when
+  // the materials were simply bought early; the forecast panel says why
+  // there's no forecast yet instead.
   const leakage = computeProfitLeakage(
     financials,
-    canForecast ? forecast : { available: false, reason: "Not on this plan." }
+    canForecast && forecastIsActionable(financials, forecast)
+      ? forecast
+      : { available: false, reason: canForecast ? "Too early to forecast." : "Not on this plan." }
   );
 
   // Peer costs for the outlier rule: other completed jobs in the same
