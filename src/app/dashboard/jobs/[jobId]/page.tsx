@@ -14,6 +14,8 @@ import JobEditForm from "@/components/dashboard/JobEditForm";
 import { getJobTypes } from "@/lib/jobTypesServer";
 import QuickBooksCheck from "@/components/dashboard/QuickBooksCheck";
 import { NOT_SCHEDULED_NEED_TEXT } from "@/lib/wipSchedule";
+import { forecastIsActionable, MIN_ENTERED_PERCENT_TO_PROJECT } from "@/lib/forecastRules";
+import type { ForecastResult, JobFinancials } from "@/lib/profitability";
 
 export default async function JobDetailPage({
   params,
@@ -294,6 +296,14 @@ export default async function JobDetailPage({
                   See plans on the Billing page.
                 </Link>
               </p>
+            ) : data.forecast.available && !forecastIsActionable(f, data.forecast) ? (
+              <div className="mt-2">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <MiniStat label="Actual cost to date" value={formatCurrency(data.forecast.actualCostToDate)} />
+                  <MiniStat label="Estimated cost" value={data.forecast.estimatedCost != null ? formatCurrency(data.forecast.estimatedCost) : "Not set"} />
+                </div>
+                <p className="mt-3 text-sm text-gray-600">{forecastNotYetText(f, data.forecast)}</p>
+              </div>
             ) : data.forecast.available ? (
               <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <MiniStat label="Actual cost to date" value={formatCurrency(data.forecast.actualCostToDate)} />
@@ -480,4 +490,25 @@ function Stat({ label, value, help }: { label: string; value: string; help: stri
       <p className="text-base font-semibold text-navy">{value}</p>
     </div>
   );
+}
+
+/**
+ * Why an open job shows no forecast figures yet. A forecast from a small
+ * share billed or a small percent entered divides early costs by a small
+ * number: $30,000 of materials on a job 10% billed reads as a job three
+ * times over budget. The feed, alerts and WIP page already leave these out;
+ * the job page says why instead of showing the number.
+ */
+function forecastNotYetText(f: JobFinancials, fc: ForecastResult): string {
+  const pctText = fc.progress != null ? `${Math.round(fc.progress * 100)}%` : null;
+  if (fc.progressSource === "manual" && fc.progress != null && fc.progress < MIN_ENTERED_PERCENT_TO_PROJECT) {
+    return `Too early to forecast: the ${pctText} complete entered is too small to project from. The forecast appears once the job is ${Math.round(MIN_ENTERED_PERCENT_TO_PROJECT * 100)}% along.`;
+  }
+  if (fc.progressSource === "billing" && f.wip != null && f.wip.overUnderBilling < 0) {
+    return "Not forecast yet: the costs are further along than the bills, so this job may be under billed rather than over budget. Enter a percent complete in Job Details for a forecast.";
+  }
+  if (fc.progressSource === "billing") {
+    return `Too early to forecast from billing: ${pctText ?? "little"} of the contract is billed so far. Enter a percent complete in Job Details for a forecast now.`;
+  }
+  return "Too early to forecast this job reliably. Enter a percent complete in Job Details for a forecast.";
 }

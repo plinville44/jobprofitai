@@ -270,6 +270,24 @@ describe("computeJobFinancials", () => {
     expect(f.grossMarginPct).toBeCloseTo(3700 / 8500);
   });
 
+  it("leaves out a cost category that nets to nothing (a Construction in Progress bill and its closing entry)", () => {
+    // The bill to Construction in Progress is "other"; the closing journal
+    // entry debits subcontractors and credits Construction in Progress.
+    const f = computeJobFinancials(
+      makeJob({
+        invoices: [inv(15000)],
+        costEntries: [cost("other", 10000), cost("subcontractor", 10000), cost("other", -10000)],
+        estimatedCost: null,
+      }),
+      makeCtx()
+    );
+    expect(f.costs).toBe(10000);
+    expect(f.costByCategory).toEqual({ subcontractor: 10000 });
+    // One category, not two: the same confidence as a job with only subcontractor costs.
+    expect(f.dataConfidence).toBe("low");
+    expect(f.confidenceReasons).toContain("Costs are only recorded in one category so far.");
+  });
+
   it("flags stale_job for an open job with no synced activity in 30+ days, and only for open jobs", () => {
     const staleOpen = computeJobFinancials(
       makeJob({ invoices: [inv(1000, subDays(NOW, 45))], status: "open" }),
