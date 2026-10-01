@@ -51,13 +51,6 @@ const SETUP_REMINDER_AFTER_DAYS = 3;
  *  enough that they have an honest opinion worth hearing. */
 const TESTIMONIAL_AFTER_PAID_DAYS = 21;
 
-/**
- * For Sentry's cron monitor: a minute over the 300 s limit, so a run that
- * uses all of it isn't called timed out. One the platform cuts off never
- * sends its last check-in, and Sentry reports it as timed out after this.
- */
-const MONITOR_MAX_RUNTIME_MINUTES = 6;
-
 interface Counters {
   trialsExpired: number;
   setupReminders: number;
@@ -82,7 +75,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
   // After the check above, so a call that isn't Vercel's never checks in.
-  return withCronMonitor("lifecycle", "0 * * * *", MONITOR_MAX_RUNTIME_MINUTES, runLifecycle);
+  return withCronMonitor("lifecycle", "0 * * * *", runLifecycle);
 }
 
 async function runLifecycle() {

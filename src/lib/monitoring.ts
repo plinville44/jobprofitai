@@ -64,7 +64,7 @@ export interface SentryEvent {
   tags: Record<string, string>;
 }
 
-export type CheckInStatus = "in_progress" | "ok" | "error";
+export type CheckInStatus = "ok" | "error";
 
 export interface SentryCheckIn {
   check_in_id: string;
@@ -76,7 +76,6 @@ export interface SentryCheckIn {
   monitor_config?: {
     schedule: { type: "crontab"; value: string };
     checkin_margin: number;
-    max_runtime: number;
     timezone: string;
   };
 }
@@ -98,8 +97,12 @@ const MAX_TEXT = 500;
  * Sentry's quota in a day; the first few say all there is to say.
  */
 const MAX_REPORTS_PER_MINUTE = 20;
-/** How late a scheduled job may check in before Sentry calls the run missed. */
-const CHECKIN_MARGIN_MINUTES = 5;
+/**
+ * How late a scheduled job's check-in may arrive before Sentry calls the run
+ * missed. A run checks in when it ends, so this covers the platform's 300 s
+ * limit on a run plus a late start.
+ */
+export const CHECKIN_MARGIN_MINUTES = 10;
 
 /**
  * Reads a DSN of the form https://<publicKey>@<host>/<projectId> (a path
@@ -315,9 +318,9 @@ export function errorEnvelope(event: SentryEvent, now: number = Date.now()): str
  * A check-in envelope. Follows Sentry's documented check_in item (the shape
  * its own SDKs send: an item header of {"type":"check_in"} and a payload
  * with check_in_id, monitor_slug, status, duration in seconds, environment,
- * release and, on the first check-in, monitor_config) as closely as known
- * here. Not verified against Sentry from this sandbox: the admin test route
- * checks error events only, so the first production runs are the test.
+ * release and monitor_config). Sentry accepted this shape in production on
+ * September 30, 2026: the nightly-sync monitor was created from it and its
+ * runs show as ok.
  */
 export function checkInEnvelope(checkIn: SentryCheckIn, now: number = Date.now()): string {
   return envelope({ sent_at: new Date(now).toISOString() }, "check_in", checkIn);
@@ -433,53 +436,47 @@ function isFailedResponse(result: unknown): boolean {
 }
 
 /**
- * Runs a scheduled job and tells Sentry's cron monitoring about it: "in
- * progress" when it starts, then "ok", or "error" when the job throws or
- * returns a response with a 5xx status, with how long it took. The first
- * check-in carries the schedule (UTC), so Sentry creates the monitor itself
- * the first time; a run that never checks in, or never finishes (cut off at
- * the platform's time limit), is reported by Sentry as missed or timed out.
+ * Runs a scheduled job and tells Sentry's cron monitoring how it went, with
+ * one check-in when the job ends: "ok", or "error" when the job throws or
+ * returns a response with a 5xx status, with how long it took. Every
+ * check-in carries the schedule (UTC), so Sentry creates the monitor from
+ * whichever one it sees first.
+ *
+ * One check-in, not "in progress" at the start and another at the end.
+ * Sentry can take in two check-ins sent a fraction of a second apart in
+ * either order, and a run with nothing to do (most weekly-email runs) ends
+ * that quickly. On September 30, 2026, weekly-email's first production run
+ * did: its "ok" reached Sentry before the "in progress" that creates the
+ * monitor, was dropped as "Monitor not found", and Sentry then reported the
+ * run, which had finished, as timed out. A single check-in can't arrive out
+ * of order. A run the platform cuts off sends nothing, and Sentry reports it
+ * as missed once CHECKIN_MARGIN_MINUTES have passed, so a run that never
+ * finishes is still reported.
  *
  * The job's result is returned unchanged and its error rethrown unchanged.
- * The "in progress" check-in is sent alongside the job rather than before
- * it, so it doesn't eat into the job's time budget, and is finished before
- * the last check-in goes, so the two arrive in order.
  */
-export async function withCronMonitor<T>(
-  slug: string,
-  schedule: string,
-  maxRuntimeMinutes: number,
-  run: () => Promise<T>
-): Promise<T> {
-  const checkInId = newId();
+export async function withCronMonitor<T>(slug: string, schedule: string, run: () => Promise<T>): Promise<T> {
   const startedAt = Date.now();
-  const seconds = () => Math.round(Date.now() - startedAt) / 1000;
-  const opening = sendCheckIn({
-    check_in_id: checkInId,
-    monitor_slug: slug,
-    status: "in_progress",
-    monitor_config: {
-      schedule: { type: "crontab", value: schedule },
-      checkin_margin: CHECKIN_MARGIN_MINUTES,
-      max_runtime: maxRuntimeMinutes,
-      timezone: "UTC",
-    },
-  });
+  const checkIn = (status: CheckInStatus) =>
+    sendCheckIn({
+      check_in_id: newId(),
+      monitor_slug: slug,
+      status,
+      duration: Math.round(Date.now() - startedAt) / 1000,
+      monitor_config: {
+        schedule: { type: "crontab", value: schedule },
+        checkin_margin: CHECKIN_MARGIN_MINUTES,
+        timezone: "UTC",
+      },
+    });
   let result: T;
   try {
     result = await run();
   } catch (err) {
-    await opening;
-    await sendCheckIn({ check_in_id: checkInId, monitor_slug: slug, status: "error", duration: seconds() });
+    await checkIn("error");
     throw err;
   }
-  await opening;
-  await sendCheckIn({
-    check_in_id: checkInId,
-    monitor_slug: slug,
-    status: isFailedResponse(result) ? "error" : "ok",
-    duration: seconds(),
-  });
+  await checkIn(isFailedResponse(result) ? "error" : "ok");
   return result;
 }
 
