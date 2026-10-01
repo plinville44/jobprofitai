@@ -206,6 +206,7 @@ vi.mock("@/lib/quickbooks", () => ({
 
 import { runSyncForConnection, SYNC_VERSION } from "../quickbooksSync";
 import {
+  computeConnectionMetrics,
   getConnectionProfitData,
   getJobProfitData,
   type ConnectionProfitData,
@@ -656,6 +657,29 @@ describe("messy real-world data, seeded and synced", () => {
       expect(added((s) => s.health.jobsWithoutEnoughData)).toEqual([]);
       expect(added((s) => s.health.jobsMissingCosts)).toEqual([]);
       expect(added((s) => s.health.jobsWithDoubleLabor)).toEqual([]);
+    });
+  });
+
+  describe("Weekly Profit Brief data", () => {
+    it("gives the written summary only the forecasts firm enough to act on, as the job page shows them", async () => {
+      const m = await computeConnectionMetrics("c1", new Date());
+      const job = (name: string) => m.jobs.find((j) => j.jobName === name)!;
+      const raw = (name: string) => after.wipData.forecasts.get(jobByName(name).id)!;
+      // Forecasts exist for these two, but from billing that's behind the
+      // work: the job page calls them too early to say, so the brief must not
+      // pass them on. The test company's brief of Sep 28, 2026 called MX01
+      // "forecasting a negative 200% margin" and MX02 "forecast to finish at
+      // a negative 41.7% margin".
+      expect([raw("MX01 Early Materials").available, formatPct(raw("MX01 Early Materials").forecastMarginPct)]).toEqual([true, "-200.0%"]);
+      expect([raw("MX02 Past Estimate").available, formatPct(raw("MX02 Past Estimate").forecastMarginPct)]).toEqual([true, "-41.7%"]);
+      expect(job("MX01 Early Materials").forecastMarginPct).toBeNull();
+      expect(job("MX02 Past Estimate").forecastMarginPct).toBeNull();
+      // Firm ones still go through: the loss the alert email warned about,
+      // and a job billed ahead of its work.
+      expect(formatPct(job("MX04 Expected Loss").forecastMarginPct)).toBe("-20.0%");
+      expect(formatPct(job("MX03 Billed Past Contract").forecastMarginPct)).toBe("28.4%");
+      // The forecast loss counts toward what the summary is pointed at first.
+      expect(m.topConcerns.map((j) => j.jobName)).toContain("MX04 Expected Loss");
     });
   });
 

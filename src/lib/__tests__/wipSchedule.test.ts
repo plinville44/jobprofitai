@@ -1,3 +1,5 @@
+import { readFileSync } from "fs";
+import { join } from "path";
 import { describe, it, expect, vi } from "vitest";
 
 // profitability.ts imports the Prisma client for its async wrappers; the
@@ -210,3 +212,16 @@ describe("WIP schedule: idle open jobs (C15h)", () => {
     expect(s.idle).toEqual([]);
   });
 });
+
+describe("forecast margin on the WIP schedule", () => {
+  const read = (rel: string) => readFileSync(join(__dirname, "..", "..", rel), "utf8");
+  it("shows only forecasts firm enough to act on, on the page and in the CSV, by the job page's rule", () => {
+    for (const file of ["app/dashboard/wip/page.tsx", "app/api/wip/export/route.ts"]) {
+      const src = read(file);
+      expect({ file, rule: src.includes("forecastIsActionable(job, f)") }).toEqual({ file, rule: true });
+      // The looser rule let a forecast from billing behind the work onto a schedule that goes to banks.
+      expect({ file, loose: src.includes('confidence !== "low"') }).toEqual({ file, loose: false });
+    }
+  });
+});
+

@@ -39,6 +39,31 @@ describe("weekly brief headline", () => {
     expect(computeBriefHeadline(snap(), {}, "Acme").subject).toBeNull();
   });
 
+  it("leads with the bigger money: a pending estimate only when it's at least the risk on open jobs", () => {
+    // The test company's brief of Sep 28, 2026: $84 light against $24,000 at risk.
+    const both = computeBriefHeadline(
+      snap({ openJobRisk: 24_000, openJobsAtRisk: 2, estimatesFlagged: 1, estimatesShortfall: 84 }),
+      null,
+      "Acme"
+    );
+    expect(both.headline).toBe("$24,000 is at risk on 2 open jobs. 1 pending estimate also looks $84 light against your target margin.");
+    expect(both.subject).toBeNull();
+    const estimateBigger = computeBriefHeadline(
+      snap({ openJobRisk: 2_000, openJobsAtRisk: 1, estimatesFlagged: 2, estimatesShortfall: 6_500 }),
+      null,
+      "Acme"
+    );
+    expect(estimateBigger.headline).toBe("2 pending estimates look $6,500 light against your target margin.");
+    expect(estimateBigger.subject).toBe("Acme: 2 estimates priced below your target");
+    // New risk of $500 or more still leads either way.
+    const news = computeBriefHeadline(
+      snap({ openJobRisk: 9_000, openJobsAtRisk: 1, openRiskByJob: { a: 9_000 }, estimatesFlagged: 1, estimatesShortfall: 20_000 }),
+      { opportunities: { openRiskByJob: { a: 1_000 } } },
+      "Acme"
+    );
+    expect(news.headline).toContain("$8,000 of new margin risk");
+  });
+
   it("states small amounts rather than calling them nothing, and asks for a target when there isn't one", () => {
     expect(computeBriefHeadline(snap({ openJobRisk: 200, openJobsAtRisk: 1, pricingGap: 300 }), null, "Acme").headline).toBe("$200 is at risk on 1 open job.");
     expect(computeBriefHeadline(snap({ pricingGap: 300 }), null, "Acme").headline).toContain("would have added $300");

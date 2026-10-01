@@ -134,7 +134,10 @@ export function computeBriefHeadline(
       subject: `${companyName}: ${formatCurrency(newRisk)} of new margin risk this week`,
     };
   }
-  if (snapshot.estimatesFlagged > 0) {
+  // A pending estimate can still be fixed before it goes out, so it leads,
+  // but not over more money at risk on open jobs: "1 pending estimate looks
+  // $84 light" once headed a brief with $24,000 at risk on two jobs below it.
+  if (snapshot.estimatesFlagged > 0 && snapshot.estimatesShortfall >= snapshot.openJobRisk) {
     return {
       snapshot,
       newRisk,
@@ -150,10 +153,14 @@ export function computeBriefHeadline(
     return { snapshot, newRisk, headline: `${formatCurrency(newRisk)} of new margin risk on your open jobs since the last brief.`, subject: null };
   }
   if (snapshot.openJobRisk > 0) {
+    const estimates =
+      snapshot.estimatesFlagged > 0
+        ? ` ${plural(snapshot.estimatesFlagged, "pending estimate")} also ${snapshot.estimatesFlagged === 1 ? "looks" : "look"} ${formatCurrency(snapshot.estimatesShortfall)} light against your target margin.`
+        : "";
     return {
       snapshot,
       newRisk,
-      headline: `${formatCurrency(snapshot.openJobRisk)} is at risk on ${plural(snapshot.openJobsAtRisk, "open job")}.`,
+      headline: `${formatCurrency(snapshot.openJobRisk)} is at risk on ${plural(snapshot.openJobsAtRisk, "open job")}.${estimates}`,
       subject: null,
     };
   }

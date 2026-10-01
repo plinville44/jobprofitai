@@ -5,6 +5,7 @@ import { getEntitlements } from "@/lib/entitlements";
 import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
 import { getConnectionProfitData } from "@/lib/profitability";
 import { buildWipSchedule, NOT_SCHEDULED_NEED_TEXT } from "@/lib/wipSchedule";
+import { forecastIsActionable } from "@/lib/forecastRules";
 import { prisma } from "@/lib/prisma";
 import { NO_VALUE, formatCurrency, formatPct } from "@/lib/format";
 
@@ -52,6 +53,7 @@ export default async function WipPage() {
   const canForecast = entitlements.has("forecast_at_completion");
   const openCount = data.lifetimeJobs.filter((j) => j.status === "open").length;
   const rows = s.inProgress;
+  const lifetimeById = new Map(data.lifetimeJobs.map((j) => [j.jobId, j]));
   const t = s.totals;
   const netOverUnder = t.overBilled - t.underBilled;
   const anyLoss = t.provisionForLoss > 0;
@@ -127,9 +129,12 @@ export default async function WipPage() {
             <tbody className="divide-y divide-gray-100">
               {rows.map((r) => {
                 const f = data.forecasts.get(r.jobId);
-                // A low-confidence forecast (a small share billed, or under 25%
-                // complete entered) isn't shown on a schedule people act on.
-                const firm = f?.available && f.confidence !== "low" && f.forecastMarginPct != null;
+                const job = lifetimeById.get(r.jobId);
+                // Only a forecast firm enough to act on (forecastIsActionable),
+                // as on the job page: not one from a small share billed or under
+                // 25% complete entered, nor one from billing that's behind the
+                // work. This schedule goes to banks.
+                const firm = job != null && forecastIsActionable(job, f);
                 return (
                   <tr key={r.jobId} className="align-top">
                     <td className="px-3 py-2">
@@ -162,7 +167,7 @@ export default async function WipPage() {
                       <td className="px-3 py-2 text-right">{r.provisionForLoss > 0 ? formatCurrency(r.provisionForLoss) : NO_VALUE}</td>
                     ) : null}
                     {canForecast ? (
-                      <td className="px-3 py-2 text-right">{firm ? formatPct(f!.forecastMarginPct!) : NO_VALUE}</td>
+                      <td className="px-3 py-2 text-right">{firm ? formatPct(f.forecastMarginPct) : NO_VALUE}</td>
                     ) : null}
                   </tr>
                 );

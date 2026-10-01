@@ -1972,7 +1972,10 @@ export interface JobMetrics {
   /** Open jobs with a contract value: billed minus earned (see computeWip). */
   overUnderBilling?: number | null;
   percentComplete?: number | null;
-  /** Pro only: forecast margin at completion for an open job. */
+  /**
+   * Pro only: forecast margin at completion for an open job, when the
+   * forecast is firm enough to act on (forecastIsActionable); null otherwise.
+   */
   forecastMarginPct?: number | null;
   flags: string[];
 }
@@ -2015,8 +2018,16 @@ export async function computeConnectionMetrics(connectionId: string, weekStartin
   const now = new Date();
   const data = await getConnectionProfitData(connectionId, now);
 
+  const lifetimeById = new Map(data.lifetimeJobs.map((f) => [f.jobId, f]));
   const jobMetrics: JobMetrics[] = data.jobs.map((f) => {
     const forecast = data.forecasts.get(f.jobId);
+    // Only a forecast firm enough to act on, by the rule the job page, the
+    // feed and the alerts use (forecastIsActionable), judged on the lifetime
+    // figures it was made from. The brief used to pass on every forecast:
+    // one made from 10% of the contract billed put "forecasting a negative
+    // 200% margin" in the written summary for a job that was only billed
+    // behind, which the job page itself calls too early to say.
+    const firmForecast = forecastIsActionable(lifetimeById.get(f.jobId) ?? f, forecast);
     // Only WIP figures the schedule itself would count: not a job whose cost
     // has passed its estimate (capped at 100%, it reads as the whole contract
     // earned and under billed), and not an idle open job's old under billing.
@@ -2037,7 +2048,7 @@ export async function computeConnectionMetrics(connectionId: string, weekStartin
       varianceVsEstimatePct: f.varianceVsEstimatePct,
       overUnderBilling: wip ? Math.round(wip.overUnderBilling) : null,
       percentComplete: wip ? wip.percentComplete : null,
-      forecastMarginPct: forecast?.available ? forecast.forecastMarginPct ?? null : null,
+      forecastMarginPct: firmForecast ? forecast.forecastMarginPct : null,
       flags: f.flags,
     };
   });
@@ -2048,11 +2059,17 @@ export async function computeConnectionMetrics(connectionId: string, weekStartin
   // Ranked by money, not by how many flags a job has. Every job without an
   // estimate carries a flag, so ranking by flag count put data gaps on old
   // jobs ahead of a live job running $10,000 over.
+  // A firm forecast of a loss counts at the loss it forecasts: a job with
+  // revenue and cost even so far, heading for a $10,000 loss, used to rank
+  // below every job with a dollar over its estimate.
   const impact = (j: JobMetrics) =>
     Math.max(
       j.varianceVsEstimate != null && j.varianceVsEstimate > 0 ? j.varianceVsEstimate : 0,
       j.marginPct != null && j.marginPct < 0 ? j.actualCost - j.actualRevenue : 0,
-      j.overUnderBilling != null && j.overUnderBilling < 0 ? -j.overUnderBilling : 0
+      j.overUnderBilling != null && j.overUnderBilling < 0 ? -j.overUnderBilling : 0,
+      j.forecastMarginPct != null && j.forecastMarginPct < 0
+        ? -j.forecastMarginPct * Math.max(j.estimatedRevenue ?? 0, j.actualRevenue)
+        : 0
     );
   const topConcerns = briefJobs
     .filter((j) => impact(j) > 0 || j.flags.some((f) => f !== "no_estimate_on_file"))
