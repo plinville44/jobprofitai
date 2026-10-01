@@ -11,7 +11,14 @@ import {
   type BasisInfo,
   type WeekOverWeekReport,
 } from "./weekOverWeek";
-import { cleanDigestText, withoutOpenJobUnderspend } from "./digestText";
+import {
+  cleanDigestText,
+  findSummaryProblems,
+  withoutOpenJobUnderspend,
+  withoutSentences,
+  type SummaryFacts,
+  type SummaryProblem,
+} from "./digestText";
 import { getOpportunityData } from "./opportunityData";
 import {
   briefTileJobs,
@@ -135,6 +142,7 @@ export async function generateWeeklyDigest(
   const marked = <T extends { jobId: string }>(j: T) =>
     targetFilledEstimates.has(j.jobId) ? { ...j, estimateSetFromTargetMargin: true } : j;
   const dh = metrics.briefDataHealth;
+  const modelJobs = metrics.jobs.filter((j) => inBrief.has(j.jobId)).map(withoutOpenJobUnderspend).map(marked);
   const prompt = `Company: ${companyName}
 Week starting: ${metrics.weekStarting.toISOString().slice(0, 10)}
 
@@ -143,7 +151,7 @@ Job-to-date figures for the jobs that matter now, plus what changed since the pr
 ${JSON.stringify(
   {
     totals: metrics.totals,
-    jobs: metrics.jobs.filter((j) => inBrief.has(j.jobId)).map(withoutOpenJobUnderspend).map(marked),
+    jobs: modelJobs,
     topConcerns: metrics.topConcerns.map(withoutOpenJobUnderspend).map(marked),
     // Counts only. The full lists are on the Data Health page.
     dataHealth: {
@@ -158,7 +166,8 @@ ${JSON.stringify(
   null,
   2
 )}`;
-  const ask = async (maxTokens: number) => {
+  type Turn = { role: "user" | "assistant"; content: string };
+  const ask = async (maxTokens: number, messages: Turn[] = [{ role: "user", content: prompt }]) => {
     const plan = aiAttemptPlan((deadline ?? Number.POSITIVE_INFINITY) - Date.now(), maxTokens > 1200 ? 75_000 : 45_000);
     if (!plan) throw new SummaryOutOfTimeError();
     try {
@@ -166,7 +175,7 @@ ${JSON.stringify(
         model: AI_MODEL,
         max_tokens: maxTokens,
         system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: prompt }],
+        messages,
       });
     } catch (err) {
       // Given less than a request normally gets to fit the deadline: with
@@ -184,17 +193,76 @@ ${JSON.stringify(
   // email. On a busy week it gets one retry with twice the room; if that is
   // cut off too, this throws rather than send a broken summary. About 45
   // seconds covers 1,200 tokens, and 75 covers 2,400.
-  let message = await ask(1200);
-  if (message.stop_reason === "max_tokens") message = await ask(2400);
+  let maxTokens = 1200;
+  let message = await ask(maxTokens);
+  if (message.stop_reason === "max_tokens") message = await ask((maxTokens = 2400));
   if (message.stop_reason === "max_tokens") {
     throw new Error("The brief's write-up came back cut off at the length limit twice; not sending a partial brief.");
   }
+  const draft = cleanDigestText(textOf(message));
 
-  const textBlock = message.content.find((b) => b.type === "text");
-  if (!textBlock || textBlock.type !== "text") {
-    throw new Error("Claude did not return a text response for the digest.");
+  // The rules above are a request; this checks the reply against the ones
+  // that have actually been broken (findSummaryProblems). A summary that
+  // breaks one is sent back once with the sentences and what's wrong with
+  // them. Whatever still breaks a rule after that is taken out, sentence by
+  // sentence, so it never reaches a customer. Running short of time, or a
+  // rewrite that fails, goes straight to taking the sentences out: this
+  // check never costs the brief its summary or defers the send.
+  const facts: SummaryFacts = {
+    jobs: modelJobs,
+    comparison: weekOverWeek?.noComparisonReason
+      ? "skipped"
+      : (weekOverWeek?.changes?.length ?? 0) > 0 || (weekOverWeek?.revenueAdded ?? 0) !== 0 || (weekOverWeek?.costAdded ?? 0) !== 0
+        ? "changes"
+        : "no_changes",
+  };
+  let text = draft;
+  let problems = findSummaryProblems(text, facts);
+  if (problems.length === 0) return text;
+  console.warn(`digest: summary broke ${problems.length} rule(s) (${ruleList(problems)}); asking for a rewrite`);
+  try {
+    const rewrite = await ask(maxTokens, [
+      { role: "user", content: prompt },
+      { role: "assistant", content: draft },
+      { role: "user", content: rewriteRequest(problems) },
+    ]);
+    if (rewrite.stop_reason !== "max_tokens") {
+      const rewritten = cleanDigestText(textOf(rewrite));
+      const rewrittenProblems = findSummaryProblems(rewritten, facts);
+      if (rewritten.trim() && rewrittenProblems.length <= problems.length) {
+        text = rewritten;
+        problems = rewrittenProblems;
+      }
+    }
+  } catch (err) {
+    console.warn("digest: summary rewrite failed, removing the sentences instead:", err instanceof Error ? err.message : "Unknown error");
   }
-  return cleanDigestText(textBlock.text);
+  if (problems.length === 0) return text;
+  console.warn(`digest: removing ${problems.length} sentence(s) that still broke a rule (${ruleList(problems)})`);
+  text = withoutSentences(text, problems.map((p) => p.sentence));
+  if (!text.trim()) throw new Error("Every sentence of the written summary broke the brief's rules, so it was left out.");
+  return text;
+}
+
+function textOf(message: { content: { type: string; text?: string }[] }): string {
+  const block = message.content.find((b) => b.type === "text");
+  if (!block || typeof block.text !== "string") throw new Error("Claude did not return a text response for the digest.");
+  return block.text;
+}
+
+/** The rules broken, for the logs: rule names only, never the text (it has job names and amounts in it). */
+function ruleList(problems: SummaryProblem[]): string {
+  return Array.from(new Set(problems.map((p) => p.rule))).join(", ");
+}
+
+/** Asks for the summary again with each broken rule pointed out. */
+export function rewriteRequest(problems: SummaryProblem[]): string {
+  return [
+    "Some sentences in your summary break the rules:",
+    ...problems.map((p) => `- "${p.sentence}" ${p.reason}`),
+    "",
+    "Rewrite the whole summary with these fixed, following every rule above. Keep the rest as it is. Reply with the summary only.",
+  ].join("\n");
 }
 
 // Confidence levels below which a Claude-written profitability narrative
