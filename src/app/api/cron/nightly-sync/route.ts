@@ -10,6 +10,7 @@ import { renderAlertEmail } from "@/lib/email/briefEmail";
 import { sendProfitAlerts } from "@/lib/email/lifecycle";
 import { alertsDelivered, alertSendFailure } from "@/lib/briefSend";
 import { freezeClosedSnapshots, takeWipSnapshot } from "@/lib/wipSnapshots";
+import { dailySyncDue, MIN_GAP_MS } from "@/lib/syncSchedule";
 
 /**
  * GET /api/cron/nightly-sync  (Vercel Cron, hourly; see vercel.json)
@@ -19,9 +20,12 @@ import { freezeClosedSnapshots, takeWipSnapshot } from "@/lib/wipSnapshots";
  *
  * Before this, data only refreshed right before the Monday brief or when
  * someone clicked Sync now, so the dashboard could be a week old and
- * nothing could warn anyone mid-week. Each hourly run syncs the companies
- * that have gone longest without a sync (over 20 hours), a few at a time,
- * within a time budget; the rest wait for the next hour.
+ * nothing could warn anyone mid-week. Each company's daily sync runs
+ * overnight in its own time zone, so the alerts it sends are waiting in the
+ * morning (see src/lib/syncSchedule.ts; a company that misses the window is
+ * synced anyway once 30 hours have passed). Each hourly run syncs the due
+ * companies that have waited longest, a few at a time, within a time
+ * budget; the rest wait for the next hour.
  *
  * Full syncs (a company's first, the monthly one, one under new sync rules)
  * read a company's whole history, which for a big company can take longer
@@ -42,7 +46,8 @@ import { freezeClosedSnapshots, takeWipSnapshot } from "@/lib/wipSnapshots";
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
-const STALE_AFTER_MS = 20 * 3_600_000;
+/** A full sync owed by a company that was skipped (a lapsed account, say) is tried again after this. */
+const SKIPPED_FULL_SYNC_WAIT_MS = 20 * 3_600_000;
 const RETRY_FAILED_AFTER_MS = 2 * 3_600_000;
 /** Start of every "you need to reconnect" error the sync stores (see needsReconnect). */
 const RECONNECT_PREFIX = "Your QuickBooks connection has expired or was disconnected";
@@ -81,7 +86,10 @@ export async function GET(req: NextRequest) {
 
   const startedAt = Date.now();
   const now = new Date(startedAt);
-  const staleBefore = new Date(startedAt - STALE_AFTER_MS);
+  // Candidates for the daily sync: anything not synced in the last few
+  // hours. Which of them are due is decided per company below, by its own
+  // time zone (dailySyncDue), which a database filter can't do.
+  const staleBefore = new Date(startedAt - MIN_GAP_MS);
   const interruptedBefore = new Date(startedAt - INTERRUPTED_AFTER_MS);
   const notWaitingForReconnect = { OR: [{ lastSyncError: null }, { NOT: { lastSyncError: { startsWith: RECONNECT_PREFIX } } }] };
 
@@ -120,7 +128,7 @@ export async function GET(req: NextRequest) {
   // aren't tried at all: nothing works until they do. Nor are those whose
   // full sync waits for a later time (one that keeps running out of time is
   // tried once a day).
-  const due = await prisma.quickBooksConnection.findMany({
+  const candidates = await prisma.quickBooksConnection.findMany({
     where: {
       disconnectedAt: null,
       fullSyncContinueAt: null,
@@ -143,8 +151,11 @@ export async function GET(req: NextRequest) {
       ],
     },
     orderBy: { lastSyncAttemptAt: { sort: "asc", nulls: "first" } },
-    take: 200,
+    // More than a run can sync, because companies outside their overnight
+    // window are dropped next and mustn't crowd out those inside it.
+    take: 1000,
   });
+  const due = candidates.filter((c) => dailySyncDue(c, now)).slice(0, 200);
 
   // Which sync each company gets, decided the way the sync itself decides.
   // A full sync that turns out to be needed after all (Settings asked for a
@@ -228,14 +239,14 @@ async function syncAndAlert(
   /** Called once the company's sync has finished cleanly (not partway, not deferred). */
   onSynced: (connection: QuickBooksConnection) => void
 ) {
-  // To the back of the queue until tomorrow, and a full sync that's owed
-  // waits as long.
+  // To the back of the queue, and a full sync that's owed waits until
+  // tomorrow.
   const skip = async (detail: string) => {
     await prisma.quickBooksConnection.update({
       where: { id: connection.id },
       data: {
         lastSyncAttemptAt: new Date(),
-        ...(connection.fullSyncContinueAt ? { fullSyncContinueAt: new Date(Date.now() + STALE_AFTER_MS) } : {}),
+        ...(connection.fullSyncContinueAt ? { fullSyncContinueAt: new Date(Date.now() + SKIPPED_FULL_SYNC_WAIT_MS) } : {}),
       },
     });
     return { connectionId: connection.id, status: "skipped", detail };
