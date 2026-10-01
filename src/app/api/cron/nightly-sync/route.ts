@@ -78,12 +78,6 @@ const INTERRUPTED_AFTER_MS = 15 * 60_000;
  * deadline, and only reached once every sync is done.
  */
 const SNAPSHOTS_STOP_STARTING_AFTER_MS = 240_000;
-/**
- * For Sentry's cron monitor: a minute over the 300 s limit, so a run that
- * uses all of it isn't called timed out. One the platform cuts off never
- * sends its last check-in, and Sentry reports it as timed out after this.
- */
-const MONITOR_MAX_RUNTIME_MINUTES = 6;
 
 type SyncOptions = { deadline?: number; deferFullSync?: boolean; windowStart?: number };
 
@@ -91,7 +85,7 @@ export async function GET(req: NextRequest) {
   const auth = authorizeCron(req);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
   // After the check above, so a call that isn't Vercel's never checks in.
-  return withCronMonitor("nightly-sync", "30 * * * *", MONITOR_MAX_RUNTIME_MINUTES, syncDueCompanies);
+  return withCronMonitor("nightly-sync", "30 * * * *", syncDueCompanies);
 }
 
 async function syncDueCompanies() {

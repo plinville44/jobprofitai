@@ -19,6 +19,7 @@ vi.mock("next/server", () => ({
 
 import {
   buildErrorEvent,
+  CHECKIN_MARGIN_MINUTES,
   checkInEnvelope,
   errorEnvelope,
   isCodeOrDatabaseFault,
@@ -386,84 +387,97 @@ describe("monitoring", () => {
   });
 
   describe("withCronMonitor", () => {
-    it("checks in as in progress with the schedule, then ok with the same ID, and returns the job's result unchanged", async () => {
+    it("checks in once, when the job ends, as ok with the schedule and how long it took, and returns the job's result unchanged", async () => {
       const response = { status: 200, body: { ok: true } };
-      const result = await withCronMonitor("nightly-sync", "30 * * * *", 6, async () => response);
+      const result = await withCronMonitor("nightly-sync", "30 * * * *", async () => response);
       expect(result).toBe(response);
-      expect(sent).toHaveLength(2);
-      const [first, last] = sent.map(payload);
+      expect(sent).toHaveLength(1);
       expect(sent[0].body.split("\n")[1]).toBe('{"type":"check_in"}');
-      expect(first).toMatchObject({ monitor_slug: "nightly-sync", status: "in_progress", environment: "production" });
-      expect(first.check_in_id).toMatch(/^[0-9a-f]{32}$/);
-      expect(first.monitor_config).toEqual({
+      const checkIn = payload(sent[0]);
+      expect(checkIn).toMatchObject({ monitor_slug: "nightly-sync", status: "ok", environment: "production" });
+      expect(checkIn.check_in_id).toMatch(/^[0-9a-f]{32}$/);
+      expect(checkIn.monitor_config).toEqual({
         schedule: { type: "crontab", value: "30 * * * *" },
-        checkin_margin: 5,
-        max_runtime: 6,
+        checkin_margin: 10,
         timezone: "UTC",
       });
-      expect(last).toMatchObject({ monitor_slug: "nightly-sync", status: "ok", check_in_id: first.check_in_id });
-      expect(typeof last.duration).toBe("number");
-      expect(last.duration).toBeGreaterThanOrEqual(0);
-      expect("monitor_config" in last).toBe(false);
+      expect(typeof checkIn.duration).toBe("number");
+      expect(checkIn.duration).toBeGreaterThanOrEqual(0);
     });
 
-    it("checks in an error, and rethrows the job's own error, when the job throws", async () => {
+    it("sends nothing while the job runs, so no check-in can arrive out of order", async () => {
+      let sentDuringRun = -1;
+      await withCronMonitor("weekly-email", "*/15 * * * *", async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        sentDuringRun = sent.length;
+        return "done";
+      });
+      expect(sentDuringRun).toBe(0);
+      expect(sent.map((s) => payload(s).status)).toEqual(["ok"]);
+    });
+
+    it("leaves Sentry room for a run that uses all of its 300 seconds before calling it missed", () => {
+      // The check-in comes at the end of a run, up to 300 s after its start.
+      expect(CHECKIN_MARGIN_MINUTES * 60).toBeGreaterThan(300 + 60);
+      // And a missed run is still reported before the next one is due.
+      expect(CHECKIN_MARGIN_MINUTES).toBeLessThan(15);
+    });
+
+    it("gives each run its own check-in ID", async () => {
+      await withCronMonitor("lifecycle", "0 * * * *", async () => "a");
+      await withCronMonitor("lifecycle", "0 * * * *", async () => "b");
+      const [a, b] = sent.map(payload);
+      expect(a.check_in_id).not.toBe(b.check_in_id);
+    });
+
+    it("checks in an error, with the schedule, and rethrows the job's own error, when the job throws", async () => {
       const boom = new Error("boom");
       let caught: unknown;
       try {
-        await withCronMonitor("weekly-email", "*/15 * * * *", 6, async () => {
+        await withCronMonitor("weekly-email", "*/15 * * * *", async () => {
           throw boom;
         });
       } catch (err) {
         caught = err;
       }
       expect(caught).toBe(boom);
-      expect(sent.map((s) => payload(s).status)).toEqual(["in_progress", "error"]);
+      expect(sent).toHaveLength(1);
+      expect(payload(sent[0])).toMatchObject({
+        monitor_slug: "weekly-email",
+        status: "error",
+        monitor_config: { schedule: { type: "crontab", value: "*/15 * * * *" } },
+      });
     });
 
     it("checks in an error when the job answers with a 5xx response, and still returns it", async () => {
       const response = { status: 503, body: { error: "down" } };
-      expect(await withCronMonitor("lifecycle", "0 * * * *", 6, async () => response)).toBe(response);
-      expect(sent.map((s) => payload(s).status)).toEqual(["in_progress", "error"]);
+      expect(await withCronMonitor("lifecycle", "0 * * * *", async () => response)).toBe(response);
+      expect(sent.map((s) => payload(s).status)).toEqual(["error"]);
       sent = [];
-      await withCronMonitor("lifecycle", "0 * * * *", 6, async () => ({ status: 401 }));
-      await withCronMonitor("lifecycle", "0 * * * *", 6, async () => undefined);
-      expect(sent.map((s) => payload(s).status)).toEqual(["in_progress", "ok", "in_progress", "ok"]);
-    });
-
-    it("sends the last check-in only once the first is done, so they arrive in order", async () => {
-      let firstDone = false;
-      const firstDoneAtSecondCall: boolean[] = [];
-      useFetch(async (n) => {
-        if (n === 0) {
-          await new Promise((r) => setTimeout(r, 30));
-          firstDone = true;
-        } else firstDoneAtSecondCall.push(firstDone);
-        return { status: 202 };
-      });
-      await withCronMonitor("lifecycle", "0 * * * *", 6, async () => "done");
-      expect(firstDoneAtSecondCall).toEqual([true]);
+      await withCronMonitor("lifecycle", "0 * * * *", async () => ({ status: 401 }));
+      await withCronMonitor("lifecycle", "0 * * * *", async () => undefined);
+      expect(sent.map((s) => payload(s).status)).toEqual(["ok", "ok"]);
     });
 
     it("never lets a monitoring failure affect the job", async () => {
       useFetch(async () => {
         throw new TypeError("fetch failed");
       });
-      expect(await withCronMonitor("lifecycle", "0 * * * *", 6, async () => 42)).toBe(42);
+      expect(await withCronMonitor("lifecycle", "0 * * * *", async () => 42)).toBe(42);
       const boom = new RangeError("the job's own");
       await expect(
-        withCronMonitor("lifecycle", "0 * * * *", 6, async () => {
+        withCronMonitor("lifecycle", "0 * * * *", async () => {
           throw boom;
         })
       ).rejects.toBe(boom);
-      expect(sent).toHaveLength(4);
+      expect(sent).toHaveLength(2);
     });
 
     it("sends no check-ins from a preview deployment or without a DSN, and still runs the job", async () => {
       setEnv({ SENTRY_DSN: DSN, VERCEL_ENV: "preview" });
-      expect(await withCronMonitor("lifecycle", "0 * * * *", 6, async () => "ran")).toBe("ran");
+      expect(await withCronMonitor("lifecycle", "0 * * * *", async () => "ran")).toBe("ran");
       setEnv({ VERCEL_ENV: "production" });
-      expect(await withCronMonitor("lifecycle", "0 * * * *", 6, async () => "ran")).toBe("ran");
+      expect(await withCronMonitor("lifecycle", "0 * * * *", async () => "ran")).toBe("ran");
       expect(sent).toHaveLength(0);
     });
   });
@@ -577,10 +591,9 @@ describe("monitoring", () => {
       for (const { path, schedule } of crons) {
         const slug = path.split("/").pop()!;
         const src = read(`app${path}/route.ts`);
-        const monitor = src.indexOf(`withCronMonitor("${slug}", "${schedule}", MONITOR_MAX_RUNTIME_MINUTES,`);
+        const monitor = src.indexOf(`withCronMonitor("${slug}", "${schedule}", `);
         expect({ slug, monitored: monitor > 0 }).toEqual({ slug, monitored: true });
         expect({ slug, authFirst: src.indexOf("authorizeCron(req)") < monitor }).toEqual({ slug, authFirst: true });
-        expect(src).toContain("const MONITOR_MAX_RUNTIME_MINUTES = 6;");
         expect(src).toContain("export const maxDuration = 300;");
         expect(src).toContain(`reportError(err, { cron: "${slug}" })`);
       }

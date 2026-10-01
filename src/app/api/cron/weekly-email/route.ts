@@ -64,12 +64,6 @@ const RETRY_SEND_AFTER_MS = 60 * 60_000;
  * Past that, the brief goes without the summary rather than not at all.
  */
 const DEFER_MARGIN_MS = 30 * 60_000;
-/**
- * For Sentry's cron monitor: a minute over the 300 s limit, so a run that
- * uses all of it isn't called timed out. One the platform cuts off never
- * sends its last check-in, and Sentry reports it as timed out after this.
- */
-const MONITOR_MAX_RUNTIME_MINUTES = 6;
 
 type Result = { connectionId: string; status: string; detail?: string };
 type Connection = Awaited<ReturnType<typeof prisma.quickBooksConnection.findMany>>[number];
@@ -97,7 +91,7 @@ export async function GET(req: NextRequest) {
   const auth = authorizeCron(req);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
   // After the check above, so a call that isn't Vercel's never checks in.
-  return withCronMonitor("weekly-email", "*/15 * * * *", MONITOR_MAX_RUNTIME_MINUTES, sendDueBriefs);
+  return withCronMonitor("weekly-email", "*/15 * * * *", sendDueBriefs);
 }
 
 async function sendDueBriefs() {
