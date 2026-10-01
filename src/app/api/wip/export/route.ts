@@ -3,6 +3,7 @@ import { connectionForAccount, getAccount } from "@/lib/account";
 import { getEntitlements } from "@/lib/entitlements";
 import { getConnectionProfitData } from "@/lib/profitability";
 import { buildWipSchedule, NOT_SCHEDULED_NEED_TEXT } from "@/lib/wipSchedule";
+import { forecastIsActionable } from "@/lib/forecastRules";
 import { toCsv } from "@/lib/csv";
 import { formatCurrency } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
@@ -36,11 +37,15 @@ export async function GET(req: NextRequest) {
     ...(canForecast ? ["Forecast cost at completion", "Forecast margin %"] : []),
     "Note",
   ];
+  const lifetimeById = new Map(data.lifetimeJobs.map((j) => [j.jobId, j]));
   const rows: (string | number)[][] = schedule.inProgress.map((r) => {
     const f = data.forecasts.get(r.jobId);
-    // A low-confidence forecast (little billed, or under 25% complete
-    // entered) is left blank, as on the WIP page: this file goes to banks.
-    const firm = f?.available === true && f.confidence !== "low";
+    // Only a forecast firm enough to act on (forecastIsActionable) is filled
+    // in, as on the WIP page and the job page: not one from little billed,
+    // under 25% complete entered, or billing behind the work. This file goes
+    // to banks.
+    const job = lifetimeById.get(r.jobId);
+    const firm = job != null && forecastIsActionable(job, f);
     return [
       r.jobName,
       r.customerName ?? "",
@@ -60,7 +65,7 @@ export async function GET(req: NextRequest) {
       round(r.provisionForLoss),
       round(r.grossProfitToDate),
       ...(canForecast
-        ? [round(firm ? f!.forecastCostAtCompletion : null), firm && f!.forecastMarginPct != null ? Math.round(f!.forecastMarginPct * 1000) / 10 : ""]
+        ? [round(firm ? f.forecastCostAtCompletion : null), firm ? Math.round(f.forecastMarginPct * 1000) / 10 : ""]
         : []),
       r.billedPastContract > 0
         ? `billed ${formatCurrency(r.billedPastContract)} past the contract: record the change order in QuickBooks`
