@@ -18,6 +18,7 @@ import {
   sendTrialEndingSoon,
   sendTrialExpired,
 } from "@/lib/email/lifecycle";
+import { reportError, withCronMonitor } from "@/lib/monitoring";
 
 /**
  * GET /api/cron/lifecycle
@@ -50,6 +51,13 @@ const SETUP_REMINDER_AFTER_DAYS = 3;
  *  enough that they have an honest opinion worth hearing. */
 const TESTIMONIAL_AFTER_PAID_DAYS = 21;
 
+/**
+ * For Sentry's cron monitor: a minute over the 300 s limit, so a run that
+ * uses all of it isn't called timed out. One the platform cuts off never
+ * sends its last check-in, and Sentry reports it as timed out after this.
+ */
+const MONITOR_MAX_RUNTIME_MINUTES = 6;
+
 interface Counters {
   trialsExpired: number;
   setupReminders: number;
@@ -73,7 +81,11 @@ export async function GET(req: NextRequest) {
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
+  // After the check above, so a call that isn't Vercel's never checks in.
+  return withCronMonitor("lifecycle", "0 * * * *", MONITOR_MAX_RUNTIME_MINUTES, runLifecycle);
+}
 
+async function runLifecycle() {
   const now = new Date();
   const counters: Counters = {
     trialsExpired: 0,
@@ -128,6 +140,9 @@ async function runStage(counters: Counters, name: string, fn: () => Promise<void
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error(`cron/lifecycle: stage "${name}" failed: ${message}`);
     counters.errors.push(`${name}: ${message}`);
+    // A whole stage failing is a fault in our code or the database: each
+    // stage handles the email provider's and Stripe's problems itself.
+    await reportError(err, { cron: "lifecycle" });
   }
 }
 
@@ -221,6 +236,9 @@ async function processTrialEmails(counters: Counters, now: Date): Promise<void> 
       counters.errors.push(
         `trial ${sub.userId}: ${err instanceof Error ? err.message : "Unknown error"}`
       );
+      // The sends return the email provider's refusals as results, so a
+      // throw here is a fault in our code or the database.
+      await reportError(err, { cron: "lifecycle" });
     }
   }
 }
@@ -243,6 +261,7 @@ async function processReferralQualification(counters: Counters): Promise<void> {
       counters.errors.push(
         `reward ${reward.rewardId}: ${err instanceof Error ? err.message : "Unknown error"}`
       );
+      await reportError(err, { cron: "lifecycle" });
     }
   }
 
@@ -283,6 +302,7 @@ async function processTestimonialRequests(counters: Counters, now: Date): Promis
       counters.errors.push(
         `testimonial ${candidate.userId}: ${err instanceof Error ? err.message : "Unknown error"}`
       );
+      await reportError(err, { cron: "lifecycle" });
     }
   }
 }

@@ -48,6 +48,11 @@ const SERVICE_PROVIDERS: { name: string; purpose: string; data: string }[] = [
     purpose: "Generating AI-written insights and summaries",
     data: "Calculated profitability information for your jobs, including job names, customer names, job types and figures",
   },
+  {
+    name: "Functional Software, Inc. (Sentry)",
+    purpose: "Error monitoring, and checking that our scheduled jobs run on time",
+    data: "When something goes wrong: the kind of error, its message with personal details removed, where in our code it happened, and the page or scheduled job it happened on. For scheduled jobs, when each run starts and finishes and whether it worked. Never QuickBooks figures, names, email addresses or tokens",
+  },
 ];
 
 export default function PrivacyPage() {

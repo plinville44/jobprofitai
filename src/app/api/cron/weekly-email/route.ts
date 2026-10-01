@@ -10,6 +10,7 @@ import { getEntitlements } from "@/lib/entitlements";
 import { overLimitConnectionIds } from "@/lib/planLimits";
 import { isValidTimeZone, lastScheduledSend, withinCatchUp } from "@/lib/schedule";
 import { customerSyncError, syncLooksFailed } from "@/lib/briefSend";
+import { reportError, withCronMonitor } from "@/lib/monitoring";
 
 /**
  * GET /api/cron/weekly-email  (Vercel Cron, every 15 minutes; see vercel.json)
@@ -63,6 +64,12 @@ const RETRY_SEND_AFTER_MS = 60 * 60_000;
  * Past that, the brief goes without the summary rather than not at all.
  */
 const DEFER_MARGIN_MS = 30 * 60_000;
+/**
+ * For Sentry's cron monitor: a minute over the 300 s limit, so a run that
+ * uses all of it isn't called timed out. One the platform cuts off never
+ * sends its last check-in, and Sentry reports it as timed out after this.
+ */
+const MONITOR_MAX_RUNTIME_MINUTES = 6;
 
 type Result = { connectionId: string; status: string; detail?: string };
 type Connection = Awaited<ReturnType<typeof prisma.quickBooksConnection.findMany>>[number];
@@ -89,7 +96,11 @@ export async function GET(req: NextRequest) {
   // Fails closed in production when CRON_SECRET is missing (see cronAuth.ts).
   const auth = authorizeCron(req);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
+  // After the check above, so a call that isn't Vercel's never checks in.
+  return withCronMonitor("weekly-email", "*/15 * * * *", MONITOR_MAX_RUNTIME_MINUTES, sendDueBriefs);
+}
 
+async function sendDueBriefs() {
   const startedAt = Date.now();
   const now = new Date();
   const connections = await prisma.quickBooksConnection.findMany({
@@ -388,6 +399,11 @@ async function sendOne(
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error(`weekly-email: failed for connection ${connection.id}: ${message}`);
     if (claimed) await release().catch(() => {});
+    // Unexpected by the time it gets here: a failed sync is caught above and
+    // the brief goes from what's synced, the AI write-up's failures send the
+    // brief without it, and the email provider's refusals come back as
+    // results. What's left is a fault in our code or the database.
+    await reportError(err, { cron: "weekly-email" });
     return { connectionId: connection.id, status: "error", detail: message };
   }
 }

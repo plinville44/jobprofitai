@@ -211,6 +211,14 @@ export default function SecurityPage() {
                 only. Raw API responses, request bodies and error objects from QuickBooks are never
                 logged, because those can echo back credentials or customer financial data.
               </p>
+              <p>
+                When something goes wrong, an error report goes to Sentry, our error monitoring
+                service: the kind of error, its message with email addresses, tokens, quoted text and
+                amounts taken out, where in our code it happened, and the page or scheduled job it
+                happened on. It never includes your QuickBooks figures, job or customer names, what
+                was sent to the page, cookies or tokens. Sentry also tells us when a scheduled job,
+                such as the nightly sync, doesn&rsquo;t run on time.
+              </p>
             </Item>
 
             <Item title="Deleting your account deletes your data">
@@ -274,7 +282,7 @@ export default function SecurityPage() {
             <Item title="Transport">
               <p>
                 The application is served exclusively over HTTPS. All communication with Intuit,
-                Stripe and our email provider is over TLS.
+                Stripe, our email provider and our error monitoring service is over TLS.
               </p>
             </Item>
 
