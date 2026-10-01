@@ -440,6 +440,7 @@ already caused two outages on this project.
 | `STRIPE_PRICE_PROFIT_INTELLIGENCE_MONTHLY` | $149 Price ID | Stripe → Products | ✅ | ✅ | ✅ |
 | `STRIPE_PRICE_PROFIT_INTELLIGENCE_PRO_MONTHLY` | $299 Price ID | Stripe → Products | ✅ | ✅ | ✅ |
 | `CRON_SECRET` | Authorizes scheduled jobs | `openssl rand -base64 32` | ✅ | ✅ |, |
+| `SENTRY_DSN` | Error and cron monitoring (optional; only production sends) | Sentry (US data region) → project → Client Keys (DSN) | ✅ | optional | ❌ |
 
 Use **live** Stripe keys and **production** Intuit keys in Production only. Preview and
 Development should use test/sandbox credentials throughout.

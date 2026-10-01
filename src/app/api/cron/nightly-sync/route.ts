@@ -11,6 +11,7 @@ import { sendProfitAlerts } from "@/lib/email/lifecycle";
 import { alertsDelivered, alertSendFailure } from "@/lib/briefSend";
 import { freezeClosedSnapshots, takeWipSnapshot } from "@/lib/wipSnapshots";
 import { dailySyncDue, MIN_GAP_MS } from "@/lib/syncSchedule";
+import { isCodeOrDatabaseFault, reportError, withCronMonitor } from "@/lib/monitoring";
 
 /**
  * GET /api/cron/nightly-sync  (Vercel Cron, hourly; see vercel.json)
@@ -77,13 +78,23 @@ const INTERRUPTED_AFTER_MS = 15 * 60_000;
  * deadline, and only reached once every sync is done.
  */
 const SNAPSHOTS_STOP_STARTING_AFTER_MS = 240_000;
+/**
+ * For Sentry's cron monitor: a minute over the 300 s limit, so a run that
+ * uses all of it isn't called timed out. One the platform cuts off never
+ * sends its last check-in, and Sentry reports it as timed out after this.
+ */
+const MONITOR_MAX_RUNTIME_MINUTES = 6;
 
 type SyncOptions = { deadline?: number; deferFullSync?: boolean; windowStart?: number };
 
 export async function GET(req: NextRequest) {
   const auth = authorizeCron(req);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
+  // After the check above, so a call that isn't Vercel's never checks in.
+  return withCronMonitor("nightly-sync", "30 * * * *", MONITOR_MAX_RUNTIME_MINUTES, syncDueCompanies);
+}
 
+async function syncDueCompanies() {
   const startedAt = Date.now();
   const now = new Date(startedAt);
   // Candidates for the daily sync: anything not synced in the last few
@@ -208,6 +219,7 @@ export async function GET(req: NextRequest) {
       snapshotsFrozen = await freezeClosedSnapshots(new Date());
     } catch (err) {
       console.error(`nightly-sync: freezing WIP snapshots failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+      await reportError(err, { cron: "nightly-sync" });
     }
   }
   for (const connection of synced) {
@@ -251,6 +263,7 @@ async function syncAndAlert(
     });
     return { connectionId: connection.id, status: "skipped", detail };
   };
+  let syncFailed = false;
   try {
     // Lapsed accounts are not synced: that is paid work, and their tokens
     // are left alone until they come back.
@@ -268,6 +281,7 @@ async function syncAndAlert(
       if (err instanceof FullSyncNotAllowedError) {
         return { connectionId: connection.id, status: "deferred", detail: "full sync left for the full-sync slot" };
       }
+      syncFailed = true;
       throw err;
     }
     // Its first step wouldn't have finished in the time left: nothing was
@@ -297,6 +311,12 @@ async function syncAndAlert(
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error(`nightly-sync: failed for connection ${connection.id}: ${message}`);
+    // A failed sync is mostly QuickBooks' doing (a reconnect needed, an
+    // outage), is recorded on the company and is retried on a later run, so
+    // only a fault in our code or the database is reported from it. Anything
+    // else here (the plan check, the alerts, their emails, whose sending
+    // problems come back as results, not errors) is unexpected.
+    if (!syncFailed || isCodeOrDatabaseFault(err)) await reportError(err, { cron: "nightly-sync" });
     return { connectionId: connection.id, status: "error", detail: message };
   }
 }

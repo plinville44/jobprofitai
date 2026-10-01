@@ -132,7 +132,7 @@ describe("legal pages", () => {
   });
 
   it("carries the new date", () => {
-    expect(read("components/marketing/Legal.tsx")).toContain('LEGAL_LAST_UPDATED = "September 28, 2026"');
+    expect(read("components/marketing/Legal.tsx")).toContain('LEGAL_LAST_UPDATED = "September 30, 2026"');
   });
 
   it("lists the QuickBooks data the sync keeps, and covers Firm accounts", () => {
