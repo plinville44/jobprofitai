@@ -390,7 +390,7 @@ export function renderAlertEmail(input: {
   <tr><td style="padding:18px 28px 4px;">
     <div style="font-size:13px;color:${MUTED};">Profit alert</div>
     <h1 style="margin:4px 0 16px;font-size:22px;line-height:1.3;color:${NAVY};">${esc(input.companyName)}</h1>
-    <p style="margin:0 0 14px;font-size:15px;line-height:1.6;color:${TEXT};">Last night's QuickBooks sync turned up ${items.length === 1 ? "something" : "a few things"} worth a look before the weekly brief:</p>
+    <p style="margin:0 0 14px;font-size:15px;line-height:1.6;color:${TEXT};">Your latest QuickBooks sync turned up ${items.length === 1 ? "something" : "a few things"} worth a look before the weekly brief:</p>
     ${items
       .map(
         (a) => `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 10px;"><tr><td style="border:1px solid ${BORDER};border-radius:8px;padding:12px 14px;">
