@@ -33,3 +33,23 @@ export function aiClient(timeoutMs: number, maxRetries = 1): Anthropic {
  * thousand tokens takes well under a minute.
  */
 export const anthropic = aiClient(55_000, 1);
+
+/**
+ * Where Anthropic runs our requests. By default Anthropic may route API
+ * traffic to data centers in the US, Europe, Asia or Australia; "us" keeps
+ * inference on US infrastructure (Anthropic's inference_geo, priced at 1.1x).
+ * The Privacy Policy (sections 4 and 10) says the AI processing happens in
+ * the US, so every call goes through inUs(). It needs a Claude 4.6 or later
+ * model: an older ANTHROPIC_MODEL makes Anthropic refuse the request.
+ * See https://platform.claude.com/docs/en/manage-claude/data-residency
+ */
+export const INFERENCE_GEO = "us" as const;
+
+/**
+ * The request's parameters with inference_geo set. The installed SDK
+ * predates the field and sends unknown fields through as they are. Typed as
+ * the SDK's own parameters so the request is still checked.
+ */
+export function inUs(params: Anthropic.MessageCreateParamsNonStreaming): Anthropic.MessageCreateParamsNonStreaming {
+  return { ...params, inference_geo: INFERENCE_GEO } as Anthropic.MessageCreateParamsNonStreaming;
+}

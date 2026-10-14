@@ -9,6 +9,7 @@ import {
   TRIAL_EXTENSION_DAYS,
 } from "@/lib/plans";
 import { DEFAULT_TIME_ZONE, formatDateTime } from "@/lib/format";
+import { DISCONNECTED_RETENTION_DAYS, LAPSED_DISCONNECT_DAYS } from "@/lib/dataRetention";
 import { JOB_SOURCE_QUESTION } from "@/lib/jobSetup";
 
 // Branded transactional email templates.
@@ -140,6 +141,7 @@ export function renderHtml(content: EmailContent): string {
             ${COMPANY_MAILING_ADDRESS}.<br>
             QuickBooks is a trademark of Intuit Inc. JobProfitAI is not affiliated with or endorsed by Intuit.
           </p>
+          ${UNSUBSCRIBE_MARKER}
         </div>
       </td></tr>
     </table>
@@ -172,6 +174,23 @@ export function renderText(content: EmailContent): string {
     "QuickBooks is a trademark of Intuit Inc. JobProfitAI is not affiliated with or endorsed by Intuit."
   );
   return parts.join("\n");
+}
+
+/** Where withUnsubscribe() puts the unsubscribe line in the HTML footer. Invisible when unused. */
+const UNSUBSCRIBE_MARKER = "<!--jpai-unsubscribe-->";
+
+/**
+ * Adds an unsubscribe line to the footer of a tips or reminder email (see
+ * src/lib/emailPreferences.ts). Account and billing emails don't get one.
+ */
+export function withUnsubscribe(email: RenderedEmail, url: string, label: string): RenderedEmail {
+  const line = `<p style="margin:10px 0 0;font-size:12px;line-height:1.5;color:${MUTED};">${escapeHtml(label)} <a href="${url}" style="color:${NAVY};">Unsubscribe</a>.</p>`;
+  return {
+    ...email,
+    html: email.html.replace(UNSUBSCRIBE_MARKER, line),
+    text: `${email.text}
+${label} Unsubscribe: ${url}`,
+  };
 }
 
 export interface RenderedEmail {
@@ -506,7 +525,7 @@ export function trialEndingNoOfferEmail(daysLeft: number, trialEndsAt: Date, tim
     heading: "Your trial is ending soon",
     body: [
       "To keep your job profitability dashboard, insights and Weekly Profit Brief running without a gap, choose a plan before your trial ends.",
-      "Your data and QuickBooks connection stay exactly as they are either way. Nothing is deleted when a trial ends.",
+      `Nothing is deleted when a trial ends. If you haven't chosen a plan ${LAPSED_DISCONNECT_DAYS} days after it ends, we disconnect QuickBooks, and we delete the copied data ${DISCONNECTED_RETENTION_DAYS} days after that.`,
     ],
     callout: { label: "Trial ends", value: formatDay(trialEndsAt, timeZone) },
     cta: { label: "Choose Your Plan", url: appUrl("/dashboard/billing") },
@@ -540,6 +559,7 @@ export function trialExpiredEmail(opts: { firmOffered?: boolean } = {}): Rendere
     body: [
       "Your free trial is over, so the profit intelligence features are paused for now.",
       "Nothing has been deleted. Your account, your QuickBooks connection and every job we've analyzed are all still here. Choosing a plan turns everything back on exactly as you left it.",
+      `If no plan is chosen within ${LAPSED_DISCONNECT_DAYS} days, we disconnect QuickBooks and delete the copied data ${DISCONNECTED_RETENTION_DAYS} days later, because we only keep your QuickBooks data while you use JobProfitAI.`,
       ...(opts.firmOffered
         ? [
             `Keeping the books for several contractors? The ${firm.name} plan is ${firm.priceLabel} per client company a month, ${firm.perCompany!.minCompanies} companies minimum, with a view-only login for each client. It's on the same page.`,
@@ -593,6 +613,12 @@ export function testimonialRequestEmail(name: string | null): RenderedEmail {
 // BILLING
 // ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * Also the acknowledgment California's automatic renewal law asks for: the
+ * renewal terms, the cancellation policy and how to cancel, in an email the
+ * customer keeps. Business purchases are generally outside that law; this
+ * costs nothing and keeps the checkout promise in writing.
+ */
 export function subscriptionConfirmedEmail(planName: string, priceText: string): RenderedEmail {
   return buildEmail(`You're on ${planName}. Welcome aboard`, {
     preheader: "Your JobProfitAI subscription is active.",
@@ -601,8 +627,44 @@ export function subscriptionConfirmedEmail(planName: string, priceText: string):
       `You're now on ${planName} at ${priceText}. Everything stays exactly where you left it, same connection, same jobs, same history.`,
       "One thing worth doing now: check that the Weekly Profit Brief is going to the right people in Settings. That email is where most of the day-to-day value lands.",
     ],
+    bullets: [
+      `Your subscription renews automatically at ${priceText}, plus any applicable tax, until you cancel.`,
+      "Cancel anytime online, with no phone call: open Billing in JobProfitAI, choose Manage Billing, and cancel in the billing portal.",
+      "Cancellation takes effect at the end of the month you've already paid for. You keep access until then and aren't charged again. Partial months aren't refunded.",
+    ],
     cta: { label: "Go to your dashboard", url: appUrl("/dashboard") },
-    footnote: "Manage your plan, payment method and invoices anytime from Billing.",
+    footnote: `Keep this email for your records. Terms of Service: ${appUrl("/terms")}`,
+  });
+}
+
+/** An account without a trial or plan for the lapse period: its QuickBooks companies were disconnected. */
+export function lapsedDisconnectedEmail(companyNames: string[], deleteOn: Date, timeZone?: string): RenderedEmail {
+  const list = companyNames.length === 1 ? companyNames[0] : `${companyNames.length} QuickBooks companies`;
+  return buildEmail(`We've disconnected ${list} from JobProfitAI`, {
+    preheader: `Its copied data will be deleted on ${formatDay(deleteOn, timeZone)}.`,
+    heading: "Your QuickBooks connection has been turned off",
+    body: [
+      `Your JobProfitAI account hasn't had a trial or plan for ${LAPSED_DISCONNECT_DAYS} days, so we've disconnected ${list} from QuickBooks. We only keep your QuickBooks data while you use JobProfitAI.`,
+      `The data we copied is kept for ${DISCONNECTED_RETENTION_DAYS} more days. To keep it, choose a plan and reconnect the same QuickBooks company before then. After that date it's deleted for good. Your login stays.`,
+    ],
+    ...(companyNames.length > 1 ? { bullets: companyNames } : {}),
+    callout: { label: "Data will be deleted on", value: formatDay(deleteOn, timeZone) },
+    cta: { label: "Choose a plan", url: appUrl("/dashboard/billing") },
+    footnote: "Don't need it? You don't have to do anything. To delete it sooner, use Delete this company's data in Settings.",
+  });
+}
+
+/** A week before a disconnected company's data is deleted. */
+export function companyDeletionReminderEmail(companyName: string, deleteOn: Date, timeZone?: string): RenderedEmail {
+  return buildEmail(`${companyName}: data will be deleted on ${formatDay(deleteOn, timeZone)}`, {
+    preheader: "Reconnect before then to keep its history.",
+    heading: "This company's data will be deleted soon",
+    body: [
+      `${companyName} was disconnected from QuickBooks, so nothing has been synced or used for it since. The data we copied for it is deleted ${DISCONNECTED_RETENTION_DAYS} days after a disconnect.`,
+      "To keep its history, reconnect the same QuickBooks company from Settings before that date. Otherwise there's nothing to do.",
+    ],
+    callout: { label: "Data will be deleted on", value: formatDay(deleteOn, timeZone) },
+    cta: { label: "Open Settings", url: appUrl("/dashboard/settings#disconnected") },
   });
 }
 
@@ -626,7 +688,7 @@ export function subscriptionCanceledEmail(accessUntil: Date | null, timeZone?: s
       accessUntil
         ? "Your subscription won't renew. You keep full access until the end of the period you've already paid for."
         : "Your subscription has been canceled and the paid features are now switched off.",
-      "Your data isn't deleted. If you come back, resubscribing restores everything as it was.",
+      `Your data isn't deleted now. If you come back within ${LAPSED_DISCONNECT_DAYS} days, resubscribing restores everything as it was. After that we disconnect QuickBooks and delete the copied data ${DISCONNECTED_RETENTION_DAYS} days later.`,
       "If something about the product drove this, I'd like to know. Just reply to this email.",
     ],
     ...(accessUntil ? { callout: { label: "Access ends", value: formatDay(accessUntil, timeZone) } } : {}),

@@ -1,9 +1,11 @@
 import { randomBytes } from "crypto";
+import type { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { SignJWT, jwtVerify } from "jose";
 import { prisma } from "./prisma";
 import { createSession, hashPassword } from "./auth";
+import { carryAdOptOutToBrowser } from "./adOptOut";
 import { accountFor, ACTIVE_COMPANY_COOKIE } from "./account";
 import { attachCompany, OWNER_ONLY_CONNECT_NOTICE } from "./connectCompany";
 import { hashRealmId, legacyHashRealmId } from "./crypto";
@@ -123,7 +125,15 @@ function displayName(info: Pick<IntuitUserInfo, "givenName" | "familyName">): st
  * knows; "Forgot password" sets a real one if they ever want to sign in
  * without Intuit.
  */
-export async function provisionIntuitUser(identity: { sub: string; email: string; name: string | null }) {
+export async function provisionIntuitUser(
+  identity: { sub: string; email: string; name: string | null },
+  /**
+   * The agreement record (and any opt-out) when the person ticked the box
+   * on /login/intuit. An App Store arrival has neither, so it's asked to
+   * agree at /accept-terms before the app opens (src/lib/termsAcceptance.ts).
+   */
+  extra: Pick<Prisma.UserCreateInput, "termsAcceptances" | "adOptOutAt" | "adOptOutSource"> = {}
+) {
   const user = await prisma.user.create({
     data: {
       email: identity.email,
@@ -132,6 +142,7 @@ export async function provisionIntuitUser(identity: { sub: string; email: string
       emailVerifiedAt: new Date(),
       intuitSub: identity.sub,
       subscription: { create: newTrialSubscriptionData() },
+      ...extra,
     },
   });
   const hadReferralCookie = await attributeSignupReferral(user.id);
@@ -234,6 +245,7 @@ export async function handleIntuitFlow(
   }
 
   await createSession(user.id);
+  await carryAdOptOutToBrowser(user);
   const account = await accountFor(user.id);
 
   if (!connecting) {

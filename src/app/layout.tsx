@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { OG_IMAGE } from "@/lib/siteMeta";
+import MarketingTags from "@/components/MarketingTags";
 
 /**
  * Root metadata. Individual pages override `title` via the template below
@@ -54,7 +55,11 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="bg-white text-navy antialiased">{children}</body>
+      <body className="bg-white text-navy antialiased">
+        {children}
+        {/* Google Tag Manager, on public pages only and never after an opt-out. See src/lib/tracking.ts. */}
+        <MarketingTags />
+      </body>
     </html>
   );
 }

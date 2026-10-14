@@ -19,6 +19,14 @@ import {
   sendTrialExpired,
 } from "@/lib/email/lifecycle";
 import { reportError, withCronMonitor } from "@/lib/monitoring";
+import {
+  companiesDueForDeletionReminder,
+  deletionDueAt,
+  disconnectLapsedCompanies,
+  disconnectRevokedGrants,
+  purgeDisconnectedCompanies,
+} from "@/lib/companyData";
+import { sendCompanyDeletionReminder, sendLapsedDisconnected } from "@/lib/email/lifecycle";
 
 /**
  * GET /api/cron/lifecycle
@@ -66,6 +74,10 @@ interface Counters {
   emailVerificationsPurged: number;
   loginAttemptsPurged: number;
   firmQuantitiesUpdated: number;
+  lapsedCompaniesDisconnected: number;
+  revokedCompaniesDisconnected: number;
+  deletionReminders: number;
+  companiesDeleted: number;
   errors: string[];
 }
 
@@ -95,6 +107,10 @@ async function runLifecycle() {
     emailVerificationsPurged: 0,
     loginAttemptsPurged: 0,
     firmQuantitiesUpdated: 0,
+    lapsedCompaniesDisconnected: 0,
+    revokedCompaniesDisconnected: 0,
+    deletionReminders: 0,
+    companiesDeleted: 0,
     errors: [],
   };
 
@@ -113,6 +129,34 @@ async function runLifecycle() {
     const r = await syncAllFirmQuantities();
     counters.firmQuantitiesUpdated = r.updated;
     if (r.errors > 0) counters.errors.push(`firm-quantities: ${r.errors} failed`);
+  });
+  // Data retention (src/lib/dataRetention.ts): accounts with no trial or plan
+  // for 90 days are disconnected from QuickBooks, so are companies QuickBooks
+  // has refused us for 7 days (disconnected on Intuit's side), a disconnected company's
+  // owner is reminded a week before its data goes, and data disconnected for
+  // 30 days is deleted. Intuit's developer terms require the stop and the
+  // deletion; the Terms and Privacy Policy promise these exact steps.
+  await runStage(counters, "lapsed-disconnect", async () => {
+    const done = await disconnectLapsedCompanies(now);
+    counters.lapsedCompaniesDisconnected = done.length;
+    const byOwner = new Map<string, typeof done>();
+    for (const c of done) byOwner.set(c.userId, [...(byOwner.get(c.userId) ?? []), c]);
+    for (const [ownerId, companies] of byOwner) {
+      const result = await sendLapsedDisconnected(ownerId, companies, deletionDueAt(now));
+      if (!result.ok && !result.skipped) counters.errors.push(`lapsed-disconnect email: ${result.error ?? "failed"}`);
+    }
+  });
+  await runStage(counters, "revoked-grants", async () => {
+    counters.revokedCompaniesDisconnected = (await disconnectRevokedGrants(now)).length;
+  });
+  await runStage(counters, "deletion-reminders", async () => {
+    for (const c of await companiesDueForDeletionReminder(now)) {
+      const result = await sendCompanyDeletionReminder(c.userId, c, deletionDueAt(c.disconnectedAt!));
+      if (result.ok && !result.skipped) counters.deletionReminders += 1;
+    }
+  });
+  await runStage(counters, "purge-disconnected", async () => {
+    counters.companiesDeleted = await purgeDisconnectedCompanies(now);
   });
   // Housekeeping, deliberately last: an expired reset token is already
   // refused on use, so this only stops the table growing forever. It must

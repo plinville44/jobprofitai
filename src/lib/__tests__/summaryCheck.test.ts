@@ -13,6 +13,8 @@ const ai = {
 };
 vi.mock("@/lib/ai", () => ({
   AI_MODEL: "test-model",
+  // The real one adds inference_geo: "us" (src/lib/ai.ts); its own test covers that.
+  inUs: (params: any) => params,
   aiClient: () => ({
     messages: {
       create: async (params: any) => {

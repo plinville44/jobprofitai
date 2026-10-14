@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getAccount, getActiveConnection } from "@/lib/account";
+import { hasAcceptedCurrentTerms } from "@/lib/termsAcceptance";
 import { getEntitlements } from "@/lib/entitlements";
 import { getConnectionProfitData, laborBurdenOf } from "@/lib/profitability";
 import { buildWipSchedule, NOT_SCHEDULED_NEED_TEXT } from "@/lib/wipSchedule";
@@ -22,6 +23,7 @@ const money = (n: number | null) => (n == null ? "-" : formatCurrency(n));
 export default async function WipReportPage() {
   const account = await getAccount();
   if (!account) redirect("/login");
+  if (!(await hasAcceptedCurrentTerms(account.userId))) redirect("/accept-terms?next=/reports/wip");
   const entitlements = await getEntitlements(account.ownerId);
   if (!entitlements.active) redirect("/dashboard/billing");
   const { connection } = await getActiveConnection(account);

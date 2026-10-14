@@ -4,10 +4,12 @@ import { getAccount, getActiveConnection } from "@/lib/account";
 import { canConnectAnotherCompany, getEntitlements } from "@/lib/entitlements";
 import { connectNeedsOwner, OWNER_ONLY_CONNECT_MESSAGE, OWNER_ONLY_CONNECT_NOTICE } from "@/lib/connectCompany";
 import { StatusDot } from "@/components/dashboard/Badges";
-import { formatDateTime } from "@/lib/format";
+import { formatDate, formatDateTime } from "@/lib/format";
 import SettingsForm from "./SettingsForm";
 import ConnectionActions from "./ConnectionActions";
 import DeleteAccountForm from "./DeleteAccountForm";
+import DeleteCompanyForm from "./DeleteCompanyForm";
+import { DISCONNECTED_RETENTION_DAYS, deletionDueAt } from "@/lib/dataRetention";
 import CategoryMappingForm from "./CategoryMappingForm";
 import SignOutEverywhereButton from "./SignOutEverywhereButton";
 import UnlinkIntuitButton from "./UnlinkIntuitButton";
@@ -76,6 +78,14 @@ export default async function SettingsPage(props: {
     }
   }
   const me = await prisma.user.findUnique({ where: { id: account.userId }, select: { intuitSub: true } });
+  // Disconnected companies whose data hasn't been deleted yet (see src/lib/dataRetention.ts).
+  const disconnected = isOwner
+    ? await prisma.quickBooksConnection.findMany({
+        where: { userId: account.ownerId, disconnectedAt: { not: null } },
+        orderBy: { disconnectedAt: "desc" },
+        select: { id: true, companyName: true, disconnectedAt: true },
+      })
+    : [];
   const marginTargets = connection
     ? await prisma.marginTarget.findMany({ where: { connectionId: connection.id } })
     : [];
@@ -248,6 +258,31 @@ export default async function SettingsPage(props: {
             </div>
           </section>
         </>
+      )}
+
+      {disconnected.length > 0 && (
+        <section id="disconnected" className="mt-8 rounded-xl border border-gray-200 p-6">
+          <h2 className="text-sm font-semibold text-navy">Disconnected companies</h2>
+          <p className="mt-1 text-sm text-gray-600">
+            Nothing is synced or used for these. Each one&apos;s data is kept for {DISCONNECTED_RETENTION_DAYS} days after it
+            was disconnected, so reconnecting the same QuickBooks company brings its history back, and then it&apos;s
+            deleted. You can delete it now instead.
+          </p>
+          <ul className="mt-3 divide-y divide-gray-100">
+            {disconnected.map((c) => (
+              <li key={c.id} className="py-4 first:pt-1 last:pb-1">
+                <p className="font-semibold text-navy">{c.companyName ?? "QuickBooks company"}</p>
+                <p className="mt-1 text-sm text-gray-600">
+                  Disconnected {formatDate(c.disconnectedAt)}. Its data will be deleted on{" "}
+                  {formatDate(deletionDueAt(c.disconnectedAt!))}.
+                </p>
+                <div className="mt-3">
+                  <DeleteCompanyForm connectionId={c.id} companyName={c.companyName ?? "this company"} />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       <TeamSection account={account} activeConnectionId={connection?.id ?? null} />

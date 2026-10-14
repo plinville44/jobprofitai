@@ -12,6 +12,22 @@ import {
 } from "./client";
 import * as T from "./templates";
 import { DEFAULT_TIME_ZONE } from "@/lib/format";
+import { tipsEmailsAllowed, tipsUnsubscribeUrl } from "@/lib/emailPreferences";
+
+/**
+ * Tips and reminders (TIPS_EMAIL_TYPES in src/lib/emailPreferences.ts): not
+ * sent once the customer has unsubscribed from them, and otherwise sent with
+ * an unsubscribe line and one-click List-Unsubscribe headers.
+ */
+async function asTips(userId: string, email: T.RenderedEmail): Promise<(T.RenderedEmail & { headers: Record<string, string> }) | null> {
+  if (!(await tipsEmailsAllowed(userId))) return null;
+  const url = tipsUnsubscribeUrl(userId);
+  return {
+    ...T.withUnsubscribe(email, url, "Don't want tips and reminders like this?"),
+    headers: { "List-Unsubscribe": `<${url}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" },
+  };
+}
+const TIPS_OFF: SendEmailResult = { ok: true, skipped: true };
 
 // Every lifecycle email trigger in one place, each with an explicit dedupe
 // key. Nothing else in the app calls sendLifecycleEmail() directly, so the
@@ -70,7 +86,8 @@ export async function sendTrialWelcome(userId: string): Promise<SendEmailResult>
 export async function sendSetupReminder(userId: string, daysLeft: number): Promise<SendEmailResult> {
   const contact = await contactFor(userId);
   if (!contact) return { ok: false, error: "User not found" };
-  const email = T.setupReminderEmail(contact.name, daysLeft);
+  const email = await asTips(userId, T.setupReminderEmail(contact.name, daysLeft));
+  if (!email) return TIPS_OFF;
 
   return sendLifecycleEmail({
     userId,
@@ -127,7 +144,8 @@ export async function sendAnalysisReady(
 export async function sendTrialCheckIn(userId: string): Promise<SendEmailResult> {
   const contact = await contactFor(userId);
   if (!contact) return { ok: false, error: "User not found" };
-  const email = T.trialCheckInEmail(contact.name);
+  const email = await asTips(userId, T.trialCheckInEmail(contact.name));
+  if (!email) return TIPS_OFF;
 
   return sendLifecycleEmail({
     userId,
@@ -142,7 +160,8 @@ export async function sendTrialCheckIn(userId: string): Promise<SendEmailResult>
 export async function sendReportGuide(userId: string): Promise<SendEmailResult> {
   const contact = await contactFor(userId);
   if (!contact) return { ok: false, error: "User not found" };
-  const email = T.reportGuideEmail(contact.name);
+  const email = await asTips(userId, T.reportGuideEmail(contact.name));
+  if (!email) return TIPS_OFF;
 
   return sendLifecycleEmail({
     userId,
@@ -173,14 +192,17 @@ export async function sendTrialEndingSoon(params: {
   const contact = await contactFor(params.userId);
   if (!contact) return { ok: false, error: "User not found" };
 
-  const email =
+  // The extension offer is a tips email; someone who turned those off gets
+  // the plain "your trial ends on" notice instead.
+  const offer =
     params.offerExtension && params.extensionWouldEndAt
-      ? T.trialEndingWithOfferEmail(params.daysLeft, params.extensionWouldEndAt, contact.timeZone)
-      : T.trialEndingNoOfferEmail(params.daysLeft, params.trialEndsAt, contact.timeZone);
+      ? await asTips(params.userId, T.trialEndingWithOfferEmail(params.daysLeft, params.extensionWouldEndAt, contact.timeZone))
+      : null;
+  const email = offer ?? T.trialEndingNoOfferEmail(params.daysLeft, params.trialEndsAt, contact.timeZone);
 
   return sendLifecycleEmail({
     userId: params.userId,
-    emailType: params.offerExtension ? "trial_ending_offer" : "trial_ending_soon",
+    emailType: offer ? "trial_ending_offer" : "trial_ending_soon",
     dedupeKey: `trial_ending:${params.userId}:${dayStamp(params.trialEndsAt)}`,
     to: contact.email,
     ...email,
@@ -232,7 +254,8 @@ export async function sendTrialExpired(
 export async function sendTestimonialRequest(userId: string): Promise<SendEmailResult> {
   const contact = await contactFor(userId);
   if (!contact) return { ok: false, error: "User not found" };
-  const email = T.testimonialRequestEmail(contact.name);
+  const email = await asTips(userId, T.testimonialRequestEmail(contact.name));
+  if (!email) return TIPS_OFF;
 
   return sendLifecycleEmail({
     userId,
@@ -388,6 +411,53 @@ export async function sendSubscriptionCanceled(
     emailType: "subscription_canceled",
     dedupeKey: `subscription_canceled:${userId}:${stripeSubscriptionId}`,
     to: contact.email,
+    ...email,
+  });
+}
+
+// --- Data retention (src/lib/dataRetention.ts) ---------------------------
+
+/** One email for all the companies an account lost on the same day. */
+export async function sendLapsedDisconnected(
+  userId: string,
+  companies: { id: string; companyName: string | null; emailTimezone: string | null }[],
+  deleteOn: Date
+): Promise<SendEmailResult> {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  if (!user || companies.length === 0) return { ok: false, error: "Nothing to send" };
+  const email = T.lapsedDisconnectedEmail(
+    companies.map((c) => c.companyName ?? "Your QuickBooks company"),
+    deleteOn,
+    companies[0].emailTimezone ?? DEFAULT_TIME_ZONE
+  );
+  return sendLifecycleEmail({
+    userId,
+    emailType: "lapsed_disconnected",
+    dedupeKey: `lapsed_disconnected:${userId}:${dayStamp(deleteOn)}`,
+    to: user.email,
+    ...email,
+  });
+}
+
+export async function sendCompanyDeletionReminder(
+  userId: string,
+  company: { id: string; companyName: string | null; emailTimezone: string | null },
+  deleteOn: Date
+): Promise<SendEmailResult> {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  if (!user) return { ok: false, error: "User not found" };
+  const email = T.companyDeletionReminderEmail(
+    company.companyName ?? "Your QuickBooks company",
+    deleteOn,
+    company.emailTimezone ?? DEFAULT_TIME_ZONE
+  );
+  return sendLifecycleEmail({
+    userId,
+    emailType: "company_deletion_reminder",
+    // Keyed to the company and its deletion day: a reconnect and a second
+    // disconnect later gets its own reminder.
+    dedupeKey: `company_deletion_reminder:${company.id}:${dayStamp(deleteOn)}`,
+    to: user.email,
     ...email,
   });
 }

@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { createSession } from "@/lib/auth";
 import { clearPendingIntuitIdentity, provisionIntuitUser, readPendingIntuitIdentity } from "@/lib/intuitSignIn";
 import { sendTrialWelcome } from "@/lib/email/lifecycle";
+import { acceptanceData } from "@/lib/termsAcceptance";
+import { signupAdOptOut } from "@/lib/adOptOut";
 
 export const runtime = "nodejs";
 
@@ -13,11 +15,18 @@ export const runtime = "nodejs";
  * Creates a JobProfitAI account (with its free trial) for the Intuit
  * identity waiting in the pending cookie. Only when no login already uses
  * that email address; an existing one has to be linked with its password.
+ * Body: { acceptTerms: true }, from the unchecked agreement box.
  */
 export async function POST(req: Request) {
-  // No body is sent, so only the origin is checked.
-  const refused = refuseCrossSite(req, { requireJson: false });
+  const refused = refuseCrossSite(req);
   if (refused) return refused;
+  const body = (await req.json().catch(() => ({}))) as { acceptTerms?: unknown };
+  if (body.acceptTerms !== true) {
+    return NextResponse.json(
+      { error: "Please check the box to agree to the Terms of Service and Privacy Policy." },
+      { status: 400 }
+    );
+  }
   const pending = await readPendingIntuitIdentity();
   if (!pending || !pending.email) {
     return NextResponse.json({ error: "That took too long. Choose Sign in with Intuit again." }, { status: 410 });
@@ -35,7 +44,10 @@ export async function POST(req: Request) {
 
   let userId: string;
   try {
-    const user = await provisionIntuitUser({ sub: pending.sub, email: pending.email, name: pending.name });
+    const user = await provisionIntuitUser(
+      { sub: pending.sub, email: pending.email, name: pending.name },
+      { termsAcceptances: { create: acceptanceData("intuit_signup", req.headers) }, ...signupAdOptOut(req) }
+    );
     userId = user.id;
   } catch (err) {
     if ((err as { code?: string })?.code === "P2002") {

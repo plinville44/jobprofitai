@@ -62,8 +62,17 @@ export function SupportEmail() {
   );
 }
 
-/** Shown on both legal pages. Change it whenever either document changes. */
-export const LEGAL_LAST_UPDATED = "September 30, 2026";
+/** A link to another company's site, such as an opt-out page, opened in a new tab. */
+export function ExternalLink({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <a href={href} className="font-medium text-jp-blue hover:underline" rel="noopener noreferrer" target="_blank">
+      {children}
+    </a>
+  );
+}
+
+/** Shown on every legal page. Set in src/lib/legalVersion.ts with the acceptance version. */
+export { LEGAL_LAST_UPDATED } from "@/lib/legalVersion";
 
 /** The postal address, formatted for the Contact section of each legal page. */
 export function MailingAddress() {

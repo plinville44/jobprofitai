@@ -5,6 +5,7 @@ import { getAccount, listCompanies } from "@/lib/account";
 import { hashRealmId, legacyHashRealmId } from "@/lib/crypto";
 import { probeConnection } from "@/lib/quickbooksSync";
 import { ConnectToQuickBooksButton, SignInWithIntuitButton } from "@/components/IntuitButtons";
+import { DISCONNECTED_RETENTION_DAYS } from "@/lib/dataRetention";
 
 export const metadata: Metadata = {
   title: "Disconnected from QuickBooks",
@@ -63,9 +64,10 @@ export default async function DisconnectedPage(props: { searchParams: Promise<{ 
             </p>
           )}
           <p className="mt-3 text-sm text-jp-slate">
-            JobProfitAI can no longer read from that QuickBooks company. Syncing and its Weekly Profit Brief have
-            stopped. Everything already in JobProfitAI (your jobs, estimates and reports) is kept, and comes back as it
-            was if you reconnect.
+            JobProfitAI can no longer read from that QuickBooks company. Syncing, its Weekly Profit Brief and all use
+            of its data have stopped. Everything already in JobProfitAI (your jobs, estimates and reports) is kept for{" "}
+            {DISCONNECTED_RETENTION_DAYS} days and comes back as it was if you reconnect in that time. After that it&apos;s
+            deleted.
           </p>
 
           <h2 className="mt-6 text-sm font-semibold text-navy">To reconnect</h2>

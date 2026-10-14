@@ -59,6 +59,44 @@ model User {
   teamMembership    TeamMember?      @relation("TeamMemberUser")
   passwordResets    PasswordResetToken[]
   emailVerifications EmailVerificationToken[]
+  // Every time this login agreed to the Terms of Service and Privacy Policy:
+  // which version, when and how. See src/lib/termsAcceptance.ts.
+  termsAcceptances  TermsAcceptance[]
+
+  // Set when this person opts out of the sale or sharing of personal
+  // information and targeted advertising while signed in (Your Privacy
+  // Choices, or a browser sending Global Privacy Control), or by email.
+  // Anything that reports this account's steps to Google or LinkedIn from
+  // the server must check it first (serverReportsAllowed in
+  // src/lib/tracking.ts). "privacy_page" | "gpc" | "email" | "signup".
+  adOptOutAt        DateTime?
+  adOptOutSource    String?
+  // Set by the unsubscribe link in tips and feedback emails (trial check-in,
+  // the report guide, the testimonial request). Account, billing, security
+  // and trial-status emails still go. See src/lib/emailPreferences.ts.
+  tipsEmailsOffAt   DateTime?
+}
+
+// One acceptance of the Terms of Service and Privacy Policy: the evidence
+// that a customer agreed, kept for as long as the login exists. `version` is
+// ACCEPTANCE_VERSION from src/lib/legalVersion.ts at the time, and the text
+// of every version is kept in legal-archive/ in the repository.
+model TermsAcceptance {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  version     String
+  // "signup" | "intuit_signup" | "reaccept" | "checkout"
+  method      String
+  acceptedAt  DateTime @default(now())
+  // Keyed one-way hash of the network address (like LoginAttempt), and the
+  // browser's user agent, so an acceptance can be tied to a session.
+  ipHash      String?
+  userAgent   String?  @db.VarChar(400)
+  // For checkout acceptances: Stripe records the consent on the session too.
+  stripeCheckoutSessionId String? @unique
+
+  @@index([userId, version])
 }
 
 // A single-use, time-limited password reset.

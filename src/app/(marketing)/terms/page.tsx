@@ -19,6 +19,7 @@ import {
   TRIAL_EXTENSION_DAYS,
 } from "@/lib/plans";
 import { COMPANY_LEGAL_NAME, COMPANY_MAILING_ADDRESS } from "@/lib/company";
+import { DISCONNECTED_RETENTION_DAYS, LAPSED_DISCONNECT_DAYS, REVOKED_GRANT_GRACE_DAYS } from "@/lib/dataRetention";
 
 export const metadata: Metadata = {
   title: "Terms of Service",
@@ -57,14 +58,15 @@ export default function TermsPage() {
             (together, the “Service”).
           </p>
           <p>
-            By creating an account, connecting a QuickBooks Online company, starting a trial,
-            subscribing, or otherwise using the Service, you agree to these Terms and to our{" "}
+            You accept these Terms and our{" "}
             <Link href="/privacy" className="font-medium text-jp-blue hover:underline">
               Privacy Policy
-            </Link>
-            . If you use the Service on behalf of a business, “you” means that business, and you
-            confirm that you are authorized to accept these Terms for it. If you do not agree, do
-            not use the Service.
+            </Link>{" "}
+            by checking the box that says you agree when you create an account, when we ask you to
+            after a change, or when you subscribe, and by using the Service. We keep a record of each
+            acceptance: the version, the date and time, and how you accepted. If you use the Service
+            on behalf of a business, “you” means that business, and you confirm that you are
+            authorized to accept these Terms for it. If you do not agree, do not use the Service.
           </p>
           <p>
             Please read Section 5 (Subscriptions, automatic renewal and cancellation), Section 11
@@ -127,7 +129,8 @@ export default function TermsPage() {
             it; you are responsible for giving it to the right person and for removing it when they should no longer
             have access. We treat the firm as the account holder: we act on the firm&rsquo;s instructions about the
             account, and a client who asks us about their data will be directed to the firm, except where the law
-            requires otherwise.
+            requires otherwise. When a client relationship ends, you can delete that client&rsquo;s company data from
+            Settings without affecting your other clients.
           </li>
         </LegalList>
       </LegalSection>
@@ -140,10 +143,22 @@ export default function TermsPage() {
           our Privacy Policy.
         </p>
         <p>
+          We use your QuickBooks data to provide the Service to you, and we process it for you, not
+          on Intuit&rsquo;s behalf.
+        </p>
+        <p>
           You can disconnect at any time from Settings, or from within your Intuit account.
-          Disconnecting stops syncing and stops the Weekly Profit Brief for that company. Data
-          already copied into JobProfitAI stays in your account until you delete your account (see
-          Section 13) so you can reconnect later without losing history.
+          Disconnecting stops syncing, the Weekly Profit Brief, alerts and every other use of that
+          company&rsquo;s data. We keep the data already copied into JobProfitAI for{" "}
+          {DISCONNECTED_RETENTION_DAYS} days after a disconnect, so you can reconnect the same
+          company without losing its history, and then delete it. You can also delete a
+          company&rsquo;s data at any time from Settings, without deleting your account. If QuickBooks
+          stops letting us read a company, for example because you disconnected JobProfitAI from
+          your Intuit account, and it isn&rsquo;t reconnected within {REVOKED_GRANT_GRACE_DAYS} days,
+          we treat it as disconnected. If your
+          account goes {LAPSED_DISCONNECT_DAYS} days without an active trial or subscription, we
+          disconnect its QuickBooks companies and email you, and the same{" "}
+          {DISCONNECTED_RETENTION_DAYS}-day period begins.
         </p>
         <p>
           Your use of QuickBooks Online is governed by your agreement with Intuit. JobProfitAI is
@@ -164,7 +179,8 @@ export default function TermsPage() {
         </p>
         <p>
           When the trial ends, the analysis features switch off unless you subscribe. Your account
-          and your data are not deleted when a trial ends. You will not be charged at the end of a
+          and your data are not deleted when a trial ends, but Section 3 applies if you have not
+          subscribed {LAPSED_DISCONNECT_DAYS} days later. You will not be charged at the end of a
           trial, because no payment method is collected for it. We may change, limit or end the
           trial offer for new accounts at any time.
         </p>
@@ -196,8 +212,9 @@ export default function TermsPage() {
             period, until you cancel.
           </p>
           <p>
-            Payments are processed by Stripe. By subscribing, you authorize us, through Stripe, to
-            charge your payment method for each renewal. Your first charge happens when you
+            Payments are processed by Stripe. At checkout you confirm that you agree to these Terms
+            and to the automatic renewal. By subscribing, you authorize us,
+            through Stripe, to charge your payment method for each renewal. Your first charge happens when you
             subscribe, and later charges happen on the same day of each following month.
           </p>
         </LegalSub>
@@ -234,7 +251,8 @@ export default function TermsPage() {
             If a renewal payment fails, Stripe will retry it and we will let you know by email.
             You keep access while payment is being retried. If payment cannot be collected, your
             access to the paid features is paused until the balance is paid or you choose a plan
-            again. Your data is not deleted because a payment failed.
+            again. Your data is not deleted because a payment failed, unless your account then goes{" "}
+            {LAPSED_DISCONNECT_DAYS} days without an active subscription (see Section 3).
           </p>
         </LegalSub>
         <LegalSub title="Price changes">
@@ -257,7 +275,10 @@ export default function TermsPage() {
           You give us a limited permission to host, copy, process, analyze and display Your Data,
           and to share it with the service providers listed in our Privacy Policy, only as needed
           to provide, secure, support and improve the Service for you, and as the law requires. We
-          do not sell Your Data and we do not use it to advertise to you or anyone else.
+          do not sell Your Data. We do not use your QuickBooks data, or the jobs, customers and
+          figures in your account, for advertising, and we never share them with advertising or
+          analytics companies. Our public website uses analytics and advertising cookies as our
+          Privacy Policy describes; they never run inside the app.
         </p>
         <p>
           Each account’s financial data is kept separate. Other customers cannot see it. Referring
@@ -272,6 +293,29 @@ export default function TermsPage() {
           not identify you, your business, your customers or your jobs, and use it to operate and
           improve the Service.
         </p>
+        <LegalSub title="Confidentiality">
+          <p>
+            We will keep Your Data confidential. We use it only to provide, secure, support and
+            improve the Service for you as these Terms describe, and we disclose it only to our
+            personnel and service providers who need it for that purpose and are bound by written
+            confidentiality and data-protection obligations at least as protective as these Terms,
+            to the people you choose, and as the law requires. This does not cover information that
+            is public through no fault of ours, that we lawfully had or received from someone else
+            without a duty of confidentiality, or that we develop independently without using Your
+            Data.
+          </p>
+        </LegalSub>
+        <LegalSub title="Data Processing Addendum">
+          <p>
+            Our{" "}
+            <Link href="/dpa" className="font-medium text-jp-blue hover:underline">
+              Data Processing Addendum
+            </Link>{" "}
+            is part of these Terms. It applies to personal information in Your Data that we process
+            on your behalf, such as the names of your customers, vendors and employees, and it
+            controls if it conflicts with these Terms on that subject.
+          </p>
+        </LegalSub>
         <p>
           How we collect, use, share and protect information is described in our{" "}
           <Link href="/privacy" className="font-medium text-jp-blue hover:underline">
@@ -295,14 +339,20 @@ export default function TermsPage() {
           are responsible for checking any figure against your own records before relying on it
           for a pricing, bidding, lending, tax, legal or other significant business decision.
         </p>
+        <p id="examples">
+          The figures on our website, in the sample-data demo, in our videos and in our ads come
+          from a made-up example company. They show how the Service works. They are not results any
+          customer has achieved, and they are not a promise of what you will find in your own data.
+        </p>
       </LegalSection>
 
       <LegalSection id="ai" title="8. Artificial intelligence features">
         <p>
           Some text in the Service, including advisor notes on profit opportunities, the written
           summary in the Weekly Profit Brief and suggested job types you ask for, is generated by
-          an AI model provided by a third party (currently Anthropic). To produce it, we send that
-          provider the calculated profitability information for your jobs, which includes job
+          an AI model provided by a third party (currently Anthropic, with processing restricted to
+          the United States). To produce it, we send that provider the calculated profitability
+          information for your jobs, which includes job
           names, the customer names attached to them, job types and calculated figures. Your
           QuickBooks login and access tokens are never sent.
         </p>
@@ -385,26 +435,33 @@ export default function TermsPage() {
       </LegalSection>
 
       <LegalSection id="liability" title="12. Limitation of liability">
+        <p>
+          In this Section and Section 14, the &ldquo;PWL Parties&rdquo; are PWL Solutions LLC and
+          its members, managers, employees and agents.
+        </p>
         <Conspicuous>
-          To the fullest extent permitted by law, PWL Solutions LLC and its members, managers,
-          employees and agents will not be liable for any indirect, incidental, special,
+          To the fullest extent permitted by law, the PWL Parties will not be liable for any
+          indirect, incidental, special,
           consequential, exemplary or punitive damages, or for any loss of profits, revenue,
           business, goodwill or data, or the cost of substitute services, arising out of or
           related to these Terms or the Service, even if we have been told such damages were
           possible.
         </Conspicuous>
         <Conspicuous>
-          To the fullest extent permitted by law, our total liability for all claims arising out
-          of or related to these Terms or the Service is limited to the greater of (a) the amounts
-          you paid us for the Service in the 12 months before the event giving rise to the claim,
-          and (b) one hundred US dollars ($100).
+          To the fullest extent permitted by law, the total liability of all the PWL Parties
+          together, for all claims arising out of or related to these Terms or the Service, is
+          limited to the greater of (a) the amounts you paid us for the Service in the 12 months
+          before the event giving rise to the claim, and (b) one hundred US dollars ($100). This is
+          one combined limit for all claims against all of the PWL Parties, not a separate limit for
+          each of them.
         </Conspicuous>
         <p>
           These limits apply to every kind of claim, whether in contract, tort (including
           negligence), strict liability or otherwise, and even if a limited remedy fails of its
           essential purpose. They do not limit liability that cannot be limited under applicable
           law, such as liability for fraud or for gross negligence or willful misconduct where the
-          law does not permit a limit.
+          law does not permit a limit. They do not limit anyone&rsquo;s liability for their own
+          fraud. The PWL Parties other than PWL Solutions LLC may rely on and enforce this Section.
         </p>
       </LegalSection>
 
@@ -439,14 +496,17 @@ export default function TermsPage() {
 
       <LegalSection id="indemnity" title="14. Your responsibility for claims">
         <p>
-          To the extent permitted by law, you will defend, indemnify and hold harmless PWL
-          Solutions LLC and its members, managers and employees from any third-party claims,
+          To the extent permitted by law, you will defend, indemnify and hold harmless the PWL
+          Parties (Section 12) from any third-party claims,
           losses and reasonable costs (including reasonable attorneys’ fees) arising from (a) your
           connecting a QuickBooks company or sharing data you were not authorized to connect or
           share, (b) your sending the Weekly Profit Brief or other information to recipients you
           added, or (c) your violation of these Terms or of law. We will tell you promptly about
           any such claim and let you control its defense, although we may take part with our own
-          counsel at our own cost.
+          counsel at our own cost. You may not settle a claim without our prior written consent if
+          the settlement admits fault by any PWL Party, requires any PWL Party to do or pay
+          anything, or does not fully release the PWL Parties. The PWL Parties other than PWL
+          Solutions LLC may rely on and enforce this Section.
         </p>
       </LegalSection>
 
@@ -499,6 +559,18 @@ export default function TermsPage() {
             {pro.limits.maxConnections} companies); it does not include the {firm.name} plan.
           </p>
         </LegalSub>
+        <LegalSub title="Recommending JobProfitAI">
+          <p>
+            If you can earn a referral credit or a partner commission, then whenever you recommend
+            JobProfitAI, publicly or to your clients, you must clearly tell people that you may earn a
+            credit or commission, as the Federal Trade Commission&rsquo;s rules on endorsements
+            require. You may not promote JobProfitAI with unsolicited bulk email or messages, or in
+            any way that breaks anti-spam or privacy laws; bid on JobProfitAI or similar names as
+            keywords in search ads; or use our name or logo in a way that suggests you are
+            JobProfitAI or speak for us. We may withhold or reverse credits and commissions earned in
+            breach of these rules.
+          </p>
+        </LegalSub>
         <LegalSub title="Both programs">
           <p>
             Referral status gives no one access to another account’s data. We may change or end
@@ -520,7 +592,8 @@ export default function TermsPage() {
           If you send us suggestions or feedback, including through the feedback survey or
           in-app feedback form, we may use them without any obligation to you. We will not
           publicly attribute feedback to you, or publish it as a testimonial, without your
-          separate permission.
+          separate permission. We also will not name you or your business as a customer, or use
+          your logo, without your permission.
         </p>
       </LegalSection>
 
@@ -545,7 +618,8 @@ export default function TermsPage() {
           <li>
             <span className="font-medium text-jp-ink">Changes to these Terms.</span> We may update
             these Terms. If a change is material, we will email the address on your account at
-            least 30 days before it takes effect, except for changes required by law or made for
+            least 30 days before it takes effect, and we may ask you to accept the updated Terms
+            when you next sign in, except for changes required by law or made for
             security reasons, which may take effect sooner. The “Last updated” date above shows
             when these Terms last changed. Continuing to use the Service after a change takes
             effect means you accept it. If you do not accept a change, you can cancel before it
@@ -560,7 +634,14 @@ export default function TermsPage() {
             <span className="font-medium text-jp-ink">Notices.</span> We send notices to the email
             address on your account. You can send notices to <SupportEmail />, or by mail to{" "}
             {COMPANY_LEGAL_NAME}, {COMPANY_MAILING_ADDRESS}. You agree to receive our
-            communications electronically.
+            communications electronically, including account, trial, billing and service emails.
+            Our marketing emails include a way to unsubscribe.
+          </li>
+          <li>
+            <span className="font-medium text-jp-ink">Other companies&rsquo; services.</span> The
+            Service links to and works with services run by other companies, such as Intuit, Stripe,
+            Google and LinkedIn, and our videos may play through YouTube. Their own terms and privacy
+            policies govern your use of them, and we are not responsible for them.
           </li>
           <li>
             <span className="font-medium text-jp-ink">Events outside our control.</span> We are
@@ -575,11 +656,13 @@ export default function TermsPage() {
           </li>
           <li>
             <span className="font-medium text-jp-ink">Entire agreement.</span> These Terms,
-            together with the Privacy Policy and any plan details shown at checkout, are the entire
+            together with the Privacy Policy, the Data Processing Addendum and any plan details
+            shown at checkout, are the entire
             agreement between you and us about the Service and replace any earlier agreements
             about it. If any provision is found unenforceable, it will be enforced to the maximum
             extent possible and the rest of these Terms will remain in effect. Our not enforcing a
-            provision is not a waiver of it. There are no third-party beneficiaries of these Terms.
+            provision is not a waiver of it. Except for the PWL Parties under Sections 12 and 14,
+            there are no third-party beneficiaries of these Terms.
           </li>
         </LegalList>
       </LegalSection>

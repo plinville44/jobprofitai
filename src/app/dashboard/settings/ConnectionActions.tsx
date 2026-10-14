@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import DeleteCompanyForm from "./DeleteCompanyForm";
+import { DISCONNECTED_RETENTION_DAYS } from "@/lib/dataRetention";
 
 /**
- * QuickBooks connection management for the Settings page - just Disconnect
- * now. Sync now / Generate this week's digest deliberately stay on the main
+ * QuickBooks connection management for the Settings page: Disconnect, and
+ * Delete this company's data. Sync now / Generate this week's digest deliberately stay on the main
  * dashboard (see DashboardActions.tsx); this component only owns the action
  * that was relocated here per the Phase 5 plan.
  */
@@ -57,7 +59,7 @@ export default function ConnectionActions({
   }
 
   return (
-    <div className="mt-4 flex items-center gap-3">
+    <div className="mt-4 flex flex-wrap items-center gap-3">
       <button
         onClick={disconnect}
         disabled={busy}
@@ -65,6 +67,7 @@ export default function ConnectionActions({
       >
         Disconnect from QuickBooks
       </button>
+      <DeleteCompanyForm connectionId={connectionId} companyName={companyName} />
       {status && <span className="text-sm text-gray-500">{status}</span>}
     </div>
   );
@@ -76,7 +79,7 @@ export default function ConnectionActions({
  */
 function disconnectQuestion(companyName: string, clientLogins: number, firmBilled: boolean): string {
   const parts = [
-    `Disconnect ${companyName} from QuickBooks? Syncing, its Weekly Profit Brief and its alerts stop. Your existing data is kept.`,
+    `Disconnect ${companyName} from QuickBooks? Syncing, its Weekly Profit Brief, its alerts and all use of its data stop. Its data is kept for ${DISCONNECTED_RETENTION_DAYS} days in case you reconnect, then deleted.`,
   ];
   if (clientLogins > 0) {
     parts.push(

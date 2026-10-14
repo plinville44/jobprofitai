@@ -7,6 +7,8 @@ export default function IntuitLinkForm({ email: initialEmail, canCreate }: { ema
   const [mode, setMode] = useState<"create" | "link">(canCreate ? "create" : "link");
   const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState("");
+  // Unchecked to start; the server refuses to create an account without it.
+  const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,24 +33,33 @@ export default function IntuitLinkForm({ email: initialEmail, canCreate }: { ema
   if (mode === "create") {
     return (
       <div className="mt-6 space-y-4">
+        <label className="flex items-start gap-2.5 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={agreed}
+            onChange={(e) => setAgreed(e.target.checked)}
+            className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300"
+          />
+          <span>
+            I agree to the{" "}
+            <Link href="/terms" target="_blank" className="underline">
+              Terms of Service
+            </Link>{" "}
+            and{" "}
+            <Link href="/privacy" target="_blank" className="underline">
+              Privacy Policy
+            </Link>
+            .
+          </span>
+        </label>
         <button
-          onClick={() => post("/api/auth/intuit/create")}
-          disabled={busy}
+          onClick={() => post("/api/auth/intuit/create", { acceptTerms: true })}
+          disabled={busy || !agreed}
           className="w-full rounded-lg bg-brand px-4 py-2.5 font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
         >
           {busy ? "Creating your account…" : "Create my JobProfitAI account"}
         </button>
-        <p className="text-xs text-gray-500">
-          Starts a 14-day free trial. No card needed. By continuing you agree to the{" "}
-          <Link href="/terms" className="underline">
-            Terms
-          </Link>{" "}
-          and{" "}
-          <Link href="/privacy" className="underline">
-            Privacy Policy
-          </Link>
-          .
-        </p>
+        <p className="text-xs text-gray-500">Starts a 14-day free trial. No card needed.</p>
         {error && <p className="text-sm text-red-700">{error}</p>}
         <button onClick={() => setMode("link")} className="text-sm font-medium text-brand hover:underline">
           I already have a JobProfitAI login

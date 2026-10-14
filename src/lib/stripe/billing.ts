@@ -2,6 +2,7 @@ import type Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
 import { PLANS, firmBillableCompanies, planPriceText, type PlanId } from "@/lib/plans";
 import { ensureSubscription } from "@/lib/trial";
+import { reportError } from "@/lib/monitoring";
 import { appUrl, getStripe, requirePriceIdForPlan } from "./client";
 import {
   PAYMENT_BEING_CONFIRMED_MESSAGE,
@@ -163,7 +164,8 @@ export async function createCheckoutSession(
     ? `${PLANS.firm.priceLabel} per connected QuickBooks company (${PLANS.firm.perCompany!.minCompanies} minimum; ${quantity} to start, ${formatUsd(PLANS.firm.priceCents * quantity)}), adjusted as you connect or disconnect companies,`
     : planPriceText(plan).replace("/month", "");
 
-  const session = await stripe.checkout.sessions.create({
+  const renewalText = `Your ${PLANS[plan].name} subscription renews automatically every month at ${renewal} plus any applicable tax until you cancel. You can cancel anytime from Billing in your JobProfitAI account, and cancellation takes effect at the end of the month you have already paid for.`;
+  const params: Stripe.Checkout.SessionCreateParams = {
     mode: "subscription",
     customer: customerId,
     line_items: [{ price: priceId, quantity }],
@@ -178,19 +180,44 @@ export async function createCheckoutSession(
     subscription_data: {
       metadata: { jobprofitaiUserId: userId, plan },
     },
+    // A required, unchecked "I agree to the Terms of Service" box on the
+    // payment page. Stripe links it to the Terms URL set in its Dashboard
+    // (Settings, Public details) and records the consent on the session;
+    // the webhook copies it to TermsAcceptance (src/lib/termsAcceptance.ts).
+    consent_collection: { terms_of_service: "required" },
     // Automatic-renewal disclosure, shown directly above the pay button so
     // the price, the monthly renewal and how to cancel are in front of the
     // customer at the moment they agree to pay.
     custom_text: {
       submit: {
-        message: `Your ${PLANS[plan].name} subscription renews automatically every month at ${renewal} plus any applicable tax until you cancel. You can cancel anytime from Billing in your JobProfitAI account, and cancellation takes effect at the end of the month you have already paid for. By subscribing you agree to the JobProfitAI Terms of Service at ${appUrl("/terms")}.`,
+        message: renewalText,
+      },
+      terms_of_service_acceptance: {
+        message: `I agree to the JobProfitAI [Terms of Service](${appUrl("/terms")}), including the automatic monthly renewal described below.`,
       },
     },
     success_url: appUrl(
       opts.successPath ?? "/dashboard/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}"
     ),
     cancel_url: appUrl(opts.cancelPath ?? "/dashboard/billing?checkout=canceled"),
-  });
+  };
+
+  let session: Stripe.Checkout.Session;
+  try {
+    session = await stripe.checkout.sessions.create(params);
+  } catch (err) {
+    // Stripe refuses the terms box when no Terms URL is set in its Dashboard.
+    // Checkout must keep working, so it goes ahead without the box, and the
+    // error is reported so the setting gets fixed (the renewal text stays).
+    const message = err instanceof Error ? err.message : "";
+    if (!/terms of service/i.test(message)) throw err;
+    await reportError(err, { route: "lib/stripe/billing createCheckoutSession (terms consent)" });
+    const { consent_collection: _c, ...rest } = params;
+    session = await stripe.checkout.sessions.create({
+      ...rest,
+      custom_text: { submit: { message: `${renewalText} By subscribing you agree to the JobProfitAI Terms of Service at ${appUrl("/terms")}.` } },
+    });
+  }
 
   if (!session.url) {
     throw new Error("Stripe did not return a checkout URL.");

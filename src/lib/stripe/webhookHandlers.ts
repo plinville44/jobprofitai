@@ -1,5 +1,6 @@
 import type Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
+import { recordAcceptance } from "@/lib/termsAcceptance";
 import { PLANS, partnerTierFor } from "@/lib/plans";
 import { getStripe, planForPriceId } from "./client";
 import { priceIdFromSubscription } from "./billing";
@@ -254,6 +255,12 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session): Promis
     metadataUserId: session.metadata?.jobprofitaiUserId ?? session.client_reference_id ?? null,
   });
   if (!userId) return "No matching account for checkout session";
+
+  // The required terms box on the payment page: keep the evidence with the
+  // account (src/lib/termsAcceptance.ts). Once per session, retries included.
+  if (session.consent?.terms_of_service === "accepted") {
+    await recordAcceptance(userId, "checkout", null, { stripeCheckoutSessionId: session.id });
+  }
 
   // Make sure the customer id is stored even if this is the first we've seen
   // of it (e.g. a customer created directly in the Stripe dashboard).

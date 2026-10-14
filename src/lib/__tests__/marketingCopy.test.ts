@@ -131,8 +131,11 @@ describe("legal pages", () => {
     expect(terms).toContain("plus the view-only client logins of the {firm.name} plan");
   });
 
-  it("carries the new date", () => {
-    expect(read("components/marketing/Legal.tsx")).toContain('LEGAL_LAST_UPDATED = "September 30, 2026"');
+  it("carries the new date, and the acceptance version matches it", () => {
+    const version = read("lib/legalVersion.ts");
+    expect(version).toContain('LEGAL_LAST_UPDATED = "October 8, 2026"');
+    expect(version).toContain('ACCEPTANCE_VERSION = "2026-10-08"');
+    expect(read("components/marketing/Legal.tsx")).toContain('export { LEGAL_LAST_UPDATED } from "@/lib/legalVersion"');
   });
 
   it("lists the QuickBooks data the sync keeps, and covers Firm accounts", () => {
