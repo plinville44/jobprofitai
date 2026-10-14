@@ -114,12 +114,14 @@ describe("inviting client logins", () => {
     await seedFirm();
     const r = await createInvite("firm", "owner@acme.com", NOW, { clientConnectionId: "c1" });
     if (!r.ok) throw new Error(r.error);
-    expect((await findUsableInvite(r.token))?.role).toBe("client");
+    // Checked at NOW, when the invitation was made: it expires 7 days later,
+    // so checking at today's date failed every run after Oct 4, 2026.
+    expect((await findUsableInvite(r.token, NOW))?.role).toBe("client");
     await fake.client.subscription.update({ where: { userId: "firm" }, data: { plan: "profit_intelligence_pro" } });
     await fake.client.user.create({ data: { id: "acme", email: "owner@acme.com", emailVerifiedAt: new Date() } });
-    expect(await acceptInvite(r.token, "acme")).toMatchObject({ ok: false, status: 409 });
+    expect(await acceptInvite(r.token, "acme", NOW)).toMatchObject({ ok: false, status: 409 });
     await fake.client.quickBooksConnection.update({ where: { id: "c1" }, data: { userId: "someone-else" } });
-    expect(await findUsableInvite(r.token)).toBeNull();
+    expect(await findUsableInvite(r.token, NOW)).toBeNull();
   });
 
   it("needs the Firm plan", async () => {
