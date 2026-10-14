@@ -1,5 +1,6 @@
 import type { Prisma, Subscription } from "@prisma/client";
 import { prisma } from "./prisma";
+import { reportServerEvent } from "@/lib/serverEvents";
 import { TRIAL_DAYS, TRIAL_EXTENSION_DAYS, TRIAL_EXTENSION_OFFER_DAY } from "./plans";
 
 // The trial lifecycle, entirely server-side.
@@ -113,18 +114,20 @@ export function newTrialSubscriptionData(now: Date = new Date()): Prisma.Subscri
 export async function markQuickBooksConnected(
   userId: string,
   now: Date = new Date()
-): Promise<void> {
+): Promise<boolean> {
   const sub = await ensureSubscription(userId, now);
-  if (sub.quickbooksConnectedAt) return; // first connection only
+  if (sub.quickbooksConnectedAt) return false; // first connection only
 
-  await prisma.subscription.update({
-    where: { userId },
+  // Conditional, so two connections finishing at once record (and report) it once.
+  const marked = await prisma.subscription.updateMany({
+    where: { userId, quickbooksConnectedAt: null },
     data: {
       quickbooksConnectedAt: now,
       // Only complete activation if the other half already happened.
       activatedAt: sub.activatedAt ?? (sub.firstAnalysisAt ? now : null),
     },
   });
+  return marked.count > 0;
 }
 
 export async function markFirstAnalysis(userId: string, now: Date = new Date()): Promise<void> {
@@ -158,7 +161,9 @@ export async function tryMarkFirstAnalysis(userId: string): Promise<void> {
 
 export async function tryMarkQuickBooksConnected(userId: string): Promise<void> {
   try {
-    await markQuickBooksConnected(userId);
+    // The account's first connection is a step worth measuring; it happens
+    // in the app, where our tags never run (src/lib/serverEvents.ts).
+    if (await markQuickBooksConnected(userId)) await reportServerEvent(userId, "qbo_connected");
   } catch (err) {
     console.error(
       "trial: could not record QuickBooks connection:",

@@ -10,6 +10,7 @@ import ConnectionActions from "./ConnectionActions";
 import DeleteAccountForm from "./DeleteAccountForm";
 import DeleteCompanyForm from "./DeleteCompanyForm";
 import { DISCONNECTED_RETENTION_DAYS, deletionDueAt } from "@/lib/dataRetention";
+import { currentRetentionRulesStart } from "@/lib/companyData";
 import CategoryMappingForm from "./CategoryMappingForm";
 import SignOutEverywhereButton from "./SignOutEverywhereButton";
 import UnlinkIntuitButton from "./UnlinkIntuitButton";
@@ -86,6 +87,7 @@ export default async function SettingsPage(props: {
         select: { id: true, companyName: true, disconnectedAt: true },
       })
     : [];
+  const rulesStart = disconnected.length > 0 ? await currentRetentionRulesStart() : null;
   const marginTargets = connection
     ? await prisma.marginTarget.findMany({ where: { connectionId: connection.id } })
     : [];
@@ -274,7 +276,7 @@ export default async function SettingsPage(props: {
                 <p className="font-semibold text-navy">{c.companyName ?? "QuickBooks company"}</p>
                 <p className="mt-1 text-sm text-gray-600">
                   Disconnected {formatDate(c.disconnectedAt)}. Its data will be deleted on{" "}
-                  {formatDate(deletionDueAt(c.disconnectedAt!))}.
+                  {formatDate(deletionDueAt(c.disconnectedAt!, rulesStart ?? undefined))}.
                 </p>
                 <div className="mt-3">
                   <DeleteCompanyForm connectionId={c.id} companyName={c.companyName ?? "this company"} />

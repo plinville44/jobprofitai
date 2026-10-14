@@ -10,6 +10,7 @@ import {
   DAY_MS,
   DELETION_REMINDER_DAYS_BEFORE,
   DISCONNECTED_RETENTION_DAYS,
+  EARLIEST_RULES_START,
   REVOKED_GRANT_GRACE_DAYS,
   accessEndedAt,
   deletionDueAt,
@@ -19,6 +20,33 @@ import {
 export * from "@/lib/dataRetention";
 
 /** Disconnecting, deleting and purging companies. The rules and numbers are in src/lib/dataRetention.ts. */
+
+const RULES_START_KEY = "retention_rules_start";
+
+/**
+ * The day the retention rules started in production: recorded by the first
+ * lifecycle run that calls this, and read back on every run after, so the
+ * clocks for anything disconnected or lapsed before launch count from launch
+ * day. Never earlier than RETENTION_RULES_START.
+ */
+export async function retentionRulesStart(now = new Date()): Promise<Date> {
+  const row = await prisma.appMilestone.upsert({
+    where: { key: RULES_START_KEY },
+    create: { key: RULES_START_KEY, at: now },
+    update: {},
+  });
+  return row.at.getTime() < EARLIEST_RULES_START.getTime() ? EARLIEST_RULES_START : row.at;
+}
+
+/**
+ * The same date for pages that only display deletion dates. Before the
+ * first lifecycle run it isn't recorded yet, so the rules count from now.
+ */
+export async function currentRetentionRulesStart(now = new Date()): Promise<Date> {
+  const row = await prisma.appMilestone.findUnique({ where: { key: RULES_START_KEY } });
+  const at = row?.at ?? now;
+  return at.getTime() < EARLIEST_RULES_START.getTime() ? EARLIEST_RULES_START : at;
+}
 
 async function revokeQuietly(connection: Pick<QuickBooksConnection, "refreshToken">): Promise<void> {
   try {
@@ -91,7 +119,7 @@ export async function deleteCompanyData(connection: QuickBooksConnection): Promi
  * reconnected while this runs is never deleted. Client logins were removed
  * at the disconnect, and the grant was revoked or refused then.
  */
-export async function purgeDisconnectedCompanies(now = new Date(), limit = 100): Promise<number> {
+export async function purgeDisconnectedCompanies(now = new Date(), rulesStart: Date, limit = 100): Promise<number> {
   const cutoff = new Date(now.getTime() - DISCONNECTED_RETENTION_DAYS * DAY_MS);
   const candidates = await prisma.quickBooksConnection.findMany({
     where: { disconnectedAt: { not: null, lte: cutoff } },
@@ -101,7 +129,7 @@ export async function purgeDisconnectedCompanies(now = new Date(), limit = 100):
   let deleted = 0;
   for (const c of candidates) {
     if (deleted >= limit) break;
-    if (deletionDueAt(c.disconnectedAt!).getTime() > now.getTime()) continue;
+    if (deletionDueAt(c.disconnectedAt!, rulesStart).getTime() > now.getTime()) continue;
     await keepTrialRecord(c);
     const gone = await prisma.quickBooksConnection.deleteMany({ where: { id: c.id, disconnectedAt: { not: null, lte: cutoff } } });
     if (gone.count === 0) continue;
@@ -112,7 +140,7 @@ export async function purgeDisconnectedCompanies(now = new Date(), limit = 100):
 }
 
 /** Disconnected companies whose data is deleted within DELETION_REMINDER_DAYS_BEFORE days. */
-export async function companiesDueForDeletionReminder(now = new Date()): Promise<QuickBooksConnection[]> {
+export async function companiesDueForDeletionReminder(now = new Date(), rulesStart: Date): Promise<QuickBooksConnection[]> {
   const soon = now.getTime() + DELETION_REMINDER_DAYS_BEFORE * DAY_MS;
   // Every company disconnected before the rules began shares one deletion
   // date, so the window is read in full rather than capped.
@@ -130,7 +158,7 @@ export async function companiesDueForDeletionReminder(now = new Date()): Promise
     cursor = page[page.length - 1].id;
   }
   return rows.filter((c) => {
-    const due = deletionDueAt(c.disconnectedAt!).getTime();
+    const due = deletionDueAt(c.disconnectedAt!, rulesStart).getTime();
     return due > now.getTime() && due <= soon;
   });
 }
@@ -171,7 +199,7 @@ export async function disconnectRevokedGrants(now = new Date()): Promise<QuickBo
  * was disconnected so the caller can email the owner. Complimentary
  * accounts are never touched.
  */
-export async function disconnectLapsedCompanies(now = new Date(), ownerLimit = 100): Promise<QuickBooksConnection[]> {
+export async function disconnectLapsedCompanies(now = new Date(), rulesStart: Date, ownerLimit = 100): Promise<QuickBooksConnection[]> {
   const candidates = await prisma.quickBooksConnection.findMany({
     where: {
       disconnectedAt: null,
@@ -196,7 +224,7 @@ export async function disconnectLapsedCompanies(now = new Date(), ownerLimit = 1
     if (owners >= ownerLimit) break;
     const first = companies[0];
     const ended = accessEndedAt(first.user.subscription, first.user.createdAt, now);
-    if (!lapsedLongEnough(ended, now)) continue;
+    if (!lapsedLongEnough(ended, now, rulesStart)) continue;
     if ((await getEntitlements(ownerId, now)).access === "complimentary") continue;
     owners += 1;
     for (const c of companies) {

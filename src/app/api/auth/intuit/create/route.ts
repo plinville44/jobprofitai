@@ -6,6 +6,8 @@ import { clearPendingIntuitIdentity, provisionIntuitUser, readPendingIntuitIdent
 import { sendTrialWelcome } from "@/lib/email/lifecycle";
 import { acceptanceData } from "@/lib/termsAcceptance";
 import { signupAdOptOut } from "@/lib/adOptOut";
+import { SOURCE_COOKIE } from "@/lib/adSource";
+import { reportServerEvent, signupAdSource, signupSessionId } from "@/lib/serverEvents";
 
 export const runtime = "nodejs";
 
@@ -46,7 +48,11 @@ export async function POST(req: Request) {
   try {
     const user = await provisionIntuitUser(
       { sub: pending.sub, email: pending.email, name: pending.name },
-      { termsAcceptances: { create: acceptanceData("intuit_signup", req.headers) }, ...signupAdOptOut(req) }
+      {
+        termsAcceptances: { create: acceptanceData("intuit_signup", req.headers) },
+        ...signupAdOptOut(req),
+        ...signupAdSource(req.headers),
+      }
     );
     userId = user.id;
   } catch (err) {
@@ -60,5 +66,8 @@ export async function POST(req: Request) {
   // The address is already verified, so the welcome goes now (password
   // signups get it after they verify; see src/app/verify-email/page.tsx).
   await sendTrialWelcome(userId).catch(() => {});
-  return NextResponse.json({ ok: true });
+  await reportServerEvent(userId, "sign_up", { method: "intuit" }, { sessionId: signupSessionId(req.headers) });
+  const response = NextResponse.json({ ok: true });
+  response.cookies.set(SOURCE_COOKIE, "", { path: "/", maxAge: 0 });
+  return response;
 }

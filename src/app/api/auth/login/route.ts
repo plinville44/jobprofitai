@@ -3,7 +3,7 @@ import { refuseCrossSite } from "@/lib/sameOrigin";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { verifyPassword, createSession } from "@/lib/auth";
-import { carryAdOptOutToBrowser } from "@/lib/adOptOut";
+import { carryAdOptOutToBrowser, noteBrowserOptOut } from "@/lib/adOptOut";
 import { clientIp, isLockedOut, recordLoginAttempt, WINDOW_MINUTES } from "@/lib/loginThrottle";
 
 export const runtime = "nodejs";
@@ -62,6 +62,8 @@ export async function POST(req: NextRequest) {
   if (!valid) return genericError;
 
   await createSession(user.id);
+  // Opt-outs go both ways: this browser's onto the account, the account's onto this browser.
+  await noteBrowserOptOut(user.id, req.headers).catch(() => {});
   await carryAdOptOutToBrowser(user);
   return NextResponse.json({ id: user.id, email: user.email });
 }

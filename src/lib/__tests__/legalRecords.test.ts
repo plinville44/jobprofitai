@@ -31,7 +31,8 @@ const flat = (rel: string) => read(rel).replace(/\s+/g, " ");
 const DAY = 86_400_000;
 
 describe("how long QuickBooks data is kept", () => {
-  const now = new Date("2026-10-09T12:00:00Z");
+  // A day well after the rules took effect, so the start-date clamp doesn't apply.
+  const now = new Date(new Date(`${RETENTION_RULES_START}T12:00:00Z`).getTime() + 10 * DAY);
   const base = { trialEndsAt: null, currentPeriodEnd: null, canceledAt: null, updatedAt: new Date("2026-06-01T00:00:00Z") };
 
   it("deletes a disconnected company's data 30 days after the disconnect", () => {
@@ -44,6 +45,23 @@ describe("how long QuickBooks data is kept", () => {
     expect(deletionDueAt(new Date("2026-08-01T00:00:00Z")).getTime()).toBe(start.getTime() + 30 * DAY);
     expect(lapsedLongEnough(new Date("2026-05-01T00:00:00Z"), new Date(start.getTime() + 89 * DAY))).toBe(false);
     expect(lapsedLongEnough(new Date("2026-05-01T00:00:00Z"), new Date(start.getTime() + 90 * DAY))).toBe(true);
+  });
+
+  it("counts from launch day, recorded by the first run, for anything older", () => {
+    const launch = new Date("2026-12-01T15:00:00Z");
+    const old = new Date("2026-09-01T00:00:00Z");
+    expect(deletionDueAt(old, launch).getTime()).toBe(launch.getTime() + 30 * DAY);
+    expect(lapsedLongEnough(old, new Date(launch.getTime() + 89 * DAY), launch)).toBe(false);
+    expect(lapsedLongEnough(old, new Date(launch.getTime() + 90 * DAY), launch)).toBe(true);
+    // After launch, the full 30 days and no more.
+    const later = new Date(launch.getTime() + 5 * DAY);
+    expect(deletionDueAt(later, launch).getTime()).toBe(later.getTime() + 30 * DAY);
+    const cron = flat("app/api/cron/lifecycle/route.ts");
+    expect(cron).toContain("rulesStart = await retentionRulesStart(now);");
+    expect(cron).toContain("await purgeDisconnectedCompanies(now, rulesStart)");
+    expect(cron).toContain("await disconnectLapsedCompanies(now, rulesStart)");
+    expect(flat("lib/companyData.ts")).toContain("create: { key: RULES_START_KEY, at: now },");
+    expect(read("../prisma/schema.prisma")).toContain("model AppMilestone {");
   });
 
   it("counts an account as lapsed only once its trial or plan has ended", () => {
@@ -160,7 +178,8 @@ describe("opt-outs on the account", () => {
   it("stops server-side reports once an account has opted out", () => {
     expect(serverReportsAllowed({ adOptOutAt: null })).toBe(true);
     expect(serverReportsAllowed({ adOptOutAt: new Date() })).toBe(false);
-    expect(flat("app/dashboard/layout.tsx")).toContain("noteGpcForUser(account.userId, await headers())");
+    expect(flat("app/dashboard/layout.tsx")).toContain("noteBrowserOptOut(account.userId, await headers())");
+    expect(flat("app/api/auth/login/route.ts")).toContain("await noteBrowserOptOut(user.id, req.headers)");
     expect(read("components/marketing/PrivacyChoices.tsx")).toContain('fetch("/api/privacy/ad-opt-out"');
   });
 });
@@ -221,9 +240,12 @@ describe("what the legal pages now say", () => {
     }
   });
 
-  it("Privacy: hashing isn't anonymous, AI region and retention, where data is, later opt-outs, free text", () => {
+  it("Privacy: what ad measurement does and doesn't do, AI region and retention, where data is, later opt-outs, free text", () => {
     for (const phrase of [
-      "That code is not anonymous",
+      "We don&rsquo;t use remarketing",
+      "in plain or hashed form",
+      "marked as not to be used for ad personalization",
+      "we send them only in the first 63 days after you sign up",
       "not on Intuit&rsquo;s behalf",
       "only on infrastructure in the United States",
       "such as its Files API",
@@ -237,6 +259,10 @@ describe("what the legal pages now say", () => {
     }
     expect(privacy).not.toContain("we don&rsquo;t collect sensitive personal information");
     expect(privacy).not.toContain("can&rsquo;t be turned back into the address");
+    // Launched without these; each needs its paragraph back before it's turned on.
+    expect(privacy).not.toContain("LinkedIn Insight Tag");
+    expect(privacy).not.toContain("Enhanced conversions:");
+    expect(privacy).not.toContain("YouTube");
   });
 
   it("Addendum: instructions, service provider terms, subprocessors, incidents, deletion", () => {

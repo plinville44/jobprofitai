@@ -158,22 +158,25 @@ describe("the GTM loader", () => {
 describe("what the pages promise", () => {
   const privacy = flat("app/(marketing)/privacy/page.tsx");
 
-  it("discloses Google Analytics, Google Ads and LinkedIn the way their terms ask", () => {
+  it("discloses Google Analytics and Google Ads the way Google's terms ask, and what isn't used", () => {
     for (const phrase of [
       "https://policies.google.com/technologies/partner-sites",
       "How Google uses information from sites or apps that use its services",
-      "Third-party vendors, including Google, use cookies to show ads based on your past visits",
       "https://adssettings.google.com",
       "https://tools.google.com/dlpage/gaoptout",
-      "LinkedIn Insight Tag",
-      "Enhanced conversions:",
+      "We don&rsquo;t use remarketing",
+      "Google signals and personalized advertising are turned off",
     ]) {
       expect({ phrase, found: privacy.includes(phrase) }).toEqual({ phrase, found: true });
+    }
+    // Not running at launch. Adding any of them means adding its disclosure first.
+    for (const phrase of ["LinkedIn Insight Tag", "Enhanced conversions:", "li_sugr", "YouTube"]) {
+      expect({ phrase, found: privacy.includes(phrase) }).toEqual({ phrase, found: false });
     }
   });
 
   it("lists every cookie, says where the tags run, and covers GPC and Do Not Track", () => {
-    for (const cookie of ["jmai_session", "jpai_ref", "jpai_company", "jpai_optout", "jpai_src", "_gcl_au", "li_sugr"]) {
+    for (const cookie of ["jmai_session", "jpai_ref", "jpai_company", "jpai_optout", "jpai_src", "_gcl_au"]) {
       expect({ cookie, listed: privacy.includes(cookie) }).toEqual({ cookie, listed: true });
     }
     expect(privacy).toContain(">_ga</span>");

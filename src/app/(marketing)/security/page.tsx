@@ -235,12 +235,12 @@ export default function SecurityPage() {
 
             <Item title="Advertising and analytics tags stay out of the app">
               <p>
-                Our public website uses Google Analytics, Google Ads and the LinkedIn Insight Tag to
-                measure our ads, as our{" "}
+                Our public website uses Google Analytics, which also measures our Google Ads, as
+                our{" "}
                 <Link href="/privacy#cookies" className="font-medium text-jp-blue hover:underline">
                   Privacy Policy
                 </Link>{" "}
-                describes. They load only on public pages and the signup page, never in the
+                describes. Its tags load only on public pages and the signup page, never in the
                 signed-in app, so they can&rsquo;t see your QuickBooks figures, jobs or customers. If
                 you move from a public page into the app, the page reloads without them. They
                 don&rsquo;t load at all if your browser sends Global Privacy Control or you turn them

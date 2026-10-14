@@ -1,6 +1,7 @@
 import type Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
 import { recordAcceptance } from "@/lib/termsAcceptance";
+import { reportServerEvent } from "@/lib/serverEvents";
 import { PLANS, partnerTierFor } from "@/lib/plans";
 import { getStripe, planForPriceId } from "./client";
 import { priceIdFromSubscription } from "./billing";
@@ -304,6 +305,21 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session): Promis
   // the newest ones past the limit are paused from here on (planLimits.ts)
   // and Billing says so. Noted here so it shows in Stripe's webhook log.
   const paused = await pausedNote(userId);
+
+  // The subscription, for ad measurement (src/lib/serverEvents.ts): what was
+  // charged before tax (after any promotion code), the plan and Stripe's
+  // session ID as the reference, so a repeat can't count twice. Skipped for
+  // an account that opted out.
+  if (subscriptionId) {
+    const cents =
+      session.amount_total != null ? session.amount_total - (session.total_details?.amount_tax ?? 0) : session.amount_subtotal;
+    await reportServerEvent(userId, "purchase", {
+      transaction_id: session.id,
+      ...(cents != null ? { value: cents / 100 } : {}),
+      currency: (session.currency ?? "usd").toUpperCase(),
+      ...(session.metadata?.plan ? { plan: session.metadata.plan } : {}),
+    });
+  }
 
   return `Checkout completed for user ${userId}${applied ? `, applied ${applied} pending credit(s)` : ""}${paused}`;
 }

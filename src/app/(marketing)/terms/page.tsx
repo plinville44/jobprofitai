@@ -639,9 +639,9 @@ export default function TermsPage() {
           </li>
           <li>
             <span className="font-medium text-jp-ink">Other companies&rsquo; services.</span> The
-            Service links to and works with services run by other companies, such as Intuit, Stripe,
-            Google and LinkedIn, and our videos may play through YouTube. Their own terms and privacy
-            policies govern your use of them, and we are not responsible for them.
+            Service links to and works with services run by other companies, such as Intuit, Stripe
+            and Google. Their own terms and privacy policies govern your use of them, and we are not
+            responsible for them.
           </li>
           <li>
             <span className="font-medium text-jp-ink">Events outside our control.</span> We are

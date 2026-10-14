@@ -5,6 +5,7 @@ import { computeTrialState } from "@/lib/trial";
 import { NO_VALUE, formatDate } from "@/lib/format";
 import { SUBSCRIPTION_STATUS_LABELS, planDisplayName } from "@/lib/plans";
 import { AdminSection, AdminTable, Pill, Td } from "@/components/dashboard/AdminTable";
+import { sourceLabel } from "@/lib/adSource";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +20,20 @@ export default async function AdminTrialsPage() {
   const subscriptions = await prisma.subscription.findMany({
     orderBy: { createdAt: "desc" },
     take: 300,
-    include: { user: { select: { email: true, name: true } } },
+    include: {
+      user: {
+        select: {
+          email: true,
+          name: true,
+          adGclid: true,
+          utmSource: true,
+          utmMedium: true,
+          utmCampaign: true,
+          utmTerm: true,
+          landingPage: true,
+        },
+      },
+    },
   });
 
   const feedbackUserIds = new Set(
@@ -34,6 +48,7 @@ export default async function AdminTrialsPage() {
       <AdminTable
         headers={[
           "Account",
+          "Source",
           "Status",
           "Trial ends",
           "Day",
@@ -44,7 +59,7 @@ export default async function AdminTrialsPage() {
           "Feedback",
         ]}
         empty={subscriptions.length === 0}
-        minWidth={980}
+        minWidth={1100}
       >
         {subscriptions.map((sub) => {
           const state = computeTrialState(sub, now);
@@ -57,6 +72,12 @@ export default async function AdminTrialsPage() {
                 {user?.name ? (
                   <span className="block text-xs font-normal text-gray-500">{user.name}</span>
                 ) : null}
+              </Td>
+              <Td className="text-xs text-gray-600">
+                {/* Where the account came from (the ad click or campaign tags
+                    saved at signup), so ads can be judged by customers, not visits. */}
+                {(user && sourceLabel(user)) ?? NO_VALUE}
+                {user?.landingPage ? <span className="block text-gray-400">{user.landingPage}</span> : null}
               </Td>
               <Td>
                 {/* Plan named from the plan table rather than a literal. The

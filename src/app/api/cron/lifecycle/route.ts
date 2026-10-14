@@ -25,6 +25,7 @@ import {
   disconnectLapsedCompanies,
   disconnectRevokedGrants,
   purgeDisconnectedCompanies,
+  retentionRulesStart,
 } from "@/lib/companyData";
 import { sendCompanyDeletionReminder, sendLapsedDisconnected } from "@/lib/email/lifecycle";
 
@@ -136,13 +137,20 @@ async function runLifecycle() {
   // owner is reminded a week before its data goes, and data disconnected for
   // 30 days is deleted. Intuit's developer terms require the stop and the
   // deletion; the Terms and Privacy Policy promise these exact steps.
+  // The first run records the day the rules started; nothing disconnected or
+  // lapsed before that is counted from earlier (retentionRulesStart).
+  let rulesStart: Date | null = null;
+  await runStage(counters, "retention-start", async () => {
+    rulesStart = await retentionRulesStart(now);
+  });
   await runStage(counters, "lapsed-disconnect", async () => {
-    const done = await disconnectLapsedCompanies(now);
+    if (!rulesStart) return;
+    const done = await disconnectLapsedCompanies(now, rulesStart);
     counters.lapsedCompaniesDisconnected = done.length;
     const byOwner = new Map<string, typeof done>();
     for (const c of done) byOwner.set(c.userId, [...(byOwner.get(c.userId) ?? []), c]);
     for (const [ownerId, companies] of byOwner) {
-      const result = await sendLapsedDisconnected(ownerId, companies, deletionDueAt(now));
+      const result = await sendLapsedDisconnected(ownerId, companies, deletionDueAt(now, rulesStart));
       if (!result.ok && !result.skipped) counters.errors.push(`lapsed-disconnect email: ${result.error ?? "failed"}`);
     }
   });
@@ -150,13 +158,16 @@ async function runLifecycle() {
     counters.revokedCompaniesDisconnected = (await disconnectRevokedGrants(now)).length;
   });
   await runStage(counters, "deletion-reminders", async () => {
-    for (const c of await companiesDueForDeletionReminder(now)) {
-      const result = await sendCompanyDeletionReminder(c.userId, c, deletionDueAt(c.disconnectedAt!));
+    if (!rulesStart) return;
+    const start: Date = rulesStart;
+    for (const c of await companiesDueForDeletionReminder(now, start)) {
+      const result = await sendCompanyDeletionReminder(c.userId, c, deletionDueAt(c.disconnectedAt!, start));
       if (result.ok && !result.skipped) counters.deletionReminders += 1;
     }
   });
   await runStage(counters, "purge-disconnected", async () => {
-    counters.companiesDeleted = await purgeDisconnectedCompanies(now);
+    if (!rulesStart) return;
+    counters.companiesDeleted = await purgeDisconnectedCompanies(now, rulesStart);
   });
   // Housekeeping, deliberately last: an expired reset token is already
   // refused on use, so this only stops the table growing forever. It must

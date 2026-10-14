@@ -9,7 +9,7 @@ import { clearPrivacyPageOptOut, recordAdOptOut } from "@/lib/adOptOut";
  * Called by Your Privacy Choices. The browser part of the choice (the
  * jpai_optout cookie) is set by the page itself; this saves it on the
  * account when someone is signed in, so it also stops anything reported to
- * Google or LinkedIn from the server. A request that carries the browser's
+ * Google from the server. A request that carries the browser's
  * Global Privacy Control header is recorded as a GPC opt-out. Signed out,
  * there's nothing to save and it says so.
  */

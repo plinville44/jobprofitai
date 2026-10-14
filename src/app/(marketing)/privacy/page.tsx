@@ -98,8 +98,9 @@ export default function PrivacyPage() {
             In short: we collect what we need to calculate job profitability for your business, and
             we only read from QuickBooks. We never sell your information for money, and we never use
             your QuickBooks data, jobs, customers or figures for advertising. Our public website uses
-            Google and LinkedIn analytics and advertising tags, which never run inside the app and
-            which you can turn off on our{" "}
+            Google Analytics and Google Ads measurement, whose tags never run inside the app; our
+            servers tell Google only about a few steps, such as signing up or subscribing, never
+            your QuickBooks data. You can turn this off on our{" "}
             <Link href="/privacy-choices" className={linkClass}>
               Your Privacy Choices
             </Link>{" "}
@@ -227,9 +228,10 @@ export default function PrivacyPage() {
             (type, recipient, time and delivery status), your subscription status, and referral and
             partner program activity. We also save month-end copies of your Work in Progress schedule
             (job and customer names, each job&rsquo;s contract, cost, billing and profit figures, and
-            the totals), and delete them when you delete your account. If you arrived from one of our
-            ads or a link with campaign tags, we save where you came from with your account when you
-            sign up (see Section 2).
+            the totals), and delete them when you delete your account. When you sign up, unless you
+            have opted out, we save with your account the Google Analytics browser ID from your visit
+            and, if you arrived from one of our ads or a link with campaign tags, where you came from
+            (see Section 2).
           </p>
           <p>
             When you agree to our Terms of Service and this policy, we record which version you
@@ -269,8 +271,8 @@ export default function PrivacyPage() {
             </li>
             <li>
               <span className="font-medium text-jp-ink">Advertising and analytics reports:</span>{" "}
-              Google and LinkedIn give us reports about how our ads and website perform. These are
-              mostly totals, such as how many people clicked an ad or started a trial.
+              Google gives us reports about how our ads and website perform. These are mostly totals,
+              such as how many people clicked an ad or started a trial.
             </li>
           </LegalList>
         </LegalSub>
@@ -289,8 +291,8 @@ export default function PrivacyPage() {
       <LegalSection id="cookies" title="2. Cookies, analytics and advertising">
         <LegalSub title="Where our tags run">
           <p>
-            Our website uses Google Tag Manager to load Google Analytics, Google Ads and the LinkedIn
-            Insight Tag. These tags run only on our public website pages, such as the homepage,
+            Our website uses Google Tag Manager to load Google Analytics, which also measures our
+            Google Ads. These tags run only on our public website pages, such as the homepage,
             pricing, the sample-data demo and our ad landing pages, and on the signup page. They never
             run inside the JobProfitAI app: not on your dashboard, job pages, reports, settings or
             billing pages, where your QuickBooks figures, jobs and customers are shown. They
@@ -303,8 +305,8 @@ export default function PrivacyPage() {
           </p>
           <p>
             Because our tags don&rsquo;t run in the app, they can&rsquo;t see your QuickBooks data, and
-            we don&rsquo;t send Google, LinkedIn or any other analytics or advertising company your
-            QuickBooks data, job or customer names, or financial figures.
+            we don&rsquo;t send Google or any other analytics or advertising company your QuickBooks
+            data, job or customer names, or financial figures.
           </p>
         </LegalSub>
 
@@ -314,9 +316,10 @@ export default function PrivacyPage() {
             Using cookies, it collects the pages you view; the website, search, ad or link that
             brought you here, including any campaign tags in the link; your device, browser, screen
             size and language; your approximate location, worked out from your IP address; and steps
-            you take, such as playing our demo video or starting a trial. We link Google Analytics to
-            our Google Ads account, so the visits it measures can also be used to measure our ads and
-            to choose who sees them. Google explains what it does with this information in{" "}
+            you take, such as starting a trial. We link Google Analytics to our Google Ads account so
+            it can tell us which ad clicks lead to trials and subscriptions. We have set it up so it
+            isn&rsquo;t used to choose who sees our ads: Google signals and personalized advertising
+            are turned off. Google explains what it does with this information in{" "}
             <ExternalLink href="https://policies.google.com/technologies/partner-sites">
               How Google uses information from sites or apps that use its services
             </ExternalLink>
@@ -330,61 +333,35 @@ export default function PrivacyPage() {
 
         <LegalSub title="Google Ads">
           <p>
-            We advertise on Google, including Google Search and YouTube. Google Ads tags and cookies
-            tell us which ad clicks lead to trials and subscriptions, and let us show our ads to
-            people who have visited our website, which is called remarketing. Third-party vendors,
-            including Google, use cookies to show ads based on your past visits to our website and
-            other websites. Google&rsquo;s use of advertising cookies lets Google and its partners
-            show you ads based on your visits to our site and other sites on the internet. You can
-            opt out of personalized advertising in{" "}
+            We advertise on Google Search. Google Ads tells us which ad clicks lead to trials and
+            subscriptions, so we know which ads work. We don&rsquo;t use remarketing, which means
+            showing our ads to people because they visited our website, and we don&rsquo;t send Google
+            your email address, in plain or hashed form. Google may still use its own information
+            about you to choose the ads it shows you anywhere; you can manage that in{" "}
             <ExternalLink href="https://adssettings.google.com">Google&rsquo;s ad settings</ExternalLink>
-            , and opt out of personalized ads from many other companies on the{" "}
-            <ExternalLink href="https://optout.networkadvertising.org">
-              Network Advertising Initiative
-            </ExternalLink>{" "}
-            and{" "}
-            <ExternalLink href="https://optout.aboutads.info">Digital Advertising Alliance</ExternalLink>{" "}
-            opt-out pages.
-          </p>
-          <p>
-            <span className="font-medium text-jp-ink">Enhanced conversions:</span> when you create an
-            account, we may send Google a hashed copy of the email address you signed up with.
-            Hashing turns the address into a fixed code (SHA-256). That code is not anonymous: anyone
-            who already has the same address can produce the same code, which is exactly how Google
-            matches it to people signed in to Google and tells us whether one of our ads led to the
-            signup. Google says it uses this data only to provide its measurement services to us and
-            doesn&rsquo;t share it with other advertisers.
-          </p>
-        </LegalSub>
-
-        <LegalSub title="LinkedIn">
-          <p>
-            The LinkedIn Insight Tag, from LinkedIn Corporation, tells us which LinkedIn ads lead to
-            visits and trials, gives us totals about the job titles, industries and company sizes of
-            our visitors, and lets us show our ads on LinkedIn to people who have visited our
-            website. It collects the page address, the page you came from, your IP address, your
-            device and browser, and the time, and LinkedIn&rsquo;s cookies may connect the visit to
-            your LinkedIn account if you are signed in to LinkedIn. LinkedIn shows us totals; it
-            doesn&rsquo;t tell us who you are. LinkedIn uses this information under its{" "}
-            <ExternalLink href="https://www.linkedin.com/legal/privacy-policy">privacy policy</ExternalLink>{" "}
-            and{" "}
-            <ExternalLink href="https://www.linkedin.com/legal/cookie-policy">cookie policy</ExternalLink>.
+            .
           </p>
         </LegalSub>
 
         <LegalSub title="Steps reported from our servers">
           <p>
-            Some steps happen inside the app, where our tags never run, such as connecting
-            QuickBooks and starting a subscription. When you take one, our servers may tell Google
-            Analytics, Google Ads and LinkedIn that it happened, with the plan, the amount and a
-            reference number, linked to the Google Analytics browser ID and ad click ID saved when
-            you signed up. These reports never include your name or anything from QuickBooks, and
-            include your email address only in the hashed form described above. We don&rsquo;t send
-            them for an account that has opted out. An opt-out is saved on your account when you make
-            it while signed in to JobProfitAI (on Your Privacy Choices, or by your browser sending
-            Global Privacy Control), when it was in effect in your browser at signup, or when you ask
-            us by email. From then on these reports stop, including for steps that happen later,
-            such as a renewal.
+            Some steps happen where our tags don&rsquo;t run: signing up (your browser leaves the
+            signup page straight away), signing up with Intuit, connecting QuickBooks, starting
+            checkout and subscribing. When you take one, our servers tell Google Analytics that it
+            happened, with only the plan, the amount and currency, how you signed up, or Stripe&rsquo;s
+            reference number for the payment, linked to the Google Analytics browser ID saved when you
+            signed up (and, for the signup itself, the Google Analytics visit it happened in). Google
+            Analytics passes them to our Google Ads account so we can count which
+            ads lead to trials and subscriptions. These reports never include your name, your email
+            address or anything from QuickBooks, they are marked as not to be used for ad
+            personalization, and we send them only in the first 63 days after you sign up.
+          </p>
+          <p>
+            We don&rsquo;t send them for an account that has opted out. An opt-out is saved on your
+            account when you make it while signed in to JobProfitAI (on Your Privacy Choices, or by
+            your browser sending Global Privacy Control), when you sign in from a browser where you
+            have opted out, when it was in effect in your browser at signup, or when you ask us by
+            email. From then on these reports stop, including for steps that happen later.
           </p>
         </LegalSub>
 
@@ -393,19 +370,10 @@ export default function PrivacyPage() {
             When you arrive from one of our ads or a link with campaign tags, we save the ad click ID
             (Google&rsquo;s gclid), the campaign tags (utm_source, utm_medium, utm_campaign and
             utm_term) and the first page you landed on in our own cookie, jpai_src, for 90 days. If you
-            sign up, we copy them onto your account so we can see which ads and links bring
-            customers, not just visits. We don&rsquo;t set this cookie if you have opted out or your
-            browser sends Global Privacy Control.
-          </p>
-        </LegalSub>
-
-        <LegalSub title="Videos">
-          <p>
-            Our demo videos may be hosted on YouTube, a Google service. We show a picture of the video
-            until you click play, and use YouTube&rsquo;s privacy-enhanced mode, so YouTube sets no
-            cookies before you play. Once you play a video, YouTube may set cookies and collect
-            information under{" "}
-            <ExternalLink href="https://policies.google.com/privacy">Google&rsquo;s privacy policy</ExternalLink>.
+            sign up, we copy them onto your account, so we can see which ads and links bring
+            customers and not just visits, and remove the cookie. We don&rsquo;t set this cookie if you
+            have opted out or your browser sends Global Privacy Control, and we don&rsquo;t copy it if
+            either was in effect when you signed up.
           </p>
         </LegalSub>
 
@@ -456,31 +424,21 @@ export default function PrivacyPage() {
             <li>
               <span className="font-medium text-jp-ink">_gcl_au</span>,{" "}
               <span className="font-medium text-jp-ink">_gcl_aw</span> and other cookies starting{" "}
-              <span className="font-medium text-jp-ink">_gcl_</span>, from Google Ads, connect ad
-              clicks to trials and subscriptions, for 90 days.
+              <span className="font-medium text-jp-ink">_gcl_</span>, which Google&rsquo;s tags may
+              set to connect ad clicks to trials and subscriptions, for 90 days.
             </li>
             <li>
-              Google&rsquo;s cookies on its own domains (doubleclick.net, google.com and
-              googleadservices.com), such as <span className="font-medium text-jp-ink">IDE</span>{" "}
-              (ads and fraud prevention, up to 2 years),{" "}
-              <span className="font-medium text-jp-ink">test_cookie</span> (15 minutes) and{" "}
-              <span className="font-medium text-jp-ink">ar_debug</span> (90 days).
-            </li>
-            <li>
-              LinkedIn&rsquo;s cookies, such as <span className="font-medium text-jp-ink">li_sugr</span>{" "}
-              (90 days), <span className="font-medium text-jp-ink">bcookie</span> (1 year),{" "}
-              <span className="font-medium text-jp-ink">lidc</span> (1 day), and{" "}
-              <span className="font-medium text-jp-ink">li_fat_id</span>,{" "}
-              <span className="font-medium text-jp-ink">UserMatchHistory</span> and{" "}
-              <span className="font-medium text-jp-ink">AnalyticsSyncHistory</span> (30 days each),
-              which recognize your browser, measure LinkedIn ads and show them to past visitors.
+              Google&rsquo;s cookies on its own domains, such as google.com and googleadservices.com,
+              which Google uses to measure ads and prevent fraud.
             </li>
           </LegalList>
           <p>
-            Google and LinkedIn can change the names and lifetimes of their cookies. Their own pages
-            have the current lists:{" "}
-            <ExternalLink href="https://policies.google.com/technologies/cookies">Google</ExternalLink> and{" "}
-            <ExternalLink href="https://www.linkedin.com/legal/cookie-policy">LinkedIn</ExternalLink>.
+            Google can change the names and lifetimes of its cookies. Its own page has the current
+            list:{" "}
+            <ExternalLink href="https://policies.google.com/technologies/cookies">
+              How Google uses cookies
+            </ExternalLink>
+            .
             Our payment pages are hosted by Stripe, which sets its own cookies under{" "}
             <ExternalLink href="https://stripe.com/privacy">Stripe’s privacy policy</ExternalLink>. You
             can also block or delete cookies in your browser&rsquo;s settings; if you block the cookies
@@ -504,7 +462,7 @@ export default function PrivacyPage() {
           <p>
             JobProfitAI is for businesses in the United States. For visitors in the European Economic
             Area, the United Kingdom and Switzerland, our Google tags run with their cookies and
-            advertising features turned off, and our LinkedIn tag doesn&rsquo;t run.
+            advertising features turned off, and we keep no record of which ad or link brought you.
           </p>
         </LegalSub>
       </LegalSection>
@@ -537,10 +495,7 @@ export default function PrivacyPage() {
             To understand how people find and use our website, and which ads and links bring trials
             and paying customers.
           </li>
-          <li>
-            To advertise JobProfitAI on Google (including YouTube), LinkedIn and other websites,
-            including to people who have visited our website.
-          </li>
+          <li>To advertise JobProfitAI on Google Search and measure which ads work.</li>
           <li>
             To contact people at contracting, construction and bookkeeping businesses about
             JobProfitAI by email and LinkedIn message, using the business contact information
@@ -558,10 +513,10 @@ export default function PrivacyPage() {
           We do not sell personal information for money. We do not use your QuickBooks data, or the
           jobs, customers and figures in your account, for any purpose other than providing the
           Service to you, and we never share them with advertising or analytics companies. Letting
-          Google and LinkedIn collect information through cookies on our website, so that our ads can
-          be shown to people who visited, may count as a &ldquo;sale&rdquo; or &ldquo;sharing&rdquo;
-          of personal information, or as targeted advertising, under some state privacy laws. You
-          can opt out as Section 8 describes.
+          Google collect information through cookies on our website, and telling Google about the
+          steps described in Section 2, may count as a &ldquo;sale&rdquo; or &ldquo;sharing&rdquo; of
+          personal information, or as targeted advertising, under some state privacy laws. You can
+          opt out as Section 8 describes.
         </p>
       </LegalSection>
 
@@ -624,12 +579,10 @@ export default function PrivacyPage() {
         </LegalSub>
         <LegalSub title="Advertising and analytics companies">
           <p>
-            Google LLC and LinkedIn Corporation receive information through their tags on our public
-            website pages, and the steps reported from our servers, as Section 2 describes. They use
-            it to provide their services to us, and also for their own purposes, including showing
-            ads, under their own privacy policies:{" "}
-            <ExternalLink href="https://policies.google.com/privacy">Google</ExternalLink> and{" "}
-            <ExternalLink href="https://www.linkedin.com/legal/privacy-policy">LinkedIn</ExternalLink>.
+            Google LLC receives information through its tags on our public website pages, and the
+            steps reported from our servers, as Section 2 describes. Google uses it to provide its
+            services to us, and also for its own purposes under{" "}
+            <ExternalLink href="https://policies.google.com/privacy">Google&rsquo;s privacy policy</ExternalLink>.
           </p>
         </LegalSub>
         <LegalSub title="Contractors who help with outreach">
@@ -730,7 +683,7 @@ export default function PrivacyPage() {
             login invitations, trial feedback, in-app feedback, referral codes and the referrals
             and credits made through them, any partner application and its commission records,
             email records, your records of accepting our Terms, your privacy and email choices, and
-            the record of where you came from. Team members and client logins you
+            the record of where you came from and your Google Analytics browser ID. Team members and client logins you
             invited lose access at once; their own logins remain theirs to delete.
           </li>
           <li>
@@ -747,8 +700,9 @@ export default function PrivacyPage() {
           </li>
           <li>
             <span className="font-medium text-jp-ink">Website analytics:</span> Google Analytics
-            keeps the details of visits to our website for 14 months, then deletes them. Google and
-            LinkedIn keep what their own cookies collect under their own policies.
+            keeps the details of visits to our website, and the steps our servers report, for 14
+            months, then deletes them. Google keeps what its own cookies collect under its own
+            policies.
           </li>
           <li>
             <span className="font-medium text-jp-ink">Businesses we contact:</span> we keep business
@@ -839,10 +793,11 @@ export default function PrivacyPage() {
             page, by turning on Global Privacy Control in your browser, or by emailing{" "}
             <SupportEmail /> with the subject line &ldquo;Opt out.&rdquo; In your browser, opting out
             stops our analytics and advertising tags and our jpai_src cookie. When we know it&rsquo;s
-            you, because you&rsquo;re signed in to JobProfitAI when you opt out or your browser sends
-            Global Privacy Control, or you email us, we also save the opt-out on your account, so it
+            you, because you&rsquo;re signed in to JobProfitAI when you opt out or sign in later from
+            that browser, or your browser sends Global Privacy Control, or you email us, we also save
+            the opt-out on your account, so it
             applies in every browser where you sign in to JobProfitAI and stops anything we would
-            report about your account to Google and LinkedIn from our servers. Turning the tags back on from Your Privacy Choices undoes
+            report about your account to Google from our servers. Turning the tags back on from Your Privacy Choices undoes
             only an opt-out made on that page; one from Global Privacy Control or email stays until
             you ask us.
             We don&rsquo;t use personal information for profiling that produces legal or similarly
@@ -904,8 +859,8 @@ export default function PrivacyPage() {
             <span className="font-medium text-jp-ink">Handled elsewhere in some cases:</span>{" "}
             Anthropic may access data from other countries for its own safety review, support and
             incident response. Stripe processes payments in many countries. Google Workspace may
-            store our email, including messages you send us, outside the United States. Google and
-            LinkedIn may process what their tags collect in other countries. Contractors who help
+            store our email, including messages you send us, outside the United States. Google may
+            process what its tags collect, and the steps our servers report, in other countries. Contractors who help
             with outreach may work from other countries and handle business contact information and
             outreach messages there.
           </li>

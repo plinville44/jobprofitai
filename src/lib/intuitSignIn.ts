@@ -128,11 +128,25 @@ function displayName(info: Pick<IntuitUserInfo, "givenName" | "familyName">): st
 export async function provisionIntuitUser(
   identity: { sub: string; email: string; name: string | null },
   /**
-   * The agreement record (and any opt-out) when the person ticked the box
-   * on /login/intuit. An App Store arrival has neither, so it's asked to
-   * agree at /accept-terms before the app opens (src/lib/termsAcceptance.ts).
+   * The agreement record (and any opt-out, or else where they came from)
+   * when the person ticked the box on /login/intuit. An App Store arrival
+   * has none of these, so it's asked to agree at /accept-terms before the
+   * app opens (src/lib/termsAcceptance.ts), and nothing about it is ever
+   * reported to Google from the server.
    */
-  extra: Pick<Prisma.UserCreateInput, "termsAcceptances" | "adOptOutAt" | "adOptOutSource"> = {}
+  extra: Pick<
+    Prisma.UserCreateInput,
+    | "termsAcceptances"
+    | "adOptOutAt"
+    | "adOptOutSource"
+    | "adGclid"
+    | "utmSource"
+    | "utmMedium"
+    | "utmCampaign"
+    | "utmTerm"
+    | "landingPage"
+    | "gaClientId"
+  > = {}
 ) {
   const user = await prisma.user.create({
     data: {

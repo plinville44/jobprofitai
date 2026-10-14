@@ -11,13 +11,14 @@
  * acceptance is recorded (src/lib/termsAcceptance.ts). Before bumping it,
  * save the new text in legal-archive/ under the same date.
  */
-export const LEGAL_LAST_UPDATED = "October 8, 2026";
-export const ACCEPTANCE_VERSION = "2026-10-08";
+export const LEGAL_LAST_UPDATED = "October 14, 2026";
+export const ACCEPTANCE_VERSION = "2026-10-14";
 
 /**
- * The day the data-retention rules (src/lib/dataRetention.ts) took effect.
- * Set it to the day they go live, once, and never move it later after that:
- * it decides when the first deletions happen for companies disconnected, and
- * accounts that lapsed, before the rules existed.
+ * The earliest day the data-retention rules (src/lib/dataRetention.ts) can
+ * count from. The real start is recorded by the first lifecycle run in
+ * production (retentionRulesStart in src/lib/companyData.ts), so companies
+ * disconnected, and accounts that lapsed, before the rules went live get the
+ * full 30 (or 90) days from launch day, whatever day that turns out to be.
  */
-export const RETENTION_RULES_START = "2026-10-08";
+export const RETENTION_RULES_START = "2026-10-14";

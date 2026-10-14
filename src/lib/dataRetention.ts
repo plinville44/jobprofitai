@@ -39,14 +39,16 @@ export const DAY_MS = 86_400_000;
 /**
  * The clocks never start before the day these rules took effect, so a
  * company disconnected, or an account that lapsed, before then gets the full
- * period from that day rather than being deleted on the first run.
+ * period from that day rather than being deleted on the first run. That day
+ * is recorded by the first lifecycle run in production (retentionRulesStart
+ * in src/lib/companyData.ts), never earlier than RETENTION_RULES_START.
  */
-const RULES_START = new Date(`${RETENTION_RULES_START}T00:00:00Z`);
-const notBeforeRules = (d: Date) => (d.getTime() < RULES_START.getTime() ? RULES_START : d);
+export const EARLIEST_RULES_START = new Date(`${RETENTION_RULES_START}T00:00:00Z`);
+const notBefore = (d: Date, rulesStart: Date) => (d.getTime() < rulesStart.getTime() ? rulesStart : d);
 
 /** When a disconnected company's data is deleted. */
-export function deletionDueAt(disconnectedAt: Date): Date {
-  return new Date(notBeforeRules(disconnectedAt).getTime() + DISCONNECTED_RETENTION_DAYS * DAY_MS);
+export function deletionDueAt(disconnectedAt: Date, rulesStart: Date = EARLIEST_RULES_START): Date {
+  return new Date(notBefore(disconnectedAt, rulesStart).getTime() + DISCONNECTED_RETENTION_DAYS * DAY_MS);
 }
 
 /**
@@ -79,6 +81,6 @@ export function accessEndedAt(
 }
 
 /** True once an account has gone LAPSED_DISCONNECT_DAYS without a trial or plan. */
-export function lapsedLongEnough(ended: Date | null, now: Date): boolean {
-  return ended != null && now.getTime() - notBeforeRules(ended).getTime() >= LAPSED_DISCONNECT_DAYS * DAY_MS;
+export function lapsedLongEnough(ended: Date | null, now: Date, rulesStart: Date = EARLIEST_RULES_START): boolean {
+  return ended != null && now.getTime() - notBefore(ended, rulesStart).getTime() >= LAPSED_DISCONNECT_DAYS * DAY_MS;
 }

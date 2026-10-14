@@ -2,7 +2,7 @@ import { Fragment } from "react";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { hasAcceptedCurrentTerms } from "@/lib/termsAcceptance";
-import { noteGpcForUser } from "@/lib/adOptOut";
+import { noteBrowserOptOut } from "@/lib/adOptOut";
 import Link from "next/link";
 import { getAccount, getActiveConnection } from "@/lib/account";
 import CompanySwitcher from "@/components/dashboard/CompanySwitcher";
@@ -30,9 +30,10 @@ export default async function DashboardLayout({ children }: { children: React.Re
   // Nothing in the app opens until this login has agreed to the current
   // Terms and Privacy Policy (src/lib/termsAcceptance.ts).
   if (!(await hasAcceptedCurrentTerms(account.userId))) redirect("/accept-terms");
-  // A browser sending Global Privacy Control opts the account out of
-  // server-side ad reporting too (src/lib/adOptOut.ts).
-  await noteGpcForUser(account.userId, await headers()).catch(() => {});
+  // A browser sending Global Privacy Control, or carrying the Your Privacy
+  // Choices opt-out cookie, opts the account out of server-side ad reporting
+  // too (src/lib/adOptOut.ts).
+  await noteBrowserOptOut(account.userId, await headers()).catch(() => {});
 
   const client = account.role === "client";
   const [isAdmin, partner, user, { connection: activeCompany, companies }, firm, entitlements, removed] = await Promise.all([

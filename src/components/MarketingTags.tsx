@@ -2,7 +2,8 @@
 
 import { useEffect } from "react";
 import { usePathname } from "next/navigation";
-import { gpcOn, gtmBootstrap, leavesTaggedPages, tagsAllowedOnPath, trackingAllowed } from "@/lib/tracking";
+import { europeanTimeZone, gpcOn, gtmBootstrap, leavesTaggedPages, tagsAllowedOnPath, trackingAllowed } from "@/lib/tracking";
+import { SOURCE_COOKIE, SOURCE_MAX_AGE_SECONDS, encodeSource, sourceFromUrl } from "@/lib/adSource";
 
 /**
  * Loads Google Tag Manager on the pages src/lib/tracking.ts allows, when the
@@ -43,6 +44,22 @@ function guardLeavingTaggedPages(): void {
   );
 }
 
+/**
+ * Keeps the ad click ID and campaign tags from the link this visit arrived
+ * on in our own jpai_src cookie (src/lib/adSource.ts), so signup can copy
+ * them onto the account. Called only where the tags may run and only when
+ * the visitor hasn't opted out. A newer ad click replaces an older one.
+ */
+function rememberAdSource(): void {
+  // Not for the EEA, the UK and Switzerland, judged here by time zone (the
+  // server checks the country again before keeping anything).
+  if (europeanTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone)) return;
+  const source = sourceFromUrl(new URL(window.location.href));
+  if (!source) return;
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `${SOURCE_COOKIE}=${encodeSource(source)}; Max-Age=${SOURCE_MAX_AGE_SECONDS}; Path=/; SameSite=Lax${secure}`;
+}
+
 const GTM_ID = process.env.NEXT_PUBLIC_GTM_ID ?? "";
 
 declare global {
@@ -57,9 +74,13 @@ export default function MarketingTags() {
   const pathname = usePathname() ?? "/";
 
   useEffect(() => {
+    const allowedHere = tagsAllowedOnPath(pathname);
+    const gpc = gpcOn(navigator as unknown as { globalPrivacyControl?: unknown });
+    // Our own cookie, with or without Google Tag Manager.
+    if (allowedHere && trackingAllowed({ gpc, cookieHeader: document.cookie })) rememberAdSource();
+
     const script = gtmBootstrap(GTM_ID);
     if (!script) return;
-    const allowedHere = tagsAllowedOnPath(pathname);
 
     if (window.__jpaiTagsLoaded) {
       // Last line of defense: the router moved on without going through the
@@ -72,9 +93,7 @@ export default function MarketingTags() {
       return;
     }
     if (!allowedHere) return;
-    if (!trackingAllowed({ gpc: gpcOn(navigator as unknown as { globalPrivacyControl?: unknown }), cookieHeader: document.cookie })) {
-      return;
-    }
+    if (!trackingAllowed({ gpc, cookieHeader: document.cookie })) return;
 
     guardLeavingTaggedPages();
     const el = document.createElement("script");

@@ -91,7 +91,7 @@ export default function PrivacyChoices() {
       <p className="mt-2">
         {status.optedOut
           ? "You’ve turned off our analytics and advertising tags in this browser. They won’t load on our website while this choice is saved."
-          : "Our website pages can load Google Analytics, Google Ads and the LinkedIn Insight Tag in this browser. Turning them off also opts you out of the sale or sharing of your personal information and of targeted advertising through our website."}
+          : "Our website pages can load Google Analytics, which also measures our Google Ads, in this browser. Turning it off also opts you out of the sale or sharing of your personal information and of targeted advertising through our website."}
       </p>
       <button
         type="button"

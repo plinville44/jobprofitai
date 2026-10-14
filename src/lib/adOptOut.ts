@@ -6,7 +6,7 @@ import { OPT_OUT_COOKIE, OPT_OUT_MAX_AGE_SECONDS, optedOutByCookie } from "@/lib
  * advertising, saved on the account so they reach the server as well as the
  * browser. A browser opt-out only stops the tags in that browser; once we
  * know who the person is, the choice also has to stop anything we send
- * Google or LinkedIn from the server about their account (California's
+ * Google from the server about their account (California's
  * regulations apply a Global Privacy Control signal to the consumer when
  * they're known). The Privacy Policy, section 8, describes exactly this.
  *
@@ -49,10 +49,15 @@ export async function clearPrivacyPageOptOut(userId: string): Promise<void> {
   });
 }
 
-/** Called on signed-in page loads: a browser sending Global Privacy Control opts the account out. */
-export async function noteGpcForUser(userId: string, headers: Headers): Promise<void> {
-  if (headers.get("sec-gpc")?.trim() !== "1") return;
-  await recordAdOptOut(userId, "gpc");
+/**
+ * Called when someone signs in and on signed-in page loads: a browser that
+ * sends Global Privacy Control, or carries the Your Privacy Choices opt-out
+ * cookie (set while signed out, say), opts the account out, so nothing is
+ * reported about it from the server from then on.
+ */
+export async function noteBrowserOptOut(userId: string, headers: Headers): Promise<void> {
+  const source = requestAdOptOut(headers);
+  if (source) await recordAdOptOut(userId, source);
 }
 
 /**

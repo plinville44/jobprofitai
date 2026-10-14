@@ -10,6 +10,8 @@ import { sendEmailVerification } from "@/lib/email/lifecycle";
 import { createEmailVerification, VERIFY_TOKEN_TTL_HOURS } from "@/lib/emailVerification";
 import { acceptanceData } from "@/lib/termsAcceptance";
 import { signupAdOptOut } from "@/lib/adOptOut";
+import { SOURCE_COOKIE } from "@/lib/adSource";
+import { reportServerEvent, signupAdSource, signupSessionId } from "@/lib/serverEvents";
 
 export const runtime = "nodejs";
 
@@ -92,6 +94,9 @@ export async function POST(req: NextRequest) {
         // An opt-out made before signing up (Global Privacy Control, or Your
         // Privacy Choices in this browser) carries over to the account.
         ...signupAdOptOut(req),
+        // Where they came from and the analytics browser ID, only when the
+        // request carries no opt-out (src/lib/serverEvents.ts).
+        ...signupAdSource(req.headers),
       },
     });
   } catch (err) {
@@ -135,7 +140,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // The signup itself, reported from here because the browser leaves the
+  // signup page for the app straight away. Skipped for an opted-out account.
+  await reportServerEvent(user.id, "sign_up", { method: "email" }, { sessionId: signupSessionId(req.headers) });
+
   const response = NextResponse.json({ id: user.id, email: user.email });
+  // Copied onto the account above, so the browser doesn't need it any more.
+  response.cookies.set(SOURCE_COOKIE, "", { path: "/", maxAge: 0 });
   if (hadReferralCookie) {
     // Deleted with the same path the /r/[code] route set it on, or the
     // browser keeps a second copy scoped elsewhere and nothing changes.

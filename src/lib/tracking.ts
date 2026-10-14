@@ -1,8 +1,9 @@
 /**
  * The rules for the marketing tags: Google Tag Manager, and through it Google
- * Analytics, Google Ads and the LinkedIn Insight Tag. The Privacy Policy
- * (section 2), the Your Privacy Choices page and the Security page promise
- * exactly these rules, so change them together and keep the tests passing.
+ * Analytics, whose measurements also count as Google Ads conversions. The
+ * Privacy Policy (section 2), the Your Privacy Choices page and the Security
+ * page promise exactly these rules, so change them together and keep the
+ * tests passing.
  *
  * - The tags run only on the public pages listed below and the signup page.
  *   Never in the signed-in app (dashboard, job pages, reports, settings,
@@ -13,14 +14,17 @@
  *   jpai_optout cookie).
  * - For visitors in the EEA, the UK and Switzerland, Google Consent Mode
  *   starts with everything "denied", so Google's tags set no cookies there.
- *   In GTM, the LinkedIn tag must require ad_storage consent (Advanced
- *   settings, Consent settings) so it doesn't fire for them either.
+ * - No remarketing, no enhanced conversions and no LinkedIn Insight Tag at
+ *   launch: the Privacy Policy says so. Adding any of them means adding its
+ *   paragraph to the policy first.
  *
- * Anything added later that measures marketing, such as the jpai_src
- * attribution cookie or conversion events sent from the server, must check
- * the same choice with trackingAllowed() first.
+ * Our own jpai_src cookie (src/lib/adSource.ts) follows the same rules (and
+ * isn't set or kept for the EEA, UK and Switzerland either), and steps
+ * reported from the server (src/lib/serverEvents.ts) check the account's
+ * choice with serverReportsAllowed().
  *
- * Nothing here runs until NEXT_PUBLIC_GTM_ID is set in Vercel.
+ * Nothing here runs until NEXT_PUBLIC_GTM_ID is set in Vercel (jpai_src is
+ * set either way).
  */
 
 /** Pages where the tags may run. Add a new public page here on purpose, or leave it out on purpose. */
@@ -69,8 +73,9 @@ export function trackingAllowed({ gpc, cookieHeader }: { gpc: boolean; cookieHea
 
 /**
  * First-party cookies the tags (or our attribution cookie) may have set on
- * this site, cleared when a visitor opts out. Google's and LinkedIn's own
- * cookies on their domains can only be cleared from those sites.
+ * this site, cleared when a visitor opts out. Google's own cookies on its
+ * domains can only be cleared from Google's sites. (LinkedIn's names stay in
+ * the list in case its tag is added later.)
  */
 const MARKETING_COOKIE_NAME = /^(_ga|_gid|_gcl_|_gac_|jpai_src$|_?li_|AnalyticsSyncHistory$|UserMatchHistory$)/;
 
@@ -98,6 +103,25 @@ export const CONSENT_DENIED_REGIONS = [
   "GB", "CH",
 ] as const;
 
+/**
+ * Whether a request comes from the EEA, the UK or Switzerland, by the
+ * country Vercel adds to every request (x-vercel-ip-country). Where these
+ * regions get Consent Mode "denied", we also keep no record of which ad or
+ * link brought someone (src/lib/serverEvents.ts).
+ */
+export function fromConsentRegion(headers: Headers): boolean {
+  const country = headers.get("x-vercel-ip-country")?.trim().toUpperCase() ?? "";
+  return (CONSENT_DENIED_REGIONS as readonly string[]).includes(country);
+}
+
+/**
+ * The browser-side version: a European time zone. Used only to skip our
+ * jpai_src cookie, so it errs toward skipping.
+ */
+export function europeanTimeZone(timeZone: string | undefined): boolean {
+  return typeof timeZone === "string" && (timeZone.startsWith("Europe/") || timeZone === "Atlantic/Reykjavik");
+}
+
 export const GTM_ID_PATTERN = /^GTM-[A-Z0-9]{4,12}$/;
 
 /**
@@ -108,13 +132,15 @@ export const GTM_ID_PATTERN = /^GTM-[A-Z0-9]{4,12}$/;
 export function gtmBootstrap(gtmId: string): string | null {
   if (!GTM_ID_PATTERN.test(gtmId)) return null;
   const denied = "ad_storage:'denied',ad_user_data:'denied',ad_personalization:'denied',analytics_storage:'denied'";
-  const granted = "ad_storage:'granted',ad_user_data:'granted',ad_personalization:'granted',analytics_storage:'granted'";
+  // Everywhere else measurement is on, but ad personalization (remarketing,
+  // audiences) stays denied: the Privacy Policy says we don't use it.
+  const usual = "ad_storage:'granted',ad_user_data:'granted',ad_personalization:'denied',analytics_storage:'granted'";
   const regions = CONSENT_DENIED_REGIONS.map((r) => `'${r}'`).join(",");
   return [
     "window.dataLayer=window.dataLayer||[];",
     "function gtag(){dataLayer.push(arguments);}",
     `gtag('consent','default',{${denied},region:[${regions}]});`,
-    `gtag('consent','default',{${granted}});`,
+    `gtag('consent','default',{${usual}});`,
     "(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});",
     "var f=d.getElementsByTagName(s)[0],j=d.createElement(s);j.async=true;",
     "j.src='https://www.googletagmanager.com/gtm.js?id='+i;f.parentNode.insertBefore(j,f);",
@@ -123,8 +149,8 @@ export function gtmBootstrap(gtmId: string): string | null {
 }
 
 /**
- * Whether anything may be reported to Google or LinkedIn from the server
- * about this account (conversion events, enhanced conversions). False once
+ * Whether anything may be reported to Google from the server about this
+ * account (src/lib/serverEvents.ts). False once
  * the person has opted out on the account, however they did it
  * (src/lib/adOptOut.ts). Every server-side report must check this first,
  * including ones queued or sent later, such as a renewal.
