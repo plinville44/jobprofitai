@@ -1,4 +1,4 @@
-import { AI_MODEL, aiClient } from "./ai";
+import { AI_MODEL, aiClient, inUs } from "./ai";
 import type { ConnectionMetrics, DataHealthReport } from "./profitability";
 import { computeConnectionMetrics } from "./profitability";
 import { formatCurrency } from "./format";
@@ -171,12 +171,12 @@ ${JSON.stringify(
     const plan = aiAttemptPlan((deadline ?? Number.POSITIVE_INFINITY) - Date.now(), maxTokens > 1200 ? 75_000 : 45_000);
     if (!plan) throw new SummaryOutOfTimeError();
     try {
-      return await aiClient(plan.timeoutMs, plan.retries).messages.create({
+      return await aiClient(plan.timeoutMs, plan.retries).messages.create(inUs({
         model: AI_MODEL,
         max_tokens: maxTokens,
         system: SYSTEM_PROMPT,
         messages,
-      });
+      }));
     } catch (err) {
       // Given less than a request normally gets to fit the deadline: with
       // the usual time it may well have worked, so the run's timing is the

@@ -3,6 +3,7 @@ import { PLAN_LIST, PLANS } from "@/lib/plans";
 import { isPlanOffered } from "@/lib/stripe/client";
 import type { AccessState } from "@/lib/entitlements";
 import { getAccount } from "@/lib/account";
+import { DISCONNECTED_RETENTION_DAYS, LAPSED_DISCONNECT_DAYS } from "@/lib/dataRetention";
 
 /**
  * What a customer sees instead of a gated page once their trial has ended or
@@ -66,7 +67,9 @@ export default async function UpgradeRequired({
             <p className="text-sm leading-relaxed text-gray-700">
               <strong className="text-navy">Nothing has been deleted.</strong> Your account, your
               QuickBooks connection and every job analyzed so far are all still here. Subscribing
-              turns everything back on exactly as you left it.
+              turns everything back on exactly as you left it. After {LAPSED_DISCONNECT_DAYS} days
+              without a plan we disconnect QuickBooks, and {DISCONNECTED_RETENTION_DAYS} days later we
+              delete the copied data.
             </p>
           </div>
         )}

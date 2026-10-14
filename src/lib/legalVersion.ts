@@ -1,0 +1,24 @@
+/**
+ * The legal documents' version, in one place.
+ *
+ * LEGAL_LAST_UPDATED is the "Last updated" date printed on the Terms, the
+ * Privacy Policy, the Data Processing Addendum and Your Privacy Choices.
+ * Change it to the day any of them changes.
+ *
+ * ACCEPTANCE_VERSION is the version a login must have agreed to. Bump it only
+ * for a material change that people should accept again: every login is
+ * then asked once, at its next visit to the app (/accept-terms), and the
+ * acceptance is recorded (src/lib/termsAcceptance.ts). Before bumping it,
+ * save the new text in legal-archive/ under the same date.
+ */
+export const LEGAL_LAST_UPDATED = "October 14, 2026";
+export const ACCEPTANCE_VERSION = "2026-10-14";
+
+/**
+ * The earliest day the data-retention rules (src/lib/dataRetention.ts) can
+ * count from. The real start is recorded by the first lifecycle run in
+ * production (retentionRulesStart in src/lib/companyData.ts), so companies
+ * disconnected, and accounts that lapsed, before the rules went live get the
+ * full 30 (or 90) days from launch day, whatever day that turns out to be.
+ */
+export const RETENTION_RULES_START = "2026-10-14";

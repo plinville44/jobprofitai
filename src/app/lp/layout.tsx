@@ -38,6 +38,9 @@ export default function LandingLayout({ children }: { children: React.ReactNode 
             <Link href="/terms" className="text-jp-slate hover:text-jp-ink">
               Terms of Service
             </Link>
+            <Link href="/privacy-choices" className="text-jp-slate hover:text-jp-ink">
+              Your Privacy Choices
+            </Link>
             <Link href="/security" className="text-jp-slate hover:text-jp-ink">
               Security
             </Link>

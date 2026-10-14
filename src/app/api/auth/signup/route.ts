@@ -8,6 +8,10 @@ import { REFERRAL_COOKIE } from "@/lib/referrals";
 import { attributeSignupReferral } from "@/lib/signupReferral";
 import { sendEmailVerification } from "@/lib/email/lifecycle";
 import { createEmailVerification, VERIFY_TOKEN_TTL_HOURS } from "@/lib/emailVerification";
+import { acceptanceData } from "@/lib/termsAcceptance";
+import { signupAdOptOut } from "@/lib/adOptOut";
+import { SOURCE_COOKIE } from "@/lib/adSource";
+import { reportServerEvent, signupAdSource, signupSessionId } from "@/lib/serverEvents";
 
 export const runtime = "nodejs";
 
@@ -16,6 +20,10 @@ const SignupSchema = z.object({
   password: z.string().min(8, "Password must be at least 8 characters").max(200),
   name: z.string().trim().max(120).optional(),
   timeZone: z.string().max(64).optional(),
+  // The unchecked "I agree to the Terms of Service and Privacy Policy" box.
+  acceptTerms: z.literal(true, {
+    errorMap: () => ({ message: "Please check the box to agree to the Terms of Service and Privacy Policy." }),
+  }),
 });
 
 /** A real IANA zone name, or null. */
@@ -80,6 +88,15 @@ export async function POST(req: NextRequest) {
         name: name || null,
         timeZone,
         subscription: { create: newTrialSubscriptionData() },
+        // The acceptance is written with the account, so no account exists
+        // without a record of agreeing.
+        termsAcceptances: { create: acceptanceData("signup", req.headers) },
+        // An opt-out made before signing up (Global Privacy Control, or Your
+        // Privacy Choices in this browser) carries over to the account.
+        ...signupAdOptOut(req),
+        // Where they came from and the analytics browser ID, only when the
+        // request carries no opt-out (src/lib/serverEvents.ts).
+        ...signupAdSource(req.headers),
       },
     });
   } catch (err) {
@@ -123,7 +140,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // The signup itself, reported from here because the browser leaves the
+  // signup page for the app straight away. Skipped for an opted-out account.
+  await reportServerEvent(user.id, "sign_up", { method: "email" }, { sessionId: signupSessionId(req.headers) });
+
   const response = NextResponse.json({ id: user.id, email: user.email });
+  // Copied onto the account above, so the browser doesn't need it any more.
+  response.cookies.set(SOURCE_COOKIE, "", { path: "/", maxAge: 0 });
   if (hadReferralCookie) {
     // Deleted with the same path the /r/[code] route set it on, or the
     // browser keeps a second copy scoped elsewhere and nothing changes.

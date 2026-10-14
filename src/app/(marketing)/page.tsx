@@ -23,6 +23,7 @@ import QuickBooksComparison from "@/components/marketing/QuickBooksComparison";
 import FitCheck from "@/components/marketing/FitCheck";
 import { PLANS } from "@/lib/plans";
 import { OG_IMAGE } from "@/lib/siteMeta";
+import { DISCONNECTED_RETENTION_DAYS, LAPSED_DISCONNECT_DAYS } from "@/lib/dataRetention";
 
 export const metadata: Metadata = {
   title: "JobProfitAI: Profit Intelligence for QuickBooks",
@@ -134,10 +135,11 @@ const FAQ_ITEMS = [
     q: "What happens after my trial?",
     a: (
       <>
-        Nothing is deleted. If you choose a plan, everything carries on exactly as it was. If you
-        don&rsquo;t, the profit intelligence features switch off but your account, your QuickBooks
-        connection and your analyzed jobs all stay in place. Subscribing later turns everything
-        back on as you left it.
+        Nothing is deleted when it ends. If you choose a plan, everything carries on exactly as it
+        was. If you don&rsquo;t, the profit intelligence features switch off but your account, your
+        QuickBooks connection and your analyzed jobs stay in place, and subscribing turns everything
+        back on as you left it. After {LAPSED_DISCONNECT_DAYS} days without a plan we disconnect
+        QuickBooks, and {DISCONNECTED_RETENTION_DAYS} days later we delete the copied data.
       </>
     ),
   },

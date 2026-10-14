@@ -21,12 +21,18 @@ export default function SignupForm() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  // The Terms box starts unchecked; the server refuses a signup without it.
+  const [agreed, setAgreed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (loading) return;
+    if (!agreed) {
+      setError("Please check the box to agree to the Terms of Service and Privacy Policy.");
+      return;
+    }
     setError(null);
     setLoading(true);
     try {
@@ -37,6 +43,7 @@ export default function SignupForm() {
           email,
           password,
           name: name.trim() || undefined,
+          acceptTerms: agreed,
           // So the weekly brief defaults to 8am where they actually are.
           timeZone: (() => {
             try {
@@ -53,7 +60,8 @@ export default function SignupForm() {
         const message =
           typeof data.error === "string"
             ? data.error
-            : (data.error?.fieldErrors?.password?.[0] ??
+            : (data.error?.fieldErrors?.acceptTerms?.[0] ??
+              data.error?.fieldErrors?.password?.[0] ??
               data.error?.fieldErrors?.email?.[0] ??
               data.error?.formErrors?.[0] ??
               "We couldn't create your account. Please try again.");
@@ -151,6 +159,26 @@ export default function SignupForm() {
           <p className="mt-1.5 text-xs text-jp-muted">At least 8 characters.</p>
         </div>
 
+        <label className="flex items-start gap-2.5 text-sm text-jp-slate">
+          <input
+            type="checkbox"
+            checked={agreed}
+            onChange={(e) => setAgreed(e.target.checked)}
+            className="mt-0.5 h-4 w-4 shrink-0 rounded border-jp-line text-jp-blue"
+          />
+          <span>
+            I agree to the{" "}
+            <Link href="/terms" target="_blank" className="font-medium text-jp-blue hover:underline">
+              Terms of Service
+            </Link>{" "}
+            and{" "}
+            <Link href="/privacy" target="_blank" className="font-medium text-jp-blue hover:underline">
+              Privacy Policy
+            </Link>
+            .
+          </span>
+        </label>
+
         {error ? (
           <p role="alert" className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
@@ -164,18 +192,6 @@ export default function SignupForm() {
         >
           {loading ? "Creating your account…" : "Create account"}
         </button>
-
-        <p className="text-center text-xs leading-relaxed text-jp-muted">
-          By creating an account you agree to our{" "}
-          <Link href="/terms" className="font-medium text-jp-blue hover:underline">
-            Terms of Service
-          </Link>{" "}
-          and{" "}
-          <Link href="/privacy" className="font-medium text-jp-blue hover:underline">
-            Privacy Policy
-          </Link>
-          .
-        </p>
       </form>
 
       <p className="mt-7 text-center text-sm text-jp-slate">

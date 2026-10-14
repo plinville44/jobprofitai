@@ -59,6 +59,65 @@ model User {
   teamMembership    TeamMember?      @relation("TeamMemberUser")
   passwordResets    PasswordResetToken[]
   emailVerifications EmailVerificationToken[]
+  // Every time this login agreed to the Terms of Service and Privacy Policy:
+  // which version, when and how. See src/lib/termsAcceptance.ts.
+  termsAcceptances  TermsAcceptance[]
+
+  // Set when this person opts out of the sale or sharing of personal
+  // information and targeted advertising while signed in (Your Privacy
+  // Choices, or a browser sending Global Privacy Control), or by email.
+  // Anything that reports this account's steps to Google from the server
+  // must check it first (serverReportsAllowed in src/lib/tracking.ts).
+  // "privacy_page" | "gpc" | "email".
+  adOptOutAt        DateTime?
+  adOptOutSource    String?
+  // Set by the unsubscribe link in tips and feedback emails (trial check-in,
+  // the report guide, the testimonial request). Account, billing, security
+  // and trial-status emails still go. See src/lib/emailPreferences.ts.
+  tipsEmailsOffAt   DateTime?
+
+  // Where the account came from, copied from the jpai_src cookie at signup
+  // (src/lib/adSource.ts): the Google Ads click ID, the campaign tags and
+  // the first page landed on. Kept only when the signup carried no opt-out.
+  adGclid           String?   @db.VarChar(200)
+  utmSource         String?   @db.VarChar(100)
+  utmMedium         String?   @db.VarChar(100)
+  utmCampaign       String?   @db.VarChar(150)
+  utmTerm           String?   @db.VarChar(150)
+  landingPage       String?   @db.VarChar(200)
+  // The Google Analytics browser ID (the _ga cookie) at signup, which steps
+  // reported from the server are linked to (src/lib/serverEvents.ts).
+  gaClientId        String?   @db.VarChar(64)
+}
+
+// One acceptance of the Terms of Service and Privacy Policy: the evidence
+// that a customer agreed, kept for as long as the login exists. `version` is
+// ACCEPTANCE_VERSION from src/lib/legalVersion.ts at the time, and the text
+// of every version is kept in legal-archive/ in the repository.
+// One-time dates the app records for itself, by name. "retention_rules_start":
+// the first lifecycle run with the data-retention rules, which the deletion
+// clocks never count from before (src/lib/companyData.ts).
+model AppMilestone {
+  key String   @id @db.VarChar(64)
+  at  DateTime @default(now())
+}
+
+model TermsAcceptance {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  version     String
+  // "signup" | "intuit_signup" | "reaccept" | "checkout"
+  method      String
+  acceptedAt  DateTime @default(now())
+  // Keyed one-way hash of the network address (like LoginAttempt), and the
+  // browser's user agent, so an acceptance can be tied to a session.
+  ipHash      String?
+  userAgent   String?  @db.VarChar(400)
+  // For checkout acceptances: Stripe records the consent on the session too.
+  stripeCheckoutSessionId String? @unique
+
+  @@index([userId, version])
 }
 
 // A single-use, time-limited password reset.

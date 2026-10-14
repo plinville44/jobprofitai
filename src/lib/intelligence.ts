@@ -1,4 +1,4 @@
-import { AI_MODEL, anthropic } from "./ai";
+import { AI_MODEL, anthropic, inUs } from "./ai";
 import { cleanDigestText } from "./digestText";
 import type { ProfitOpportunity } from "./profitability";
 
@@ -55,7 +55,7 @@ export async function generateProfitInsights(
     jobCount: o.supportingJobIds.length,
   }));
 
-  const message = await anthropic.messages.create({
+  const message = await anthropic.messages.create(inUs({
     model: AI_MODEL,
     // Roughly 150 tokens per card; the caller sends at most eight.
     max_tokens: 3000,
@@ -66,7 +66,7 @@ export async function generateProfitInsights(
         content: `Here are this company's profit opportunities:\n\n${JSON.stringify(input, null, 2)}`,
       },
     ],
-  });
+  }));
 
   const textBlock = message.content.find((b) => b.type === "text");
   if (!textBlock || textBlock.type !== "text") {

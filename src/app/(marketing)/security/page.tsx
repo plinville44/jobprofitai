@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ButtonLink, Card, Eyebrow, Section, SectionHeading } from "@/components/marketing/ui";
 import { OG_IMAGE } from "@/lib/siteMeta";
+import { DISCONNECTED_RETENTION_DAYS } from "@/lib/dataRetention";
 
 export const metadata: Metadata = {
   title: "Security",
@@ -131,6 +132,13 @@ export default function SecurityPage() {
                 straight away; if you don&rsquo;t land there, the next nightly sync notices and
                 shows a Reconnect button rather than silently retrying.
               </p>
+              <p>
+                Once a company is disconnected, nothing is synced or calculated for it any more. If
+                QuickBooks stops letting us in and the company isn&rsquo;t reconnected within a week,
+                it&rsquo;s treated as disconnected too. Its
+                data is kept for {DISCONNECTED_RETENTION_DAYS} days in case you reconnect, and then deleted. You can delete it
+                sooner from Settings.
+              </p>
             </Item>
           </div>
         </div>
@@ -203,6 +211,10 @@ export default function SecurityPage() {
                 client&rsquo;s numbers only by connecting that client&rsquo;s QuickBooks company
                 through Intuit, which takes a QuickBooks login with access to it.
               </p>
+              <p>
+                Contractors who help us with outreach and sales are not given access to the app, its
+                admin tools, customer accounts or QuickBooks data.
+              </p>
             </Item>
 
             <Item title="Logging is deliberately restricted">
@@ -215,13 +227,38 @@ export default function SecurityPage() {
                 When something goes wrong, an error report goes to Sentry, our error monitoring
                 service: the kind of error, its message with email addresses, tokens, quoted text and
                 amounts taken out, where in our code it happened, and the page or scheduled job it
-                happened on. It never includes your QuickBooks figures, job or customer names, what
-                was sent to the page, cookies or tokens. Sentry also tells us when a scheduled job,
+                happened on. It is set up to leave out your QuickBooks figures, job and customer
+                names, what was sent to the page, cookies and tokens. Sentry also tells us when a scheduled job,
                 such as the nightly sync, doesn&rsquo;t run on time.
               </p>
             </Item>
 
+            <Item title="Advertising and analytics tags stay out of the app">
+              <p>
+                Our public website uses Google Analytics, which also measures our Google Ads, as
+                our{" "}
+                <Link href="/privacy#cookies" className="font-medium text-jp-blue hover:underline">
+                  Privacy Policy
+                </Link>{" "}
+                describes. Its tags load only on public pages and the signup page, never in the
+                signed-in app, so they can&rsquo;t see your QuickBooks figures, jobs or customers. If
+                you move from a public page into the app, the page reloads without them. They
+                don&rsquo;t load at all if your browser sends Global Privacy Control or you turn them
+                off on our{" "}
+                <Link href="/privacy-choices" className="font-medium text-jp-blue hover:underline">
+                  Your Privacy Choices
+                </Link>{" "}
+                page.
+              </p>
+            </Item>
+
             <Item title="Deleting your account deletes your data">
+              <p>
+                You can delete one company&rsquo;s data from Settings without deleting your account,
+                for example when a bookkeeping firm stops working with a client. That removes the
+                company&rsquo;s jobs, costs, invoices, estimates, briefs, alerts, insights, WIP
+                copies and settings, and its client logins lose access.
+              </p>
               <p>
                 You can permanently delete your account from Settings. Doing so revokes any live
                 QuickBooks connection with Intuit, cancels any active subscription, and deletes your
@@ -236,8 +273,9 @@ export default function SecurityPage() {
                 the partner can be paid correctly: they hold amounts, dates and internal and Stripe
                 reference numbers, not your name or email. A record that a referral link led to an
                 account is kept with your account removed from it. For each QuickBooks company that
-                started a free trial, a keyed hash of its ID, with the date and an internal account
-                number, is kept so the same company can&rsquo;t start a second free trial. Stripe keeps its own record of your
+                started a free trial or had its data deleted, a keyed hash of its ID, with the date and an
+                internal account number, is kept so the same company can&rsquo;t start a second free
+                trial. Stripe keeps its own record of your
                 payments, as a payment processor must, and we keep anything the law requires us to.
                 Our{" "}
                 <Link href="/privacy#retention" className="font-medium text-jp-blue hover:underline">
@@ -324,7 +362,7 @@ export default function SecurityPage() {
               <p>
                 Advisor notes on your profit opportunities, the written summary in the Weekly Profit
                 Brief, and job type suggestions you ask for are produced by Anthropic&rsquo;s Claude
-                API. What is sent is the calculated profitability data for your jobs: job names, the
+                API, with each request set to run only on Anthropic&rsquo;s US infrastructure. What is sent is the calculated profitability data for your jobs: job names, the
                 customer names attached to them, job types and computed figures (for job type
                 suggestions, just job and customer names and your job type names). The model writes explanatory prose only; the &ldquo;What changed&rdquo;
                 section of the brief is calculated, not written by it.

@@ -1,4 +1,4 @@
-import { AI_MODEL, anthropic } from "./ai";
+import { AI_MODEL, anthropic, inUs } from "./ai";
 import { prisma } from "./prisma";
 import { getJobTypes } from "./jobTypesServer";
 import { selectableJobTypes, suggestJobType, suggestJobTypeFromEstimateLines, type CompanyJobType } from "./jobTypes";
@@ -140,7 +140,7 @@ async function suggestBatch(
 ): Promise<number> {
   let suggested = 0;
   {
-    const message = await anthropic.messages.create({
+    const message = await anthropic.messages.create(inUs({
       model: AI_MODEL,
       max_tokens: 4000,
       system: SYSTEM_PROMPT,
@@ -157,7 +157,7 @@ async function suggestBatch(
           ),
         },
       ],
-    });
+    }));
     const text = message.content.find((b) => b.type === "text");
     if (!text || text.type !== "text" || message.stop_reason === "max_tokens") return 0;
     let answers: { id?: unknown; type?: unknown; reason?: unknown }[];

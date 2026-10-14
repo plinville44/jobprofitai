@@ -4,6 +4,7 @@ import { PLANS, isPlanId } from "@/lib/plans";
 import { prisma } from "@/lib/prisma";
 import { CheckoutBlockedError, createCheckoutSession } from "@/lib/stripe/billing";
 import { getEntitlements } from "@/lib/entitlements";
+import { reportServerEvent } from "@/lib/serverEvents";
 
 /**
  * POST /api/billing/checkout  { plan: "profit_intelligence" | "profit_intelligence_pro" }
@@ -68,6 +69,8 @@ export async function POST(req: NextRequest) {
     }
 
     const { url } = await createCheckoutSession(account.ownerId, plan);
+    // Stripe's page is where the tags never run, so the server reports it.
+    await reportServerEvent(account.ownerId, "begin_checkout", { plan });
     return NextResponse.json({ url });
   } catch (err) {
     if (err instanceof CheckoutBlockedError) {

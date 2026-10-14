@@ -609,8 +609,9 @@ describe("monitoring", () => {
     it("lists Sentry as a service provider, saying what it gets and never gets", () => {
       const privacy = read("app/(marketing)/privacy/page.tsx");
       expect(privacy).toContain('name: "Functional Software, Inc. (Sentry)"');
-      expect(privacy).toContain("its message with personal details removed");
-      expect(privacy).toContain("Never QuickBooks figures, names, email addresses or tokens");
+      // Worded as how reports are set up, not a guarantee (October 2026 legal review).
+      expect(privacy).toContain("the kind of error, its message, where in our code it happened");
+      expect(privacy).toContain("Reports are set up to leave out QuickBooks figures, job and customer names, email addresses and tokens");
       const security = read("app/(marketing)/security/page.tsx").replace(/\s+/g, " ");
       expect(security).toContain("an error report goes to Sentry, our error monitoring service");
     });

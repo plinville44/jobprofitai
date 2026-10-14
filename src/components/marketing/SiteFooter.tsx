@@ -18,6 +18,8 @@ const COMPANY_LINKS = [
 const LEGAL_LINKS = [
   { href: "/privacy", label: "Privacy Policy" },
   { href: "/terms", label: "Terms of Service" },
+  { href: "/dpa", label: "Data Processing Addendum" },
+  { href: "/privacy-choices", label: "Your Privacy Choices" },
 ];
 
 export default function SiteFooter() {
