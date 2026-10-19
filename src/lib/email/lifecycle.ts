@@ -280,12 +280,20 @@ export async function sendWeeklyBrief(input: {
   weekStarting: Date;
   recipient: string;
   email: Pick<SendEmailInput, "subject" | "html" | "text" | "headers">;
+  /**
+   * Only for a second brief stored under the same week: the send day moved
+   * later in the week after this week's brief went out (see
+   * sentForThisSchedule). Its own key, the day it was scheduled for, so the
+   * first brief's keys don't stop it and a retry of it still sends once.
+   */
+  sendDay?: Date | null;
 }): Promise<SendEmailResult> {
   const to = input.recipient.trim().toLowerCase();
+  const again = input.sendDay ? `:${dayStamp(input.sendDay)}` : "";
   return sendLifecycleEmail({
     userId: input.ownerId,
     emailType: "weekly_brief",
-    dedupeKey: `weekly_brief:${input.connectionId}:${dayStamp(input.weekStarting)}:${to}`,
+    dedupeKey: `weekly_brief:${input.connectionId}:${dayStamp(input.weekStarting)}:${to}${again}`,
     to: input.recipient,
     ...input.email,
   });

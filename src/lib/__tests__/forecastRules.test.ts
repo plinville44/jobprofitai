@@ -95,3 +95,33 @@ describe("forecast on a job whose cost has passed the estimate (C1)", () => {
     expect(computeNeedsAttentionForJob(f, { forecast: fc }).some((i) => i.issueCode === "underbilled")).toBe(false);
   });
 });
+
+describe("forecast from billing on a job with no cost estimate (audit 2026-10-19)", () => {
+  // $30,000 contract, a 50% deposit billed, $6,000 of materials bought. It
+  // forecast a 60% margin at medium confidence and counted as firm.
+  const input = job({ contract: 30_000, estimate: null, spent: 6_000, billed: 15_000 });
+  const f = computeJobFinancials(input, ctx);
+  const fc = computeForecastAtCompletion(input, f, NOW);
+
+  it("is low confidence however much is billed, and isn't acted on", () => {
+    expect([fc.available, fc.progressSource, fc.progress, fc.confidence]).toEqual([true, "billing", 0.5, "low"]);
+    expect(forecastIsActionable(f, fc)).toBe(false);
+    expect(forecastIsActionable(f, { ...fc, confidence: "medium" })).toBe(false);
+  });
+
+  it("is firm again once a cost estimate is entered", () => {
+    const withEstimate = job({ contract: 30_000, estimate: 24_000, spent: 6_000, billed: 15_000 });
+    const fe = computeJobFinancials(withEstimate, ctx);
+    const fce = computeForecastAtCompletion(withEstimate, fe, NOW);
+    expect(fce.confidence).toBe("medium");
+    expect(forecastIsActionable(fe, fce)).toBe(true);
+  });
+
+  it("leaves a percent complete the contractor entered alone", () => {
+    const entered = job({ contract: 30_000, estimate: null, spent: 6_000, billed: 15_000, percent: 50 });
+    const fm = computeJobFinancials(entered, ctx);
+    const fcm = computeForecastAtCompletion(entered, fm, NOW);
+    expect(fcm.confidence).toBe("high");
+    expect(forecastIsActionable(fm, fcm)).toBe(true);
+  });
+});

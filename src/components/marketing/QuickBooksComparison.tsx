@@ -4,12 +4,18 @@ import { Card } from "./ui";
  * "QuickBooks tells you / JobProfitAI tells you": the two-column answer to
  * "QuickBooks already does this". One component so the homepage and the ad
  * landing pages (src/app/lp) always say the same thing.
+ *
+ * Says what QuickBooks does, never what it lacks. Since August 2026
+ * QuickBooks Online Advanced includes construction reports (job costing,
+ * budget against actual, change orders, WIP) and flags project cost
+ * overruns; Plus has project profitability but not those. The right-hand
+ * column is what JobProfitAI adds on either plan.
  */
 
 const QUICKBOOKS = [
   "What each job billed and what it spent",
   "Profit and loss by project",
-  "Budget against actual, where you've set a budget up",
+  "On Advanced, construction reports too: budget against actual, change orders, WIP, and flags when a project's costs run over",
 ];
 
 const JOBPROFITAI = [

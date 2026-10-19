@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { canSeeConnection, getAccount, refuseClient } from "@/lib/account";
 import { getJobTypes } from "@/lib/jobTypesServer";
+import { loadedEmailSettings, STALE_SETTINGS_MESSAGE, staleEmailSettings } from "@/lib/emailPreferences";
 
 const OVERHEAD_METHODS = new Set(["pct_of_revenue", "pct_of_direct_cost"]);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -10,7 +11,13 @@ const MAX_RECIPIENTS = 10;
 /**
  * POST /api/settings/profile
  * { connectionId, targetMarginPct, overheadEnabled, overheadMethod, overheadValue,
- *   emailEnabled, emailRecipients, emailDay, emailHour, emailTimezone }
+ *   emailEnabled, emailRecipients, emailDay, emailHour, emailTimezone,
+ *   loaded: { emailEnabled, emailRecipients, alertsEnabled } }
+ *
+ * `loaded` is what the page showed for the recipient list and the on and
+ * off switches. Those can change while the page is open (a recipient's
+ * "Stop getting this email" link), and a save that would put back what was
+ * changed is refused with 409 (see staleEmailSettings).
  *
  * One route for the whole Settings form, matching the plan's "one route, one
  * form" scope. All values are validated server-side before write - never
@@ -165,8 +172,23 @@ export async function POST(req: NextRequest) {
     const rebuild = jobSourceChanged || timeEntriesChanged;
     const now = new Date();
 
-    await prisma.quickBooksConnection.update({
-      where: { id: connection.id },
+    // The recipient list and the switches as stored now, as read above.
+    const current = { emailEnabled: connection.emailEnabled, emailRecipients: connection.emailRecipients, alertsEnabled: connection.alertsEnabled };
+    const loaded = loadedEmailSettings(body);
+    const submitted = { emailEnabled, emailRecipients, alertsEnabled: alertsEnabled ?? connection.alertsEnabled };
+    if (loaded && staleEmailSettings(loaded, current, submitted)) {
+      return NextResponse.json({ error: STALE_SETTINGS_MESSAGE, code: "stale_settings" }, { status: 409 });
+    }
+
+    // Only if those are still as read above: an unsubscribe in the moment
+    // between the read and this write isn't overwritten either.
+    const saved = await prisma.quickBooksConnection.updateMany({
+      where: {
+        id: connection.id,
+        emailEnabled: current.emailEnabled,
+        alertsEnabled: current.alertsEnabled,
+        emailRecipients: { equals: current.emailRecipients },
+      },
       data: {
         targetMarginPct,
         overheadEnabled,
@@ -197,6 +219,9 @@ export async function POST(req: NextRequest) {
         ...(rebuild || burdenChanged ? { alertsBaselinedAt: null } : {}),
       },
     });
+    if (saved.count === 0) {
+      return NextResponse.json({ error: STALE_SETTINGS_MESSAGE, code: "stale_settings" }, { status: 409 });
+    }
 
     for (const t of marginTargets) {
       if (t.targetPct == null) {
@@ -210,7 +235,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ ok: true, rebuild });
+    return NextResponse.json({ ok: true, rebuild, saved: submitted });
   } catch (err) {
     // Message only, never the full error object - same reasoning as the
     // other API routes (see api/quickbooks/sync/route.ts).

@@ -16,14 +16,15 @@ import { OG_IMAGE } from "@/lib/siteMeta";
  *
  * The funnel has no sales calls, so this page does the "let me show you"
  * part of one. Everything here is static and rendered from the same labelled
- * example company as the home page previews; nothing reads a database, and
+ * example company as the home page previews (src/lib/sampleCompany.ts, run
+ * through the real engine); nothing reads a database, and
  * nothing on it can be edited. Every frame carries the "Example data" badge,
  * and the banner says so in words too, because presenting invented figures
  * as a customer's would be a fabricated case study.
  */
 
 export const metadata: Metadata = {
-  title: "See JobProfitAI with sample data",
+  title: { absolute: "See JobProfitAI with sample data" },
   description:
     "Look around JobProfitAI using an example contractor's jobs: what to change and what it's worth, the Estimate Check, results tracking, margins by job and the Weekly Profit Brief. No signup needed.",
   alternates: { canonical: "/demo" },
@@ -56,7 +57,7 @@ export default function DemoPage() {
         <SectionHeading
           eyebrow="Sample data demo"
           title="See what JobProfitAI shows you, before you connect anything"
-          intro="This is an invented contractor, Example Builders, with a year of kitchens, bathrooms, roofs and service calls. The opportunities, estimate check and tracked change below are worked out by the real product from their made-up numbers. The dashboard, job list and weekly email are illustrations of the same screens you get once your QuickBooks Online company is connected."
+          intro="This is an invented contractor, Example Builders, with a year of kitchens, bathrooms, roofs and service calls. Every figure below, from the opportunities to the dashboard, the job list and the weekly email, is worked out by the real product from their made-up numbers. The one part written for this page is the weekly email's short summary, which in the product the AI writes around the same figures."
         />
         <SampleBanner />
       </Section>
@@ -77,7 +78,7 @@ export default function DemoPage() {
         <h2 className="text-xl font-bold text-jp-ink">2. Which part of the price is thin</h2>
         <p className="mt-2 max-w-3xl text-jp-slate">
           Example Builders&rsquo; estimates split labor, materials and subs, so JobProfitAI can see
-          that on kitchens it&rsquo;s the labor: customers paid for it and it cost nearly as much again.
+          that on kitchens it&rsquo;s the labor: it cost nearly everything customers paid for it.
         </p>
         <div className="mt-6">
           <PricingBreakdownPreview />
@@ -109,8 +110,9 @@ export default function DemoPage() {
       <Section className="!pt-0 !pb-10">
         <h2 className="text-xl font-bold text-jp-ink">5. Your Profit Dashboard</h2>
         <p className="mt-2 max-w-3xl text-jp-slate">
-          The top row totals every job. Needs Your Attention lists the jobs to look at first, how much
-          is at stake on each, and how strong the evidence is.
+          The top row totals every job for the period you pick, here the last 12 months. Needs Your
+          Attention lists the jobs to look at first, how much is at stake on each, and how strong the
+          evidence is.
         </p>
         <div className="mt-6">
           <DashboardPreview />

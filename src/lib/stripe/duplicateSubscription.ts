@@ -20,8 +20,13 @@
 // The functions here are the pure decisions, so they can be tested without
 // Stripe.
 
-/** Stripe statuses that mean a subscription is charging or about to. */
-export const LIVE_SUBSCRIPTION_STATUSES = ["active", "trialing", "past_due"] as const;
+/**
+ * Stripe statuses that mean a subscription is charging or about to.
+ * "unpaid" counts: Stripe has stopped retrying, but the subscription is still
+ * there and its open invoices can still be paid, so a second one alongside it
+ * could bill twice. The way back is updating the card in Manage Billing.
+ */
+export const LIVE_SUBSCRIPTION_STATUSES = ["active", "trialing", "past_due", "unpaid"] as const;
 
 export function isLiveSubscriptionStatus(status: string | null | undefined): boolean {
   return (LIVE_SUBSCRIPTION_STATUSES as readonly string[]).includes(status ?? "");
@@ -82,6 +87,8 @@ export type SecondCheckoutDecision =
 
 export const ALREADY_SUBSCRIBED_MESSAGE =
   "You already have a subscription. Use Manage Billing to switch plans. If you just paid, give it a minute and refresh this page.";
+export const UNPAID_SUBSCRIPTION_MESSAGE =
+  "Your subscription is still on file with a payment that didn't go through. Use Manage Billing to update your card and pay it, which turns your plan back on. A new plan can't be started while it's open.";
 export const PAYMENT_BEING_CONFIRMED_MESSAGE =
   "We've just received a payment from you and are still turning your plan on. Refresh this page in a minute.";
 
@@ -97,8 +104,10 @@ export function secondCheckoutDecision(
   sessions: CheckoutSessionSummary[],
   nowSeconds: number
 ): SecondCheckoutDecision {
-  if (subscriptions.some((s) => isLiveSubscriptionStatus(s.status))) {
-    return { block: true, message: ALREADY_SUBSCRIBED_MESSAGE };
+  const live = subscriptions.filter((s) => isLiveSubscriptionStatus(s.status));
+  if (live.length > 0) {
+    const onlyUnpaid = live.every((s) => s.status === "unpaid");
+    return { block: true, message: onlyUnpaid ? UNPAID_SUBSCRIPTION_MESSAGE : ALREADY_SUBSCRIBED_MESSAGE };
   }
   const recent = sessions.filter((s) => nowSeconds - s.created <= RECENT_CHECKOUT_SECONDS);
   const paidAndPending = recent.some((s) => {

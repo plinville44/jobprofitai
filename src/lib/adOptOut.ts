@@ -65,14 +65,20 @@ export async function noteBrowserOptOut(userId: string, headers: Headers): Promi
  * the Your Privacy Choices cookie too, so the tags stay off on our public
  * pages in that browser as well ("applies wherever you sign in", Privacy
  * Policy section 8). Called from route handlers, right after createSession.
+ * Never throws: the opt-out on the account is what stops server reports,
+ * and a cookie that couldn't be set must not stop the sign-in.
  */
 export async function carryAdOptOutToBrowser(user: { adOptOutAt: Date | null }): Promise<void> {
   if (!user.adOptOutAt) return;
-  const { cookies } = await import("next/headers");
-  (await cookies()).set(OPT_OUT_COOKIE, "1", {
-    path: "/",
-    maxAge: OPT_OUT_MAX_AGE_SECONDS,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-  });
+  try {
+    const { cookies } = await import("next/headers");
+    (await cookies()).set(OPT_OUT_COOKIE, "1", {
+      path: "/",
+      maxAge: OPT_OUT_MAX_AGE_SECONDS,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+    });
+  } catch (err) {
+    console.error("ad opt-out: could not set the browser cookie:", err instanceof Error ? err.message : "Unknown error");
+  }
 }

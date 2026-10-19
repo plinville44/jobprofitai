@@ -1,4 +1,5 @@
 import type Stripe from "stripe";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { recordAcceptance } from "@/lib/termsAcceptance";
 import { reportServerEvent } from "@/lib/serverEvents";
@@ -45,7 +46,9 @@ import { isFirmInvoice } from "./invoicePlan";
 //   keyed by Stripe's own event id BEFORE doing any work. A redelivery of the
 //   same event hits the primary-key constraint and is skipped. If the handler
 //   then throws, the claim row is deleted so Stripe's retry can genuinely
-//   re-run it rather than being permanently swallowed.
+//   re-run it rather than being permanently swallowed. A run killed by the
+//   time limit never gets to delete it, so a claim that never finished is
+//   taken over by a retry once it is a couple of minutes old.
 //
 //   Level 2 - every individual side effect is independently idempotent, so
 //   even a retry that re-runs a half-finished handler cannot duplicate
@@ -76,32 +79,72 @@ const HANDLED_EVENTS = new Set<string>([
 ]);
 
 /**
+ * A claim still being worked on has its type stored with this prefix, and
+ * processedAt holds when it was claimed. Finishing writes the plain type and
+ * the finish time. The StripeEvent table has no status column, and this
+ * keeps every row written before the prefix existed reading as finished.
+ */
+export const CLAIM_IN_PROGRESS_PREFIX = "processing:";
+
+/**
+ * A claim older than this that never finished belongs to a run that died:
+ * Vercel stops the webhook at 60 seconds (maxDuration) without running any
+ * catch block, so the claim was never released. Longer than maxDuration, so
+ * a run that is merely slow is never re-run alongside itself.
+ */
+export const STALE_CLAIM_MS = 2 * 60_000;
+
+/** Thrown for a redelivery that arrives while the first delivery is still running, so Stripe tries again later. */
+export class EventInProgressError extends Error {
+  constructor(eventId: string) {
+    super(`Event ${eventId} is still being processed`);
+    this.name = "EventInProgressError";
+  }
+}
+
+/**
  * Entry point called by the webhook route once the signature is verified.
  */
-export async function processStripeEvent(event: Stripe.Event): Promise<WebhookResult> {
+export async function processStripeEvent(event: Stripe.Event, now: Date = new Date()): Promise<WebhookResult> {
   if (!HANDLED_EVENTS.has(event.type)) {
     return { handled: false, detail: `Ignored event type ${event.type}` };
   }
 
   // Claim the event. A duplicate delivery stops right here.
+  const inProgressType = `${CLAIM_IN_PROGRESS_PREFIX}${event.type}`;
   try {
     await prisma.stripeEvent.create({
       data: {
         id: event.id,
-        type: event.type,
+        type: inProgressType,
         apiVersion: event.api_version ?? null,
+        processedAt: now,
       },
     });
   } catch (err) {
-    if ((err as { code?: string })?.code === "P2002") {
+    if ((err as { code?: string })?.code !== "P2002") throw err;
+    const claim = await prisma.stripeEvent.findUnique({ where: { id: event.id } });
+    if (claim && !claim.type.startsWith(CLAIM_IN_PROGRESS_PREFIX)) {
       return { handled: true, duplicate: true, detail: "Already processed" };
     }
-    throw err;
+    if (claim && now.getTime() - claim.processedAt.getTime() < STALE_CLAIM_MS) {
+      // Not released here: the first delivery may still finish it.
+      throw new EventInProgressError(event.id);
+    }
+    // A run that died part way (or a claim deleted a moment ago). Take it
+    // over; conditional, so two retries can't both take it.
+    const taken = claim
+      ? await prisma.stripeEvent.updateMany({
+          where: { id: event.id, type: claim.type, processedAt: claim.processedAt },
+          data: { processedAt: now },
+        })
+      : { count: 0 };
+    if (taken.count !== 1) throw new EventInProgressError(event.id);
   }
 
+  let detail: string;
   try {
-    const detail = await dispatch(event);
-    return { handled: true, detail };
+    detail = await dispatch(event);
   } catch (err) {
     // Release the claim so Stripe's retry actually re-runs this event.
     // Without this, one transient database blip would permanently lose a
@@ -109,6 +152,12 @@ export async function processStripeEvent(event: Stripe.Event): Promise<WebhookRe
     await prisma.stripeEvent.delete({ where: { id: event.id } }).catch(() => {});
     throw err;
   }
+  // Mark it finished. If this write fails the claim just looks unfinished,
+  // and a retry after STALE_CLAIM_MS re-runs it, which level 2 makes safe.
+  await prisma.stripeEvent
+    .update({ where: { id: event.id }, data: { type: event.type, processedAt: new Date() } })
+    .catch(() => {});
+  return { handled: true, detail };
 }
 
 async function dispatch(event: Stripe.Event): Promise<string> {
@@ -310,7 +359,15 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session): Promis
   // charged before tax (after any promotion code), the plan and Stripe's
   // session ID as the reference, so a repeat can't count twice. Skipped for
   // an account that opted out.
-  if (subscriptionId) {
+  //
+  // Only once the money is in. "paid" is a charged card. "no_payment_required"
+  // is a subscription with nothing due today (a 100% off first month, or a
+  // trial set in Stripe) that still has a payment method on file, so it counts,
+  // at the $0 actually charged. "unpaid" is a bank debit still settling that can
+  // fail, and isn't reported: that would need
+  // checkout.session.async_payment_succeeded, which this endpoint isn't sent.
+  const paymentDone = session.payment_status === "paid" || session.payment_status === "no_payment_required";
+  if (subscriptionId && paymentDone) {
     const cents =
       session.amount_total != null ? session.amount_total - (session.total_details?.amount_tax ?? 0) : session.amount_subtotal;
     await reportServerEvent(userId, "purchase", {
@@ -587,11 +644,12 @@ async function handleSubscriptionUpsert(subscription: Stripe.Subscription, event
     return `Event for ${subscription.id} ignored: ${existing.stripeSubscriptionId} is the live subscription`;
   }
 
+  const status = storedStatusFor(subscription.status);
   const data: Record<string, unknown> = {
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscription.id,
     stripePriceId: priceId,
-    status: subscription.status,
+    status,
     // Firm is billed per company; the quantity shows on the Billing page.
     quantity: subscription.items.data[0]?.quantity ?? null,
     currentPeriodEnd: subscriptionPeriodEnd(subscription),
@@ -605,7 +663,14 @@ async function handleSubscriptionUpsert(subscription: Stripe.Subscription, event
   // grant Pro entitlements.
   if (plan) data.plan = plan;
 
-  await prisma.subscription.update({ where: { userId }, data });
+  // Upsert, not update: the row can be missing (a login that joined a team
+  // while its own checkout was still open, see acceptInvite), and an update
+  // would fail every retry of a payment that really happened.
+  await prisma.subscription.upsert({
+    where: { userId },
+    create: { userId, ...data } as Prisma.SubscriptionUncheckedCreateInput,
+    update: data,
+  });
 
   // Firm is billed per company. A subscription that has just become Firm
   // (a plan change made in Stripe) is brought to the right quantity, and one
@@ -618,7 +683,7 @@ async function handleSubscriptionUpsert(subscription: Stripe.Subscription, event
   }
 
   // First transition into a live paid subscription - send the welcome.
-  const becameActive = subscription.status === "active" && existing?.status !== "active";
+  const becameActive = status === "active" && existing?.status !== "active";
   if (becameActive) {
     await sendSubscriptionConfirmed(userId, plan ?? existing?.plan ?? "profit_intelligence", subscription.id);
   }
@@ -629,7 +694,20 @@ async function handleSubscriptionUpsert(subscription: Stripe.Subscription, event
   // Billing lists them. Noted so it shows in Stripe's webhook log.
   const paused = plan && existing?.plan && plan !== existing.plan ? await pausedNote(userId) : "";
 
-  return `Subscription ${subscription.id} -> ${subscription.status} for user ${userId}${paused}`;
+  const shown = status === subscription.status ? status : `${status} (Stripe: ${subscription.status})`;
+  return `Subscription ${subscription.id} -> ${shown} for user ${userId}${paused}`;
+}
+
+/**
+ * The Subscription.status stored for a Stripe status. The same, except
+ * Stripe's "trialing" (trial days added to a subscription in the Stripe
+ * Dashboard) is stored as "active". Our own "trialing" means the card-free
+ * trial with no Stripe subscription, which ends on our trialEndsAt and is
+ * expired by our cron; a paid subscription in a Stripe trial must not be.
+ * When the trial ends Stripe sends the real status (active, past_due...).
+ */
+export function storedStatusFor(stripeStatus: string): string {
+  return stripeStatus === "trialing" ? "active" : stripeStatus;
 }
 
 // The event time isn't recorded here: "canceled is final" (see
@@ -655,19 +733,23 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription, _eve
   }
 
   const endedAt = subscription.ended_at ? new Date(subscription.ended_at * 1000) : new Date();
+  const ended = {
+    status: "canceled",
+    canceledAt: endedAt,
+    cancelAtPeriodEnd: false,
+    // Recorded if missing, so a late update for this same subscription is
+    // recognised as one for a canceled subscription.
+    ...(current?.stripeSubscriptionId ? {} : { stripeSubscriptionId: subscription.id }),
+    // The subscription id is deliberately retained for reconciliation and
+    // history; entitlement is decided by `status`, not by its presence.
+  };
 
-  await prisma.subscription.update({
+  // Upsert for the same reason as handleSubscriptionUpsert: a missing row
+  // must not make Stripe retry this event for days.
+  await prisma.subscription.upsert({
     where: { userId },
-    data: {
-      status: "canceled",
-      canceledAt: endedAt,
-      cancelAtPeriodEnd: false,
-      // Recorded if missing, so a late update for this same subscription is
-      // recognised as one for a canceled subscription.
-      ...(current?.stripeSubscriptionId ? {} : { stripeSubscriptionId: subscription.id }),
-      // The subscription id is deliberately retained for reconciliation and
-      // history; entitlement is decided by `status`, not by its presence.
-    },
+    create: { userId, stripeCustomerId: idOf(subscription.customer), ...ended },
+    update: ended,
   });
 
   await sendSubscriptionCanceled(userId, subscription.id, null);
@@ -813,16 +895,20 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<string> {
  * handler would have recorded one afterwards. Asks Stripe for the current
  * subscription and charge, since the event's own copy can predate both.
  * Unlike isFullRefund, a charge that doesn't say it was refunded counts as
- * kept. A Stripe error throws, so the event is retried. Stripe calls follow
- * API 2024-06-20 (newer versions drop `invoice.charge`, and then only the
- * duplicate check applies); not verified against live Stripe.
+ * kept. A Stripe error throws, so the event is retried.
+ *
+ * The invoice is fetched again rather than read from the event: the webhook
+ * endpoint is on a 2025+ API version, whose invoices have no `charge` at all,
+ * while the SDK is pinned to 2024-06-20, whose invoices still do. Not
+ * verified against live Stripe.
  */
 async function paymentGivenBack(invoice: Stripe.Invoice, subscriptionId: string): Promise<string | null> {
   const stripe = getStripe();
   const subscription: Stripe.Subscription | null | undefined = await stripe.subscriptions.retrieve(subscriptionId);
   if (subscription?.metadata?.[DUPLICATE_OF_METADATA_KEY]) return "it was a duplicate subscription, cancelled and refunded";
 
-  const onInvoice: string | Stripe.Charge | null | undefined = invoice.charge;
+  const current: Stripe.Invoice | null | undefined = await stripe.invoices.retrieve(invoice.id, { expand: ["charge"] });
+  const onInvoice: string | Stripe.Charge | null | undefined = current?.charge;
   const charge: Stripe.Charge | null | undefined =
     typeof onInvoice === "string" ? await stripe.charges.retrieve(onInvoice) : onInvoice;
   if (charge && chargeRefundedInFull(charge)) return "its payment was refunded";
@@ -921,12 +1007,17 @@ function isFullRefund(charge: Stripe.Charge): boolean {
  * that is a decision for a person, and the event is in the Stripe log.
  */
 async function handleChargeRefunded(charge: Stripe.Charge): Promise<string> {
-  const invoiceId = idOf(charge.invoice);
   const notes: string[] = [];
 
   if (!isFullRefund(charge)) {
     return `Partial refund on charge ${charge.id}: nothing reversed (commission and referral stand)`;
   }
+
+  // The charge's invoice, which the commission is keyed on. Charges in the
+  // webhook's 2025+ payloads have no `invoice`, so the charge is fetched
+  // through the SDK (pinned to 2024-06-20, where it still has one), the same
+  // as handleDisputeCreated. A Stripe error throws, so the event is retried.
+  const invoiceId = await chargeInvoiceId(charge);
 
   if (invoiceId) {
     const voided = await voidCommissionForInvoice(invoiceId, "Payment refunded");
@@ -947,6 +1038,14 @@ async function handleChargeRefunded(charge: Stripe.Charge): Promise<string> {
   }
 
   return `Refund handled${notes.length ? `: ${notes.join("; ")}` : " (nothing to reverse)"}`;
+}
+
+/** The invoice a charge paid: from the event when its shape still has it, else from Stripe. */
+async function chargeInvoiceId(charge: Stripe.Charge): Promise<string | null> {
+  const onEvent = idOf(charge.invoice);
+  if (onEvent) return onEvent;
+  const fetched: Stripe.Charge | null | undefined = await getStripe().charges.retrieve(charge.id);
+  return idOf(fetched?.invoice ?? null);
 }
 
 async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<string> {

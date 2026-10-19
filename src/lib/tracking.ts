@@ -115,11 +115,34 @@ export function fromConsentRegion(headers: Headers): boolean {
 }
 
 /**
+ * Zones outside "Europe/" that are in the EEA: Iceland, Cyprus, the Canary
+ * Islands, Madeira, the Azores, Ceuta, Svalbard and France's overseas
+ * regions and collectivities in the EU.
+ */
+const EEA_ZONES_OUTSIDE_EUROPE = new Set([
+  "Atlantic/Reykjavik",
+  "Asia/Nicosia",
+  "Asia/Famagusta",
+  "Atlantic/Canary",
+  "Atlantic/Madeira",
+  "Atlantic/Azores",
+  "Africa/Ceuta",
+  "Arctic/Longyearbyen",
+  "Indian/Reunion",
+  "Indian/Mayotte",
+  "America/Martinique",
+  "America/Guadeloupe",
+  "America/Cayenne",
+  "America/Marigot",
+  "America/St_Barthelemy",
+]);
+
+/**
  * The browser-side version: a European time zone. Used only to skip our
  * jpai_src cookie, so it errs toward skipping.
  */
 export function europeanTimeZone(timeZone: string | undefined): boolean {
-  return typeof timeZone === "string" && (timeZone.startsWith("Europe/") || timeZone === "Atlantic/Reykjavik");
+  return typeof timeZone === "string" && (timeZone.startsWith("Europe/") || EEA_ZONES_OUTSIDE_EUROPE.has(timeZone));
 }
 
 export const GTM_ID_PATTERN = /^GTM-[A-Z0-9]{4,12}$/;

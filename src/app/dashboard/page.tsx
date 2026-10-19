@@ -78,7 +78,7 @@ export default async function DashboardPage(props: {
   const profitData = connection
     ? await getConnectionProfitData(connection.id, now, { dateRange, statusFilter })
     : null;
-  const marginTrend = connection ? await getMarginTrend(connection.id, trendGranularity) : [];
+  const marginTrend = connection ? await getMarginTrend(connection.id, trendGranularity, now) : [];
   // The Profit Opportunity Feed leads the dashboard: what to change and what
   // it's worth. Whole-life figures across every job, whatever the tab or
   // period below is set to.
@@ -134,7 +134,11 @@ export default async function DashboardPage(props: {
           </div>
         ) : (
           <div className="mt-8 rounded-xl border border-gray-200 p-8 text-center">
-            <p className="text-gray-600">Connect your QuickBooks Online company to see your job profitability.</p>
+            <p className="text-gray-600">
+              Connect your QuickBooks Online company to see your job profitability. It takes about two minutes,
+              JobProfitAI only reads your books, and your first numbers are ready in a few minutes. QuickBooks Desktop
+              isn&apos;t supported.
+            </p>
             <div className="mt-4 flex justify-center">
               <ConnectToQuickBooksButton />
             </div>
@@ -182,15 +186,19 @@ export default async function DashboardPage(props: {
             ) : null}
           </div>
 
+          {/* The one line for idle open jobs. They're left out of Needs Your
+              Attention, Data Health's job lists and the brief's data check
+              (isInScope), so this is where the owner hears about them. */}
           {profitData.dataHealth.idleOpenJobs.length > 0 ? (
             <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4">
               <p className="text-sm text-amber-900">
                 <strong>
                   {profitData.dataHealth.idleOpenJobs.length} open{" "}
-                  {profitData.dataHealth.idleOpenJobs.length === 1 ? "job has" : "jobs have"} had no activity in 90+ days.
+                  {profitData.dataHealth.idleOpenJobs.length === 1 ? "job" : "jobs"} with no activity in 90 days: mark{" "}
+                  {profitData.dataHealth.idleOpenJobs.length === 1 ? "it" : "them"} finished.
                 </strong>{" "}
-                They&apos;re probably finished. QuickBooks doesn&apos;t tell us when a project wraps up, so until they&apos;re
-                marked complete they count as active.
+                They&apos;re almost always done. QuickBooks doesn&apos;t tell us when a project wraps up, so they still count
+                as active, and they&apos;re left out of Needs Your Attention and the data checks until they&apos;re marked.
               </p>
               {/* A client's view-only login can see Data Health but can't mark anything. */}
               {viewOnly ? (
@@ -304,7 +312,13 @@ export default async function DashboardPage(props: {
             <KpiCard label="Revenue" value={formatCurrency(profitData.totals.revenue)} />
             <KpiCard label="Tracked Job Costs" value={formatCurrency(profitData.totals.trackedJobCosts)} />
             <KpiCard label="Job Gross Profit" value={formatCurrency(profitData.totals.jobGrossProfit)} />
-            <KpiCard label="Average Job Margin" value={formatPct(profitData.totals.avgJobMarginPct)} />
+            {/* Job Gross Profit over the same jobs' revenue, so it always
+                agrees with the tile beside it. On the Active tab it's margin
+                to date: billing timing as much as profit, and said so. */}
+            <KpiCard
+              label={statusFilter === "open" ? "Margin to Date" : "Job Margin"}
+              value={formatPct(profitData.totals.avgJobMarginPct)}
+            />
             <KpiCard
               label="Your Target Margin"
               value={profitData.totals.targetMarginPct != null ? `${profitData.totals.targetMarginPct}%` : "Not set"}
@@ -578,10 +592,12 @@ function MarginTrendEmptyState({
     );
   }
 
+  // The trend counts each finished job once, at its whole-job margin, so a
+  // job needs both an invoice and a cost before it can be plotted.
   return (
     <p className="text-sm text-gray-500">
-      Your {completedJobs} completed {completedJobs === 1 ? "job has" : "jobs have"} no invoices or
-      costs dated in QuickBooks yet, so there is nothing to plot over time.
+      {completedJobs === 1 ? "Your completed job doesn't" : `None of your ${completedJobs} completed jobs`} have both
+      invoices and costs in QuickBooks yet, so there is no finished-job margin to plot over time.
     </p>
   );
 }

@@ -1,4 +1,4 @@
-import type { JobFinancials } from "./profitability";
+import type { JobFinancials, MarginTrendPoint } from "./profitability";
 
 /**
  * Margin by job type, month by month: are remodels getting more profitable
@@ -58,6 +58,53 @@ export function trendMonths(now: Date, count = TREND_MONTHS): string[] {
 
 const marginOf = (revenue: number, cost: number) => (revenue > 0 ? (revenue - cost) / revenue : null);
 
+/** A finished job the trend can count: completed, with revenue and costs, finished by `now`. */
+const countsAsFinished = (f: JobFinancials, now: Date) =>
+  f.status === "closed" &&
+  f.revenue > 0 &&
+  f.costs > 0 &&
+  f.lastFinancialActivity != null &&
+  f.lastFinancialActivity.getTime() <= now.getTime();
+
+const quarterKey = (d: Date) => `${d.getUTCFullYear()}-Q${Math.floor(d.getUTCMonth() / 3) + 1}`;
+
+/**
+ * The Profit Dashboard's margin trend, over all of a company's history:
+ * each finished job counted once, at its whole-job figures, in the month
+ * (or quarter) of its last cost or invoice, by the same rule as the
+ * Opportunities trend above. A period's margin is revenue-weighted across
+ * the jobs that finished in it.
+ *
+ * It used to put each transaction in its own month, which contradicted the
+ * dashboard's own label ("each job from start to finish") and the
+ * Opportunities page: a job that bought materials in March and billed in May
+ * drew a loss in March and near pure profit in May. Periods are UTC, as
+ * QuickBooks dates are stored as UTC midnight. Pure.
+ */
+export function marginTrendByPeriod(
+  jobs: JobFinancials[],
+  granularity: "monthly" | "quarterly",
+  now: Date
+): MarginTrendPoint[] {
+  const key = granularity === "monthly" ? monthKey : quarterKey;
+  const buckets = new Map<string, { revenue: number; costs: number }>();
+  for (const f of jobs) {
+    if (!countsAsFinished(f, now)) continue;
+    const k = key(f.lastFinancialActivity!);
+    const b = buckets.get(k) ?? { revenue: 0, costs: 0 };
+    b.revenue += f.revenue;
+    b.costs += f.costs;
+    buckets.set(k, b);
+  }
+  return [...buckets.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([period, b]) => {
+      const revenue = Math.round(b.revenue * 100) / 100;
+      const costs = Math.round(b.costs * 100) / 100;
+      return { period, revenue, costs, marginPct: marginOf(revenue, costs) };
+    });
+}
+
 function buildRow(type: string | null, jobs: JobFinancials[], months: string[]): TypeTrend {
   const cells = new Map(months.map((m) => [m, { month: m, jobs: 0, revenue: 0, cost: 0, margin: null as number | null }]));
   for (const f of jobs) {
@@ -93,15 +140,7 @@ function buildRow(type: string | null, jobs: JobFinancials[], months: string[]):
 export function computeMarginTrend(jobs: JobFinancials[], now: Date, count = TREND_MONTHS): MarginTrend {
   const months = trendMonths(now, count);
   const inWindow = new Set(months);
-  const finished = jobs.filter(
-    (f) =>
-      f.status === "closed" &&
-      f.revenue > 0 &&
-      f.costs > 0 &&
-      f.lastFinancialActivity != null &&
-      f.lastFinancialActivity.getTime() <= now.getTime() &&
-      inWindow.has(monthKey(f.lastFinancialActivity))
-  );
+  const finished = jobs.filter((f) => countsAsFinished(f, now) && inWindow.has(monthKey(f.lastFinancialActivity!)));
   const byType = new Map<string, JobFinancials[]>();
   for (const f of finished) if (f.category) byType.set(f.category, [...(byType.get(f.category) ?? []), f]);
   const rows = [...byType.entries()]

@@ -3,8 +3,9 @@ import { prisma } from "./prisma";
 import { requireFeature } from "./entitlements";
 import { effectiveJobStatus, CLOSED_JOB_WHERE, OPEN_JOB_WHERE, VISIBLE_JOB_WHERE } from "./jobStatus";
 import { forecastIsActionable, MIN_ENTERED_PERCENT_TO_PROJECT } from "./forecastRules";
-import { wipCountsInTotals, wipScheduleNeed } from "./wipSchedule";
+import { isIdleOpenJob, wipCountsInTotals, wipScheduleNeed } from "./wipSchedule";
 import { basisCutoff } from "./weekOverWeek";
+import { marginTrendByPeriod } from "./marginTrend";
 export { forecastIsActionable } from "./forecastRules";
 
 // ============================================================================
@@ -186,12 +187,15 @@ export function computeWip(input: {
   } else {
     return null;
   }
-  const earnedRevenue = contractValue * percentComplete;
+  // In cents, so a job billed exactly to its earned revenue reads 0, not
+  // -3.6e-12: below zero is "billing behind the work", which keeps its
+  // forecast off the feed (forecastIsActionable).
+  const earnedRevenue = toCents(contractValue * percentComplete);
   return {
     percentComplete,
     percentCompleteSource: source,
     earnedRevenue,
-    overUnderBilling: billed - earnedRevenue,
+    overUnderBilling: toCents(billed - earnedRevenue),
     costPastEstimate,
   };
 }
@@ -216,12 +220,24 @@ export function laborBurdenOf(connection: { laborBurdenPct?: unknown }): number 
 }
 
 /**
+ * A money figure rounded to the cent, with anything not finite as 0 and -0
+ * as 0. Sums of QuickBooks amounts carry float residue: $3,191.49 +
+ * $2,186.53 + $2,064.42 less a $7,442.44 credit memo comes to 9.09e-13, not
+ * 0, and a margin divided by that read -197,912,092,999,679,904%. Every
+ * total is rounded with this before it's tested or divided by.
+ */
+export function toCents(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 100) / 100 || 0;
+}
+
+/**
  * Computes one job's financial picture. Pure and deterministic: identical
  * JobInput + FinancialContext always produces identical output.
  */
 export function computeJobFinancials(job: JobInput, ctx: FinancialContext): JobFinancials {
-  const revenue = job.invoices.reduce((s, i) => s + i.amount, 0);
-  const costs = job.costEntries.reduce((s, c) => s + c.amount, 0);
+  const revenue = toCents(job.invoices.reduce((s, i) => s + i.amount, 0));
+  const costs = toCents(job.costEntries.reduce((s, c) => s + c.amount, 0));
 
   const costByCategory: Record<string, number> = {};
   for (const c of job.costEntries) {
@@ -233,7 +249,9 @@ export function computeJobFinancials(job: JobInput, ctx: FinancialContext): JobF
   // $0" in the job's cost breakdown (QuickBooks' own report shows nothing),
   // and it counted as a second category, raising the job's data confidence.
   for (const [category, amount] of Object.entries(costByCategory)) {
-    if (Math.abs(amount) < 0.005) delete costByCategory[category];
+    const rounded = toCents(amount);
+    if (rounded === 0) delete costByCategory[category];
+    else costByCategory[category] = rounded;
   }
 
   const lastCostDate = job.costEntries.reduce<Date | null>(
@@ -260,9 +278,23 @@ export function computeJobFinancials(job: JobInput, ctx: FinancialContext): JobF
   let profitabilityAvailable = true;
   let unavailableReason: string | null = null;
 
+  // Revenue and costs are whole cents here (toCents), so these tests are
+  // exact. A margin is only worked out on revenue above zero and costs
+  // above zero: over negative revenue (credits more than the invoices) it
+  // has no meaning, and over negative costs it reads above 100%.
+  const invoicesNetToNothing = revenue <= 0 && job.invoices.some((i) => toCents(i.amount) !== 0);
   if (revenue === 0 && costs === 0) {
     profitabilityAvailable = false;
     unavailableReason = "No revenue or cost data recorded for this job yet.";
+  } else if (revenue < 0) {
+    profitabilityAvailable = false;
+    unavailableReason =
+      "Credits and refunds on this job add up to more than its invoices, so there is no revenue to measure a margin against.";
+    if (costs > 0) flags.push("costs_no_revenue");
+  } else if (costs < 0) {
+    profitabilityAvailable = false;
+    unavailableReason =
+      "Supplier credits on this job add up to more than its costs, so there is no cost to measure a margin against.";
   } else if (revenue > 0 && costs === 0) {
     profitabilityAvailable = false;
     // Deliberately does not repeat "Profitability unavailable". The job
@@ -273,7 +305,9 @@ export function computeJobFinancials(job: JobInput, ctx: FinancialContext): JobF
     flags.push("revenue_no_costs");
   } else if (revenue === 0 && costs > 0) {
     profitabilityAvailable = false;
-    unavailableReason = "Costs recorded but no revenue on this job yet.";
+    unavailableReason = invoicesNetToNothing
+      ? "Credits on this job cancel out its invoices, so there is no revenue to measure a margin against."
+      : "Costs recorded but no revenue on this job yet.";
     flags.push("costs_no_revenue");
   }
 
@@ -282,15 +316,17 @@ export function computeJobFinancials(job: JobInput, ctx: FinancialContext): JobF
   let fullyLoadedProfit: number | null = null;
   let fullyLoadedMarginPct: number | null = null;
 
+  // Only reached with revenue > 0 and costs > 0 (the gate above), so every
+  // division below is by a positive number of whole cents.
   if (profitabilityAvailable) {
-    grossProfit = revenue - costs;
-    grossMarginPct = revenue > 0 ? grossProfit / revenue : null;
+    grossProfit = toCents(revenue - costs);
+    grossMarginPct = grossProfit / revenue;
 
-    if (ctx.overheadEnabled && ctx.overheadMethod && ctx.overheadValue != null) {
+    if (ctx.overheadEnabled && ctx.overheadMethod && ctx.overheadValue != null && Number.isFinite(ctx.overheadValue)) {
       const overheadAllocated =
         ctx.overheadMethod === "pct_of_revenue" ? revenue * ctx.overheadValue : costs * ctx.overheadValue;
-      fullyLoadedProfit = grossProfit - overheadAllocated;
-      fullyLoadedMarginPct = revenue > 0 ? fullyLoadedProfit / revenue : null;
+      fullyLoadedProfit = toCents(grossProfit - overheadAllocated);
+      fullyLoadedMarginPct = fullyLoadedProfit / revenue;
     }
 
     // Completed jobs only. An open job's margin to date is mostly billing
@@ -309,7 +345,7 @@ export function computeJobFinancials(job: JobInput, ctx: FinancialContext): JobF
   // whole job's costs. See FinancialContext.costsAreWindowed.
   const estimatedCost = job.estimatedCost;
   const comparableToEstimate = !ctx.costsAreWindowed && estimatedCost != null;
-  const varianceVsEstimate = comparableToEstimate ? costs - estimatedCost! : null;
+  const varianceVsEstimate = comparableToEstimate ? toCents(costs - estimatedCost!) : null;
   const varianceVsEstimatePct =
     comparableToEstimate && estimatedCost !== 0 && varianceVsEstimate != null
       ? varianceVsEstimate / estimatedCost!
@@ -455,7 +491,10 @@ export function computeNeedsAttentionForJob(
       jobId: f.jobId,
       jobName: f.jobName,
       issueCode: "costs_no_revenue_completed",
-      issue: "Job is marked completed but has no recorded revenue",
+      issue:
+        f.revenue < 0
+          ? "Job is marked completed but its credits add up to more than its invoices"
+          : "Job is marked completed but has no recorded revenue",
       financialImpact: null,
       severity: "high",
       confidence: "high",
@@ -714,14 +753,27 @@ export function computeForecastAtCompletion(job: JobInput, f: JobFinancials, now
   // materials bought early divided by 10% reads as a job three times over
   // budget. Low confidence keeps it out of the feed and the alerts.
   const earlyEntry = progressSource === "manual" && progress < MIN_ENTERED_PERCENT_TO_PROJECT;
+  // Billing with no cost estimate behind it is low confidence however much
+  // is billed. A deposit runs ahead of the work, and with no estimate to
+  // floor the forecast it reads far too rosy: a $30,000 contract with a 50%
+  // deposit billed and $6,000 of materials bought forecast a 60% margin at
+  // medium confidence. Low keeps it out of the feed, Needs Attention and the
+  // alerts (forecastIsActionable) and the job page says it's too early.
+  const billingWithoutEstimate = progressSource === "billing" && (f.estimatedCost == null || f.estimatedCost <= 0);
   const confidence: "high" | "medium" | "low" =
-    progressSource === "manual" ? (earlyEntry ? "low" : "high") : progress >= 0.5 ? "medium" : "low";
+    progressSource === "manual"
+      ? earlyEntry
+        ? "low"
+        : "high"
+      : progress >= 0.5 && !billingWithoutEstimate
+        ? "medium"
+        : "low";
 
   const pct = Math.round(progress * 100);
   const method =
     progressSource === "manual"
       ? `Cost to date divided by your ${pct}% complete${f.estimatedCost != null ? ", and never less than the estimated cost" : ""}.${earlyEntry ? " Under 25% complete this is an early read: costs bought ahead of the work make it run high." : ""}`
-      : `Cost to date divided by the ${pct}% of the contract billed so far${f.estimatedCost != null ? ", and never less than the estimated cost" : ""}. Entering a percent complete makes this more exact.`;
+      : `Cost to date divided by the ${pct}% of the contract billed so far${f.estimatedCost != null ? ", and never less than the estimated cost" : ""}.${billingWithoutEstimate ? " With no cost estimate this is an early read: a deposit billed ahead of the work makes it run high." : ""} Entering a percent complete makes this more exact.`;
 
   return {
     available: true,
@@ -818,9 +870,11 @@ export interface DataHealthReport {
    */
   jobsWithoutEnoughData: { jobId: string; jobName: string; reason: string }[];
   /**
-   * Open jobs with no financial activity for IDLE_JOB_DAYS or more (or none
-   * ever, on a QuickBooks record at least that old). Almost always finished
-   * work that was never marked complete; offered as a one-click fix.
+   * Open jobs with no financial activity for more than IDLE_JOB_DAYS (or
+   * none ever, on a QuickBooks record that old), by isIdleOpenJob. Almost
+   * always finished work that was never marked complete; offered as a
+   * one-click fix. Left out of every other list here and of the confidence
+   * grade, and counted as one Data Issue (see computeDashboardTotals).
    */
   idleOpenJobs: { jobId: string; jobName: string; daysSinceActivity: number | null }[];
   /**
@@ -855,7 +909,8 @@ export interface DataHealthReport {
   possibleDuplicates: { jobName: string; amount: number; date: string; jobId: string }[];
   /**
    * Jobs with labor from timesheets AND labor from journal entries (a
-   * payroll that posts to jobs). Usually the same wages counted twice.
+   * payroll that posts to jobs) or from checks, expenses or bills to a labor
+   * account (see findDoubleLabor). Usually the same wages counted twice.
    */
   jobsWithDoubleLabor: { jobId: string; jobName: string }[];
   overallConfidence: DataConfidence;
@@ -870,9 +925,20 @@ export interface DataHealthReport {
  * brief: open, or with any financial activity in the window. A contractor's
  * QuickBooks can hold ten years of finished projects; grading the business
  * on them buried this year's real gaps under history nobody will fix.
+ *
+ * An idle open job (isIdleOpenJob: nothing posted for 90 days) is out too.
+ * QuickBooks never says a project is finished, so a company's old customers
+ * all arrive open: 8 live jobs and 42 old ones showed 72 Data Issues, 122
+ * Needs Attention items and a first weekly brief that was a data notice
+ * instead of a summary. They're counted once instead (idleOpenJobs), with
+ * the one-click fix to mark them finished.
  */
-export function isInScope(j: Pick<JobFinancials, "status" | "lastFinancialActivity">, now: Date, days = DATA_HEALTH_WINDOW_DAYS): boolean {
-  if (j.status === "open") return true;
+export function isInScope(
+  j: Pick<JobFinancials, "status" | "lastFinancialActivity" | "qboCreatedAt">,
+  now: Date,
+  days = DATA_HEALTH_WINDOW_DAYS
+): boolean {
+  if (j.status === "open") return !isIdleOpenJob(j, now);
   return j.lastFinancialActivity != null && now.getTime() - j.lastFinancialActivity.getTime() <= days * 86_400_000;
 }
 
@@ -907,12 +973,12 @@ export function computeDataHealth(
     .filter((j) => j.status === "closed" && (j.flags.includes("revenue_no_costs") || j.flags.includes("costs_no_revenue")))
     .map((j) => ({ jobId: j.jobId, jobName: j.jobName }));
 
+  // Every idle open job, whatever the window: they're out of every per-job
+  // list above (isInScope) and counted here once instead. The same rule as
+  // the WIP schedule and the close-idle route, so the count matches what
+  // "mark them finished" closes.
   const idleOpenJobs = allJobs
-    .filter((j) => {
-      if (j.status !== "open") return false;
-      const last = j.lastFinancialActivity ?? j.qboCreatedAt;
-      return last != null && now.getTime() - last.getTime() >= IDLE_JOB_DAYS * 86_400_000;
-    })
+    .filter((j) => isIdleOpenJob(j, now))
     .map((j) => ({ jobId: j.jobId, jobName: j.jobName, daysSinceActivity: daysSince(j.lastFinancialActivity) }));
 
   const readCount = (key: string): number | null =>
@@ -1193,6 +1259,11 @@ export interface DashboardTotals {
   trackedJobCosts: number;
   /** Null when no job in view has both revenue and costs. See the guard below. */
   jobGrossProfit: number | null;
+  /**
+   * Job Gross Profit / the revenue of the same jobs (revenue-weighted), as a
+   * fraction. Named for history: it is not an average of job margins. Shown
+   * as "Margin to Date" on the Active tab and "Job Margin" otherwise.
+   */
   avgJobMarginPct: number | null;
   targetMarginPct: number | null;
   jobsBelowTarget: number;
@@ -1222,8 +1293,8 @@ export function computeDashboardTotals(
   const jobsWithActivity = jobs.filter((j) => j.revenue > 0 || j.costs > 0);
   const jobsInView = jobsWithActivity.length;
 
-  const revenue = jobs.reduce((s, j) => s + j.revenue, 0);
-  const trackedJobCosts = jobs.reduce((s, j) => s + j.costs, 0);
+  const revenue = toCents(jobs.reduce((s, j) => s + j.revenue, 0));
+  const trackedJobCosts = toCents(jobs.reduce((s, j) => s + j.costs, 0));
 
   // Gross profit follows the same rule every single job follows: revenue
   // with no costs against it is not profit, it is an unanswered question.
@@ -1231,8 +1302,8 @@ export function computeDashboardTotals(
   // Without this, selecting a period that contains an invoice but none of
   // that job's costs produced revenue minus nothing and labelled it Job
   // Gross Profit. On 2026-09-17 "This month" read $9,000 revenue, $0 costs
-  // and $9,000 profit, on a job that had spent $8,000. Average Job Margin
-  // beside it correctly showed a dash, because it already filtered this way.
+  // and $9,000 profit, on a job that had spent $8,000. The margin tile beside
+  // it correctly showed a dash, because it already filtered this way.
   //
   // Null rather than zero, so the UI shows a dash instead of asserting that
   // the period broke even.
@@ -1246,12 +1317,16 @@ export function computeDashboardTotals(
   // as zero") true rather than aspirational.
   const profitableBasis = jobs.filter((j) => j.profitabilityAvailable);
   const jobGrossProfit = profitableBasis.length
-    ? profitableBasis.reduce((sum, j) => sum + (j.revenue - j.costs), 0)
+    ? toCents(profitableBasis.reduce((sum, j) => sum + (j.revenue - j.costs), 0))
     : null;
 
-  const withMargin = jobs.filter((j) => j.grossMarginPct != null);
-  const avgJobMarginPct =
-    withMargin.length > 0 ? withMargin.reduce((s, j) => s + j.grossMarginPct!, 0) / withMargin.length : null;
+  // Job Gross Profit over the revenue of the same jobs, so the two tiles
+  // side by side always agree. This used to be a plain average of each
+  // job's margin, which on the Active tab averaged margins to date: a $500
+  // deposit against $12,000 of materials counts -2,300% there, and five
+  // ordinary open jobs read -428.7% where the money says 17.1%.
+  const basisRevenue = toCents(profitableBasis.reduce((s, j) => s + j.revenue, 0));
+  const avgJobMarginPct = jobGrossProfit != null && basisRevenue > 0 ? jobGrossProfit / basisRevenue : null;
 
   // Both from the same Needs Attention items: completed jobs that finished
   // below target, and open jobs forecast to (Pro). Never an open job's margin
@@ -1265,8 +1340,11 @@ export function computeDashboardTotals(
   // Things that need fixing in the books. Missing estimates are setup, not
   // data problems, so they are listed on Data Health but not counted here;
   // untagged overhead is not a problem at all; parent-customer matches
-  // succeeded.
+  // succeeded. Idle open jobs are one issue however many there are: one
+  // click marks them all finished, and counted one by one they buried the
+  // live jobs' issues.
   const dataIssues =
+    (dataHealth.idleOpenJobs.length > 0 ? 1 : 0) +
     dataHealth.jobsMissingCosts.length +
     dataHealth.staleJobs.length +
     dataHealth.completedJobsWithUnresolvedActivity.length +
@@ -1317,23 +1395,17 @@ const estimateOrNull = (d: Prisma.Decimal | null | undefined): number | null => 
   return n > 0 ? n : null;
 };
 
+/** Labor rows that aren't timesheets: payroll journal entries, and checks, expenses and bills to a labor account. */
+const NON_TIMESHEET_LABOR_SOURCES = new Set(["JournalEntry", "Purchase", "Bill"]);
+
 /**
- * Flags cost entries that share a job, amount, and calendar day but came from
- * *different* QBO source transactions (qboSourceId) - the upsert in the sync
- * route already prevents storing the same source transaction twice, so a hit
- * here means two distinct QBO transactions landed with identical numbers,
- * worth a human glance rather than an automatic merge (per spec: flag, don't
- * auto-merge).
- */
-// Exported (was module-private) so Phase 8's Vitest suite can test the
-// duplicate-detection logic directly - it's already a pure function (no
-// Prisma calls of its own, just operates on already-fetched rows), it just
-// hadn't needed an export yet since only getConnectionProfitData called it.
-/**
- * Jobs carrying labor from both timesheets and journal entries. A payroll
- * service that posts wages to jobs by journal entry, plus timesheets costed
- * at their cost rates, counts the same hours twice. Only open jobs and jobs with
- * activity in the last year are listed.
+ * Jobs carrying labor from both timesheets and another source: a journal
+ * entry (a payroll service posting wages to jobs), or a check, expense or
+ * bill to a labor account (wages paid by check, or a payroll bill). Either,
+ * plus timesheets costed at their cost rates, counts the same hours twice.
+ * Subcontractor bills aren't labor here (they're categorized subcontractor),
+ * so a sub on a job with a crew isn't flagged. Only rows from the last year
+ * are looked at.
  */
 export function findDoubleLabor(
   jobs: {
@@ -1347,17 +1419,29 @@ export function findDoubleLabor(
   const out: DataHealthReport["jobsWithDoubleLabor"] = [];
   for (const job of jobs) {
     let timesheet = false;
-    let journal = false;
+    let paidElsewhere = false;
     for (const c of job.costEntries) {
       if (c.txnDate.getTime() < since || c.category !== "labor") continue;
       if (c.qboSourceType === "TimeActivity") timesheet = true;
-      else if (c.qboSourceType === "JournalEntry") journal = true;
+      else if (NON_TIMESHEET_LABOR_SOURCES.has(c.qboSourceType)) paidElsewhere = true;
     }
-    if (timesheet && journal) out.push({ jobId: job.id, jobName: job.name });
+    if (timesheet && paidElsewhere) out.push({ jobId: job.id, jobName: job.name });
   }
   return out;
 }
 
+/**
+ * Flags cost entries that share a job, amount, and calendar day but came from
+ * *different* QBO source transactions (qboSourceId) - the upsert in the sync
+ * route already prevents storing the same source transaction twice, so a hit
+ * here means two distinct QBO transactions landed with identical numbers,
+ * worth a human glance rather than an automatic merge (per spec: flag, don't
+ * auto-merge).
+ */
+// Exported (was module-private) so Phase 8's Vitest suite can test the
+// duplicate-detection logic directly - it's already a pure function (no
+// Prisma calls of its own, just operates on already-fetched rows), it just
+// hadn't needed an export yet since only getConnectionProfitData called it.
 export function findPossibleDuplicateCostEntries(
   jobs: {
     id: string;
@@ -1673,7 +1757,11 @@ export async function getConnectionProfitData(
     if (f.status === "closed" && f.category) (completedByCategory[f.category] ??= []).push(f);
   }
   const targetFilledEstimates = new Set(allJobs.filter((j) => j.estimatedCostSource === "target_margin").map((j) => j.id));
-  const needsAttention = lifetimeFinancials.flatMap((f) => {
+  // Idle open jobs are left out: almost always finished and never marked
+  // so, and three items each ("no estimate", "no activity", "no costs") on
+  // forty old customers drowned the live jobs. Data Health counts them once
+  // (idleOpenJobs). The alert emails read this list, so they skip them too.
+  const needsAttention = lifetimeFinancials.filter((f) => !isIdleOpenJob(f, now)).flatMap((f) => {
     const peerCompletedCostByCategory: Record<string, number[]> = {};
     if (canBenchmark && f.category && completedByCategory[f.category]) {
       for (const peer of completedByCategory[f.category]) {
@@ -1715,14 +1803,16 @@ export interface MarginTrendPoint {
 }
 
 /**
- * Average margin across completed jobs over time (Chart 3). Buckets actual
- * revenue/cost transactions by the month or quarter they landed in - built
- * directly from CostEntry/InvoiceSummary transaction dates (data already
- * being synced), not from any new data source.
+ * Margin across completed jobs over time (Chart 3): each finished job
+ * counted once, at its whole-job revenue and cost, in the month or quarter
+ * it finished (its last cost or invoice), revenue-weighted. The same rule as
+ * the Opportunities trend (src/lib/marginTrend.ts), so the two pages agree,
+ * and what the dashboard's label promises: "each job from start to finish".
  */
 export async function getMarginTrend(
   connectionId: string,
-  granularity: "monthly" | "quarterly"
+  granularity: "monthly" | "quarterly",
+  now: Date = new Date()
 ): Promise<MarginTrendPoint[]> {
   const [jobs, connection] = await Promise.all([
     prisma.job.findMany({
@@ -1733,40 +1823,38 @@ export async function getMarginTrend(
   ]);
   // The same costs as every other figure on the page, labor burden included.
   const laborBurden = connection ? laborBurdenOf(connection) : 0;
-
-  // UTC, explicitly. Transaction dates arrive from QuickBooks as date-only
-  // strings and are stored as midnight UTC, so reading them with the local
-  // getMonth() bucketed them correctly on Vercel (UTC) and one month early in
-  // any developer timezone west of it. Same reasoning as formatDate.
-  const periodKey = (d: Date): string =>
-    granularity === "monthly"
-      ? `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`
-      : `${d.getUTCFullYear()}-Q${Math.floor(d.getUTCMonth() / 3) + 1}`;
-
-  const buckets = new Map<string, { revenue: number; costs: number }>();
-  for (const job of jobs) {
-    for (const inv of job.invoices) {
-      const key = periodKey(inv.txnDate);
-      const b = buckets.get(key) ?? { revenue: 0, costs: 0 };
-      b.revenue += toNum(inv.amount);
-      buckets.set(key, b);
-    }
-    for (const c of job.costEntries) {
-      const key = periodKey(c.txnDate);
-      const b = buckets.get(key) ?? { revenue: 0, costs: 0 };
-      b.costs += burdenedAmount(c, laborBurden);
-      buckets.set(key, b);
-    }
-  }
-
-  return Array.from(buckets.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([period, { revenue, costs }]) => ({
-      period,
-      revenue,
-      costs,
-      marginPct: revenue > 0 ? (revenue - costs) / revenue : null,
-    }));
+  // Only revenue, cost, status and the last activity date are read from
+  // these, none of which depend on targets, overhead or the sync date.
+  const ctx: FinancialContext = {
+    now,
+    targetMarginPct: null,
+    categoryTargetMarginPct: {},
+    overheadEnabled: false,
+    overheadMethod: null,
+    overheadValue: null,
+    lastSyncedAt: null,
+  };
+  const financials = jobs.map((j) =>
+    computeJobFinancials(
+      {
+        id: j.id,
+        name: j.name,
+        customerName: j.customerName,
+        status: effectiveJobStatus(j),
+        category: j.category,
+        estimatedRevenue: contractValueOf(j),
+        estimatedCost: estimateOrNull(j.estimatedCost),
+        qboCreatedAt: j.qboCreatedAt,
+        startDate: j.startDate,
+        endDate: j.endDate,
+        updatedAt: j.updatedAt,
+        costEntries: j.costEntries.map((c) => ({ category: c.category, amount: burdenedAmount(c, laborBurden), txnDate: c.txnDate })),
+        invoices: j.invoices.map((i) => ({ amount: toNum(i.amount), status: i.status, txnDate: i.txnDate })),
+      },
+      ctx
+    )
+  );
+  return marginTrendByPeriod(financials, granularity, now);
 }
 
 export interface JobProfitData {
@@ -1989,7 +2077,9 @@ export interface ConnectionMetrics {
    * The jobs the brief is about: open jobs, plus jobs with any activity in
    * the last BRIEF_RECENT_DAYS. A company's QuickBooks can hold years of
    * finished projects, and a brief that led with a 2021 job every Monday
-   * was a brief nobody would read.
+   * was a brief nobody would read. Idle open jobs (isIdleOpenJob) are left
+   * out for the same reason (see isInScope); briefDataHealth.idleOpenJobs
+   * still counts them.
    */
   briefJobIds: string[];
   topConcerns: JobMetrics[];

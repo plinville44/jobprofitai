@@ -201,8 +201,20 @@ export async function getEntitlements(
   }
 
   const trialEndsAt = subscription.trialEndsAt ?? null;
+
+  // A paid Stripe subscription in a trial set in the Stripe Dashboard. The
+  // webhook stores that as "active" (storedStatusFor in
+  // src/lib/stripe/webhookHandlers.ts), but rows written before it did say
+  // "trialing", and the expiry cron may have turned those into
+  // "trial_expired". Our own trial never has a Stripe subscription, so either
+  // status alongside one means Stripe's trial: the paid plan, not a lockout.
+  const status =
+    subscription.stripeSubscriptionId && (subscription.status === "trialing" || subscription.status === "trial_expired")
+      ? "active"
+      : subscription.status;
+
   const trialLive =
-    subscription.status === "trialing" &&
+    status === "trialing" &&
     trialEndsAt != null &&
     trialEndsAt.getTime() > now.getTime();
 
@@ -221,7 +233,7 @@ export async function getEntitlements(
     });
   }
 
-  switch (subscription.status) {
+  switch (status) {
     case "active":
       return buildEntitlements({
         plan: storedPlan,
@@ -296,7 +308,7 @@ export async function getEntitlements(
         limits: limitsForStoredPlan(storedPlan),
         trialEndsAt,
         now,
-        paymentIssue: subscription.status === "unpaid",
+        paymentIssue: status === "unpaid",
         cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
         currentPeriodEnd: subscription.currentPeriodEnd,
       });

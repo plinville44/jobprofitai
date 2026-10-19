@@ -4,6 +4,8 @@ import { hashToken } from "./passwordReset";
 import { getEntitlements } from "./entitlements";
 import { CLIENT_LOGINS_PER_COMPANY } from "./plans";
 import { REMOVED_ROLE } from "./teamRemoval";
+import { NO_PLAN_STATUS } from "./trial";
+import { getStripe } from "./stripe/client";
 
 /**
  * Team logins.
@@ -41,6 +43,21 @@ const RESEND_COOLDOWN_MS = 5 * 60_000;
  */
 export const MAX_INVITE_EMAILS_PER_HOUR = 10;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Team logins an account is using: accepted ones plus invitations still
+ * open, client logins aside. What the plan's maxTeamMembers is held to when
+ * inviting, and what a plan must cover at checkout.
+ */
+export async function teamLoginsInUse(ownerId: string, now = new Date()): Promise<number> {
+  return prisma.teamMember.count({
+    where: {
+      ownerUserId: ownerId,
+      role: { notIn: ["client", REMOVED_ROLE] },
+      OR: [{ acceptedAt: { not: null } }, { expiresAt: { gt: now } }],
+    },
+  });
+}
 
 export type InviteResult =
   | { ok: true; token: string; inviteId: string; email: string; expiresAt: Date }
@@ -128,9 +145,7 @@ export async function createInvite(
         };
       }
     } else {
-      const used = await prisma.teamMember.count({
-        where: { ownerUserId: ownerId, role: { not: "client" }, ...live },
-      });
+      const used = await teamLoginsInUse(ownerId, now);
       const max = entitlements.limits.maxTeamMembers;
       if (used >= max) {
         return {
@@ -233,12 +248,29 @@ export async function acceptInvite(token: unknown, userId: string, now = new Dat
   if (user.id === invite.ownerUserId) {
     return { ok: false, error: "You can't join your own account.", status: 400 };
   }
-  if (invite.role === "client" && !(await getEntitlements(invite.ownerUserId)).has("client_logins")) {
+  const ownerEntitlements = await getEntitlements(invite.ownerUserId);
+  if (invite.role === "client" && !ownerEntitlements.has("client_logins")) {
     return {
       ok: false,
       error: "This invitation can't be used right now: the account that sent it isn't on a plan with client logins. Ask them about it.",
       status: 409,
     };
+  }
+  // The plan may have shrunk since the invitation was sent (a move to a plan
+  // with fewer logins). A login joined past the limit would only be paused
+  // (see accountFor), so say so now instead.
+  if (invite.role !== "client") {
+    const accepted = await prisma.teamMember.count({
+      where: { ownerUserId: invite.ownerUserId, role: { notIn: ["client", REMOVED_ROLE] }, acceptedAt: { not: null } },
+    });
+    if (accepted >= ownerEntitlements.limits.maxTeamMembers) {
+      const who = invite.ownerName ?? invite.ownerEmail;
+      return {
+        ok: false,
+        error: `${who}'s plan has no team login free right now, so this invitation can't be used yet. Ask them to remove a login or move to a plan with more.`,
+        status: 409,
+      };
+    }
   }
 
   const [membership, connections, subscription, ownTeam] = await Promise.all([
@@ -293,7 +325,18 @@ export async function acceptInvite(token: unknown, userId: string, now = new Dat
   // only send it "connect your QuickBooks" reminders; the invitation link
   // arriving in the inbox proves the address, so it counts as verified.
   if (subscription && !subscription.stripeSubscriptionId) {
-    await prisma.subscription.delete({ where: { userId: user.id } });
+    if (subscription.stripeCustomerId) {
+      // It started a checkout of its own. The row is how Stripe's webhook
+      // finds this login, so it stays, with no plan and no trial, and any
+      // checkout still open is closed so it can't be paid now.
+      await prisma.subscription.update({
+        where: { userId: user.id },
+        data: { status: NO_PLAN_STATUS, trialEndsAt: null },
+      });
+      await expireOpenCheckouts(subscription.stripeCustomerId);
+    } else {
+      await prisma.subscription.delete({ where: { userId: user.id } });
+    }
   }
   if (!user.emailVerifiedAt) {
     await prisma.user.update({ where: { id: user.id }, data: { emailVerifiedAt: now } });
@@ -304,6 +347,22 @@ export async function acceptInvite(token: unknown, userId: string, now = new Dat
   await prisma.teamMember.deleteMany({ where: { ownerUserId: user.id, acceptedAt: null } });
 
   return { ok: true, ownerUserId: invite.ownerUserId };
+}
+
+/**
+ * Closes a customer's open Stripe checkouts. Best effort: if one is paid
+ * anyway, the webhook still finds the login by its customer id.
+ */
+async function expireOpenCheckouts(customerId: string): Promise<void> {
+  try {
+    const stripe = getStripe();
+    const open = await stripe.checkout.sessions.list({ customer: customerId, status: "open", limit: 20 });
+    for (const session of open.data) {
+      await stripe.checkout.sessions.expire(session.id).catch(() => {});
+    }
+  } catch (err) {
+    console.error("team: could not close open checkouts:", err instanceof Error ? err.message : "Unknown error");
+  }
 }
 
 export interface TeamRow {

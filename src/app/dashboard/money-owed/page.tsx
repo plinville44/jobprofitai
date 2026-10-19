@@ -6,6 +6,7 @@ import { getEntitlements } from "@/lib/entitlements";
 import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
 import { getConnectionProfitData } from "@/lib/profitability";
 import { computeMoneyOwed, type MoneyOwed } from "@/lib/moneyOwed";
+import { wipReportDay } from "@/lib/wipSchedule";
 import { NO_VALUE, formatCurrency, formatDate } from "@/lib/format";
 
 export const metadata = { title: "Money You're Owed" };
@@ -47,8 +48,11 @@ export default async function MoneyOwedPage() {
   }
 
   const now = new Date();
+  // Nothing dated after today in the company's time zone, the same day the
+  // WIP page and the bank-ready report use, so their figures tie with these.
+  const asOf = wipReportDay(now, connection.emailTimezone);
   const [profitData, invoices, filled, balancesKnown] = await Promise.all([
-    getConnectionProfitData(connection.id, now),
+    getConnectionProfitData(connection.id, now, { asOf }),
     prisma.invoiceSummary.findMany({
       where: { job: { connectionId: connection.id, missingSince: null }, status: "open", openBalance: { gt: 0 } },
       select: {
@@ -82,6 +86,7 @@ export default async function MoneyOwedPage() {
     })),
     jobs: profitData.lifetimeJobs,
     targetFilledEstimates: new Set(filled.map((j) => j.id)),
+    asOf,
   });
 
   const byDue = owed.unpaid.agedFrom === "due_date";

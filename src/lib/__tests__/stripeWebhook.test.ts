@@ -26,11 +26,14 @@ const calls = {
 const stripeState = {
   subscriptions: {} as Record<string, unknown>,
   charges: {} as Record<string, unknown>,
+  invoices: {} as Record<string, unknown>,
 };
 vi.mock("@/lib/stripe/client", () => ({
   getStripe: () => ({
     subscriptions: { retrieve: vi.fn(async (id: string) => stripeState.subscriptions[id]) },
     charges: { retrieve: vi.fn(async (id: string) => stripeState.charges[id]) },
+    // As the SDK returns it (API 2024-06-20), which still has `charge`.
+    invoices: { retrieve: vi.fn(async (id: string) => stripeState.invoices[id]) },
   }),
   planForPriceId: (priceId: string | null) =>
     priceId === "price_149"
@@ -141,6 +144,7 @@ beforeEach(() => {
   calls.pendingRewardsApplied = 0;
   stripeState.subscriptions = {};
   stripeState.charges = {};
+  stripeState.invoices = {};
 });
 
 describe("event idempotency", () => {
@@ -268,16 +272,13 @@ describe("event idempotency", () => {
    * be swallowed as a duplicate and the state change lost forever.
    */
   it("releases the claim when the handler throws, so a retry can re-run", async () => {
-    // No account seeded and no subscription row - the update inside the
-    // handler throws on a missing record.
-    await fake.client.user.create({ data: { id: "u1", email: "owner@example.com" } });
-    await fake.client.subscription.create({
-      data: { userId: "u1", status: "trialing", stripeCustomerId: "cus_1" },
-    });
-    await fake.client.subscription.deleteMany({});
+    await seedAccount();
+    // The database write inside the handler fails (a blip).
+    fake.client.subscription.upsert = async () => {
+      throw new Error("database unavailable");
+    };
 
     const event = subscriptionEvent();
-    // resolveUserId falls back to metadata, then update() fails on no row.
     await expect(processStripeEvent(event)).rejects.toBeTruthy();
 
     expect(await fake.client.stripeEvent.count()).toBe(0);
@@ -510,6 +511,7 @@ describe("a paid invoice whose money was given back", () => {
     });
   }
 
+  /** `charge: "omit"` sends the webhook's 2025+ shape, which has no `charge` on the invoice. */
   function invoicePaid(id: string, subscription: string, charge: unknown = "ch_1") {
     return {
       id: `evt_${id}`,
@@ -519,7 +521,7 @@ describe("a paid invoice whose money was given back", () => {
           id,
           customer: "cus_1",
           subscription,
-          charge,
+          ...(charge === "omit" ? {} : { charge }),
           amount_paid: 14_900,
           status_transitions: { paid_at: Math.floor(Date.now() / 1000) },
           lines: { data: [] },
@@ -546,8 +548,10 @@ describe("a paid invoice whose money was given back", () => {
     await seedPartnerReferral();
     stripeState.subscriptions.sub_kept = { id: "sub_kept", status: "active", metadata: {} };
     stripeState.charges.ch_1 = { id: "ch_1", amount: 14_900, amount_refunded: 14_900, refunded: true };
+    stripeState.invoices.in_refunded = { id: "in_refunded", charge: "ch_1" };
 
-    const result = await processStripeEvent(invoicePaid("in_refunded", "sub_kept"));
+    // The event in the webhook's 2025+ shape: no `charge` on the invoice.
+    const result = await processStripeEvent(invoicePaid("in_refunded", "sub_kept", "omit"));
 
     expect(result.detail).toMatch(/refunded/);
     expect(calls.commissions).toEqual([]);
@@ -558,9 +562,12 @@ describe("a paid invoice whose money was given back", () => {
     await seedPartnerReferral();
     stripeState.subscriptions.sub_kept = { id: "sub_kept", status: "active", metadata: {} };
     stripeState.charges.ch_1 = { id: "ch_1", amount: 14_900, amount_refunded: 2_000, refunded: false };
+    stripeState.invoices.in_1 = { id: "in_1", charge: "ch_1" };
+    stripeState.invoices.in_2 = { id: "in_2", charge: { id: "ch_2", amount: 14_900, amount_refunded: 0, refunded: false } };
+    stripeState.invoices.in_3 = { id: "in_3", charge: "ch_unknown" };
     await processStripeEvent(invoicePaid("in_1", "sub_kept"));
-    await processStripeEvent(invoicePaid("in_2", "sub_kept", { id: "ch_2", amount: 14_900, amount_refunded: 0, refunded: false }));
-    await processStripeEvent(invoicePaid("in_3", "sub_kept", "ch_unknown"));
+    await processStripeEvent(invoicePaid("in_2", "sub_kept"));
+    await processStripeEvent(invoicePaid("in_3", "sub_kept"));
     expect(calls.commissions).toEqual(["in_1", "in_2", "in_3"]);
   });
 

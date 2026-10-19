@@ -75,7 +75,10 @@ async function runSync(req: NextRequest) {
   }
 
   // When the last sync started, so a rebuild asked for since (a change of
-  // job setup) isn't held back by the pause (see syncCooldown.ts).
+  // job setup) isn't held back by the pause (see syncCooldown.ts). Nor is a
+  // full read that stopped partway: the connection's fullSyncContinueAt lets
+  // the next press carry on with it at once (the first-run screen relies on
+  // this for a company with a lot of history).
   const lastRun = await prisma.syncRun.findFirst({
     where: { connectionId: connection.id },
     orderBy: { startedAt: "desc" },
@@ -105,8 +108,9 @@ async function runSync(req: NextRequest) {
   // incremental path (they call runSyncForConnection without this flag).
   //
   // A deadline keeps a large company's read inside this route's 300-second
-  // limit: the sync stops between steps, says so, and the next press (within
-  // the hour) or the nightly sync carries on from where it stopped.
+  // limit: the sync stops between steps, says so (`unfinished`, with the
+  // steps `remaining` of `steps`), and the next press (within the hour) or
+  // the nightly sync carries on from where it stopped.
   const result = await runSyncForConnection(connection.id, {
     forceFull: true,
     deadline: Date.now() + 240_000,

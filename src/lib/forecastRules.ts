@@ -16,7 +16,9 @@ export const MIN_ENTERED_PERCENT_TO_PROJECT = 0.25;
  * share of the contract billed isn't, nor one from a small percent complete
  * entered, and neither is one from billing when the costs say the work is
  * further along than the bills: that job is probably under-billed, not over
- * budget, and the two can't be told apart without a percent complete.
+ * budget, and the two can't be told apart without a percent complete. Nor is
+ * one from billing on a job with no cost estimate: a deposit billed ahead of
+ * the work, with no estimate to floor the forecast, reads far too rosy.
  */
 export function forecastIsActionable(f: JobFinancials, fc: ForecastResult | null | undefined): fc is ForecastResult & { forecastMarginPct: number; contractValue: number } {
   if (!fc?.available || fc.forecastMarginPct == null || fc.contractValue == null || fc.contractValue <= 0) return false;
@@ -25,5 +27,6 @@ export function forecastIsActionable(f: JobFinancials, fc: ForecastResult | null
   // so a forecast built elsewhere can't slip past it.
   if (fc.progressSource === "manual" && fc.progress != null && fc.progress < MIN_ENTERED_PERCENT_TO_PROJECT) return false;
   if (fc.progressSource === "billing" && f.wip != null && f.wip.overUnderBilling < 0) return false;
+  if (fc.progressSource === "billing" && (f.estimatedCost == null || f.estimatedCost <= 0)) return false;
   return true;
 }

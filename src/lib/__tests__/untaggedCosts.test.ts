@@ -18,6 +18,7 @@ import {
   untaggedKind,
   untaggedKindLabel,
   UntaggedCostCollector,
+  unmatchedRevenueFrom,
   type UntaggedCostRow,
 } from "../untaggedCosts";
 import { connectionRealmId, loadUntaggedCosts, replaceUntaggedCosts, replaceUntaggedCostsForTxns } from "../untaggedCostStore";
@@ -307,5 +308,19 @@ describe("storing the list", () => {
     expect(top.rows.map((r) => r.qboSourceId)).toEqual(["2", "5"]);
     const all = await loadUntaggedCosts("conn1", now);
     expect(all.rows.map((r) => r.amount)).toEqual([5000, 700, 50, -300]);
+  });
+});
+
+describe("sales on no job, for Data Health", () => {
+  it("reads the last full sync's counts, and none as not yet measured", () => {
+    expect(unmatchedRevenueFrom({ unresolvedRevenueCount: 2, unresolvedRevenueAmount: 4_600, unclassedRevenueCount: 0, unclassedRevenueAmount: 0 })).toEqual({
+      unresolvedCount: 2,
+      unresolvedAmount: 4_600,
+      unclassedCount: 0,
+      unclassedAmount: 0,
+    });
+    // A full sync from before these were counted.
+    expect(unmatchedRevenueFrom({ unresolvedExpenseCount: 1 })).toEqual({ unresolvedCount: null, unresolvedAmount: null, unclassedCount: null, unclassedAmount: null });
+    expect(unmatchedRevenueFrom("nonsense")).toEqual({ unresolvedCount: null, unresolvedAmount: null, unclassedCount: null, unclassedAmount: null });
   });
 });

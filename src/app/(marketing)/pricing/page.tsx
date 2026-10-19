@@ -6,6 +6,7 @@ import PlanGuide from "@/components/marketing/PlanGuide";
 import FitCheck from "@/components/marketing/FitCheck";
 import { PLANS } from "@/lib/plans";
 import { OG_IMAGE } from "@/lib/siteMeta";
+import { DISCONNECTED_RETENTION_DAYS, LAPSED_DISCONNECT_DAYS } from "@/lib/dataRetention";
 
 export const metadata: Metadata = {
   title: "Pricing",
@@ -27,22 +28,22 @@ const FAQ_ITEMS = [
     a: (
       <>
         <span className="block">
-          The difference is that QuickBooks reports and JobProfitAI tells you where to look. Plus
-          shows income, cost and margin for a job you go and open. It doesn&rsquo;t compare that
-          margin to a target you set, flag which jobs are drifting below it, tell you a type of work
-          consistently runs over estimate, forecast where an in-progress job lands, build a WIP
-          report of what&rsquo;s over and under billed, email you after the nightly sync when a
-          job&rsquo;s costs go more than 10% over its estimate, or send you a weekly brief of what
-          changed.
+          JobProfitAI works with the QuickBooks Online plan you already have and adds three things:
+          what to change on your pricing, ranked by what it&rsquo;s worth; each pending estimate
+          checked against your own past jobs; and whether a price change worked.
         </span>
         <span className="mt-3 block">
-          It also won&rsquo;t tell you that six of your jobs have no estimate on file and four have
-          revenue with no costs assigned to them. That is usually the reason the reports looked fine
-          and the bank balance didn&rsquo;t.
+          Behind those, it sets your finished jobs against the target margin you choose, by job
+          type, customer and part of the job, with labor at its cost rate plus the labor burden you
+          set. It also builds the bank-ready WIP report, emails you after the nightly sync when an
+          open job&rsquo;s costs go more than 10% over its estimate, sends a weekly brief of what
+          changed, and on Pro, forecasts where an in-progress job lands.
         </span>
         <span className="mt-3 block">
-          QuickBooks Online Advanced has project tools that cover some of this. JobProfitAI is built
-          for contractors on Plus who want it without moving to Advanced.
+          Its Data Health page shows what&rsquo;s missing from your books before you trust a number:
+          costs that aren&rsquo;t on a job, jobs with revenue but no costs, and time entries with no
+          cost rate. Gaps like those are often why the reports looked fine and the bank balance
+          didn&rsquo;t. It works on Plus or Advanced, with no upgrade and nothing new to switch to.
         </span>
       </>
     ),
@@ -55,9 +56,11 @@ const FAQ_ITEMS = [
     q: "What happens when the trial ends?",
     a: (
       <>
-        The profit intelligence features switch off, but nothing is deleted. Your account, your
-        QuickBooks connection and every job analyzed stay exactly where they are. Choosing a plan
-        later turns everything back on as you left it.
+        The profit intelligence features switch off, but nothing is deleted when the trial ends.
+        Your account, your QuickBooks connection and every job analyzed stay where they are, and
+        choosing a plan turns everything back on as you left it. After {LAPSED_DISCONNECT_DAYS} days
+        without a plan we disconnect QuickBooks, and {DISCONNECTED_RETENTION_DAYS} days after that we
+        delete the copied data.
       </>
     ),
   },
@@ -79,7 +82,8 @@ const FAQ_ITEMS = [
         email support@jobprofitai.com and we&rsquo;ll switch it for you. If you move down to a plan that covers fewer jobs or companies than
         you&rsquo;re currently using, nothing is deleted. Your Billing page shows your usage
         against the new plan&rsquo;s limits, and you can&rsquo;t connect another QuickBooks company
-        while you&rsquo;re over the company limit.
+        while you&rsquo;re over the company limit. Companies past the new plan&rsquo;s limit stop
+        syncing and get no briefs or alerts until you disconnect some or move back up.
       </>
     ),
   },
@@ -173,7 +177,7 @@ export default function PricingPage() {
         <SectionHeading
           eyebrow="Which plan fits"
           title="Pick by how many jobs you have open at once"
-          intro="Both plans include everything that finds the money. The difference is scale, and forecasts for jobs in progress."
+          intro="Both plans include everything that finds the money. The difference is scale, forecasts for jobs in progress, and benchmarking each job against similar finished jobs."
           align="center"
         />
         <PlanGuide />

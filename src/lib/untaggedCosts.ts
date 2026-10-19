@@ -218,6 +218,32 @@ export interface UntaggedCostView {
   amount: number;
 }
 
+/**
+ * Revenue on no job, as the last full sync counted it (see
+ * noteUnmatchedRevenue in quickbooksSync.ts), for Data Health next to the
+ * costs in the same state. Each figure is null until a full sync has counted
+ * it ("not yet measured"), never 0.
+ */
+export interface UnmatchedRevenue {
+  /** Tagged to a customer or class that isn't one of the jobs. */
+  unresolvedCount: number | null;
+  unresolvedAmount: number | null;
+  /** Jobs by class: no class on the sale at all. */
+  unclassedCount: number | null;
+  unclassedAmount: number | null;
+}
+
+export function unmatchedRevenueFrom(entitiesUpdated: unknown): UnmatchedRevenue {
+  const counts = entitiesUpdated && typeof entitiesUpdated === "object" ? (entitiesUpdated as Record<string, unknown>) : {};
+  const read = (key: string) => (typeof counts[key] === "number" && Number.isFinite(counts[key]) ? (counts[key] as number) : null);
+  return {
+    unresolvedCount: read("unresolvedRevenueCount"),
+    unresolvedAmount: read("unresolvedRevenueAmount"),
+    unclassedCount: read("unclassedRevenueCount"),
+    unclassedAmount: read("unclassedRevenueAmount"),
+  };
+}
+
 /** The spreadsheet: every row, with a link to open each in QuickBooks where we have one. */
 export function untaggedCsvRows(
   rows: UntaggedCostView[],

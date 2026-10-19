@@ -176,7 +176,9 @@ describe("handleIntuitFlow", () => {
     expect(user?.emailVerifiedAt).toBeInstanceOf(Date);
     expect(calls.sessions).toEqual([user!.id]);
     expect(calls.attach).toEqual([{ ownerId: user!.id, realmId: "123" }]);
-    expect(res.url).toContain("/dashboard?qbo_connected=1");
+    // A new account hasn't agreed to the Terms yet, so it goes by
+    // /accept-terms and on to the dashboard address it was headed for.
+    expect(res.url).toBe("https://app.example.com/accept-terms?next=%2Fdashboard%3Fqbo_connected%3D1");
     expect(res.setCookies.jpai_company).toBe("conn_1");
   });
 

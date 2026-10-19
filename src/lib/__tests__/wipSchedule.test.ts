@@ -7,7 +7,7 @@ import { describe, it, expect, vi } from "vitest";
 vi.mock("../prisma", () => ({ prisma: {} }));
 
 import { computeJobFinancials, computeNeedsAttentionForJob, type FinancialContext, type JobFinancials, type JobInput } from "../profitability";
-import { buildWipSchedule, estimatedTotalCostOf, isIdleOpenJob, wipCountsInTotals, NOT_SCHEDULED_NEED_TEXT } from "../wipSchedule";
+import { buildWipSchedule, estimatedTotalCostOf, isIdleOpenJob, wipCountsInTotals, wipReportBasis, wipReportDay, NOT_SCHEDULED_NEED_TEXT } from "../wipSchedule";
 
 const NOW = new Date("2026-09-28T12:00:00Z");
 const daysAgo = (d: number) => new Date(NOW.getTime() - d * 86_400_000);
@@ -225,3 +225,21 @@ describe("forecast margin on the WIP schedule", () => {
   });
 });
 
+
+describe("the bank-ready report's as-of day and data line (audit 2026-10-19)", () => {
+  it("is today in the company's time zone, as a QuickBooks-style date", () => {
+    const evening = new Date("2026-10-20T02:00:00Z"); // 7 pm Oct 19 in Los Angeles
+    expect(wipReportDay(evening, "America/Los_Angeles").toISOString()).toBe("2026-10-19T00:00:00.000Z");
+    expect(wipReportDay(evening, "Asia/Tokyo").toISOString()).toBe("2026-10-20T00:00:00.000Z");
+  });
+
+  it("says when QuickBooks was last read, and warns when the figures may be behind the books", () => {
+    const company = { lastSyncedAt: new Date("2026-10-19T09:05:00Z"), lastSyncStatus: "success", lastSyncError: null, fullSyncContinueAt: null, emailTimezone: "America/New_York" };
+    const ok = wipReportBasis(company, { paused: false });
+    expect(ok.dataAsOf).toMatch(/^QuickBooks data as of Oct 19, 2026, 5:05\sAM EDT$/);
+    expect(ok.warning).toBeNull();
+    expect(wipReportBasis({ ...company, lastSyncStatus: "error" }, { paused: false }).warning).toContain("didn't finish");
+    expect(wipReportBasis(company, { paused: true }).warning).toContain("paused");
+    expect(wipReportBasis({ ...company, fullSyncContinueAt: new Date() }, { paused: false }).warning).toContain("partway");
+  });
+});

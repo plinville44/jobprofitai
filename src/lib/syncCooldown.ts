@@ -13,9 +13,28 @@
  * away, and the sync that ended a moment ago read the old setup. The
  * dashboard question is only shown after a sync has finished, so without
  * this its "Yes" nearly always landed inside the pause.
+ *
+ * Nor while a full read is partway and due to carry on (see
+ * fullSyncContinuable): the next press doesn't repeat anything, it reads the
+ * steps the last one didn't get to. The first-run screen presses again
+ * straight away for a company with a lot of history.
  */
 
+import { fullSyncPartway } from "./syncProblem";
+
 export const SYNC_COOLDOWN_SECONDS = 60;
+
+/**
+ * A full read that stopped partway and may carry on now: fullSyncContinueAt
+ * is set and due, and it isn't down to once a day for running out of time
+ * (that one waits for its day, whoever presses). Pure.
+ */
+export function fullSyncContinuable(
+  c: { fullSyncContinueAt?: Date | null; lastSyncError?: string | null },
+  now: Date = new Date()
+): boolean {
+  return fullSyncPartway(c) && c.fullSyncContinueAt!.getTime() <= now.getTime();
+}
 
 /**
  * Seconds until Sync now may run again for a company, or 0 when it may run
@@ -32,11 +51,14 @@ export function syncCooldownSecondsLeft(
     lastSyncStatus: string | null;
     rebuildRequestedAt?: Date | null;
     lastSyncStartedAt?: Date | null;
+    fullSyncContinueAt?: Date | null;
+    lastSyncError?: string | null;
   },
   now: Date = new Date()
 ): number {
   if (!connection.lastSyncAttemptAt || connection.lastSyncStatus === "in_progress") return 0;
   if (rebuildWaiting(connection)) return 0;
+  if (fullSyncContinuable(connection, now)) return 0;
   const elapsedMs = now.getTime() - connection.lastSyncAttemptAt.getTime();
   // A clock that went backwards reads as "just now": wait the full cooldown.
   const left = Math.ceil((SYNC_COOLDOWN_SECONDS * 1000 - Math.max(0, elapsedMs)) / 1000);

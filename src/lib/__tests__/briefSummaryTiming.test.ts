@@ -16,6 +16,8 @@ vi.mock("@/lib/ai", () => ({
   AI_MODEL: "test-model",
   // The real one adds inference_geo: "us" (src/lib/ai.ts); its own test covers that.
   inUs: (params: any) => params,
+  // The real one reads the SDK's error shape (src/lib/ai.ts); these tests only throw plain errors.
+  aiFailureKind: (err: any) => (/timed out/i.test(err?.message ?? "") ? "timeout" : typeof err?.status === "number" && err.status < 500 ? "refused" : "other"),
   aiClient: (timeoutMs: number, retries: number) => ({
     messages: {
       create: async (params: any) => {
@@ -41,6 +43,7 @@ const metrics = {
     untaggedJobCostCount: 0,
     timeEntriesWithoutPayRate: 0,
     possibleDuplicates: [],
+    idleOpenJobs: [],
   },
 };
 vi.mock("@/lib/profitability", () => ({ computeConnectionMetrics: async () => metrics }));
@@ -195,12 +198,13 @@ describe("the weekly-email route", () => {
   const route = readFileSync(path.join(__dirname, "../../app/api/cron/weekly-email/route.ts"), "utf8");
 
   it("gives the attempt back and defers when the summary ran out of time", () => {
-    expect(route).toMatch(/instanceof SummaryOutOfTimeError\)\) throw err;[\s\S]{0,400}await release\(refund\);[\s\S]{0,80}status: "deferred"/);
+    expect(route).toMatch(/instanceof SummaryOutOfTimeError\)\) throw err;[\s\S]{0,400}await release\(refund\);[\s\S]{0,120}status: "deferred"/);
     expect(route).toMatch(/deferWhenOutOfTime: withinCatchUp\(/);
   });
 
   it("stores the summary it wrote and reuses it on a retry", () => {
-    expect(route).toContain("summaryToReuse(existing?.metrics)");
+    // With the time it was emailed, so a second brief in the same week (the send day moved) writes its own.
+    expect(route).toContain("summaryToReuse(existing?.metrics, existing?.emailedAt)");
     expect(route).toContain("storedSummary,");
     expect(route).toContain("withSummaryForRetry(metrics, { kind, body, summaryMissing })");
     expect(route).toMatch(/metrics: toStore as any/);

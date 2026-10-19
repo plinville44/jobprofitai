@@ -55,6 +55,14 @@ export interface SendEmailResult {
    * company's attempts.
    */
   transient?: boolean;
+  /**
+   * True when the failure was about our own sending setup, not the message
+   * or the address: the sending domain or from address isn't accepted, or
+   * the API key is missing, wrong or not allowed to send. Every recipient
+   * fails the same way until someone fixes it, so the weekly brief doesn't
+   * count these against a company's attempts, and they are reported.
+   */
+  senderSide?: boolean;
 }
 
 /**
@@ -71,6 +79,21 @@ const TRANSIENT_ERRORS = new Set([
   "concurrent_idempotent_requests",
 ]);
 
+/** Resend error names that are about our account or key, whatever the message. */
+const SENDER_ERRORS = new Set(["missing_api_key", "invalid_api_key", "restricted_api_key", "invalid_access", "invalid_from_address"]);
+
+/**
+ * Whether a refusal is about our sending setup (see SendEmailResult.senderSide).
+ * Resend reports an unverified sending domain, a test key used for someone
+ * else's address and a malformed from address as a validation_error, so for
+ * that name the message decides. A bad recipient ("Invalid `to` field") is
+ * not one.
+ */
+export function senderSideError(name: string | null | undefined, message: string | null | undefined): boolean {
+  if (name && SENDER_ERRORS.has(name)) return true;
+  return name === "validation_error" && /domain is not verified|verify a domain|`from`|from field|from address|testing emails|api key/i.test(message ?? "");
+}
+
 /**
  * Low-level send. Never throws - callers get a result object, because a
  * failed notification must not take down the user action that triggered it.
@@ -81,7 +104,7 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
     // Development safeguard: with no key configured, log and carry on rather
     // than crashing local work or a preview deployment.
     console.warn(`email: RESEND_API_KEY not set - skipped "${input.subject}"`);
-    return { ok: false, skipped: true, error: "RESEND_API_KEY is not configured." };
+    return { ok: false, skipped: true, senderSide: true, error: "RESEND_API_KEY is not configured." };
   }
 
   // Second development safeguard: EMAIL_DEV_REDIRECT sends every message to
@@ -114,7 +137,12 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
       // Message only - never the whole provider error object, which can echo
       // request contents back into logs.
       console.error(`email: send failed for "${input.subject}": ${error.message}`);
-      return { ok: false, error: error.message, transient: error.name != null && TRANSIENT_ERRORS.has(error.name) };
+      return {
+        ok: false,
+        error: error.message,
+        transient: error.name != null && TRANSIENT_ERRORS.has(error.name),
+        senderSide: senderSideError(error.name, error.message),
+      };
     }
     return { ok: true, id: data?.id };
   } catch (err) {

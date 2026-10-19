@@ -11,10 +11,16 @@ import { startIntuitFlow } from "@/lib/intuitSignIn";
  * GET /api/auth/intuit?intent=appstore
  *   The Connect/Reconnect URL in Intuit's settings, used by the App Store's
  *   "Get integration now": Intuit sign-in and QuickBooks access in one step.
+ *
+ * GET /api/auth/intuit?intent=signup
+ *   The button on /signup: the same one step, but the visitor came through
+ *   our pages, so a new account is measured like an email signup (see
+ *   src/lib/intuitSignIn.ts).
  */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
-  const intent = url.searchParams.get("intent") === "appstore" ? "appstore" : "signin";
+  const asked = url.searchParams.get("intent");
+  const intent = asked === "appstore" || asked === "signup" ? asked : "signin";
   const realmId = url.searchParams.get("realmId");
 
   if (intent === "signin" && (await getSession())) {

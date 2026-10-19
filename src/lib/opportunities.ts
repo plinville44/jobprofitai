@@ -38,6 +38,7 @@
 
 import type { ForecastResult, JobFinancials } from "./profitability";
 import { forecastIsActionable } from "./forecastRules";
+import { wipCountsInTotals } from "./wipSchedule";
 import { HOURLY_PRICE_MAX, HOURLY_PRICE_MIN, isUnitPriced, type CostCategory, type EstimateLine } from "./qboNormalize";
 import { formatCurrency } from "./format";
 
@@ -902,9 +903,12 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
     const firmForecast = forecastIsActionable(f, fc);
     const hasOwnEstimate = f.estimatedCost != null && !input.targetFilledEstimates?.has(f.jobId);
     if (target != null && (firmForecast || hasOwnEstimate)) openJobsChecked++;
-    // A job past its estimate can't have its billing checked (the underbilled
-    // test below skips it), so it doesn't count toward "billing checked".
-    if (f.wip && f.estimatedRevenue != null && !f.wip.costPastEstimate) billingChecked++;
+    // Billing is checked on exactly the jobs the WIP schedule measures
+    // (wipCountsInTotals): not one past its estimate, nor one entered as
+    // under 25% complete with no estimate. The underbilled item below uses
+    // the same test, so "billing checked" never counts a job it skipped.
+    const billingMeasured = f.wip != null && f.estimatedRevenue != null && wipCountsInTotals(f, now);
+    if (billingMeasured) billingChecked++;
     let forecastFlagged = false;
     if (
       target != null &&
@@ -975,7 +979,11 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
         trackable: null,
       });
     }
-    if (f.wip && f.estimatedRevenue != null && !f.wip.costPastEstimate) {
+    // Only on a job the WIP schedule puts in its totals, since the item says
+    // it's the WIP report's figure. A job entered as 20% complete with no
+    // estimate read "$19,000 of finished work isn't billed" here while the
+    // WIP report and Money Owed both showed $0 for it.
+    if (billingMeasured && f.wip && f.estimatedRevenue != null) {
       const under = -f.wip.overUnderBilling;
       if (under > 1000 && under > f.estimatedRevenue * 0.05) {
         unbilledWork += under;

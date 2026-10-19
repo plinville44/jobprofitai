@@ -4,7 +4,8 @@ import { getAccount, getActiveConnection } from "@/lib/account";
 import { hasAcceptedCurrentTerms } from "@/lib/termsAcceptance";
 import { getEntitlements } from "@/lib/entitlements";
 import { getConnectionProfitData, laborBurdenOf } from "@/lib/profitability";
-import { buildWipSchedule, NOT_SCHEDULED_NEED_TEXT } from "@/lib/wipSchedule";
+import { buildWipSchedule, NOT_SCHEDULED_NEED_TEXT, wipReportBasis, wipReportDay } from "@/lib/wipSchedule";
+import { isOverPlanLimit } from "@/lib/planLimits";
 import { prisma } from "@/lib/prisma";
 import { formatCurrency, formatDateIn } from "@/lib/format";
 import PrintButton from "./PrintButton";
@@ -30,10 +31,14 @@ export default async function WipReportPage() {
   if (!connection) redirect("/dashboard");
 
   const now = new Date();
-  const [data, filled] = await Promise.all([
-    getConnectionProfitData(connection.id, now),
+  // As the books stand at the end of today in the company's time zone: a
+  // bill or invoice dated tomorrow isn't on a schedule headed with today.
+  const [data, filled, paused] = await Promise.all([
+    getConnectionProfitData(connection.id, now, { asOf: wipReportDay(now, connection.emailTimezone) }),
     prisma.job.findMany({ where: { connectionId: connection.id, estimatedCostSource: "target_margin" }, select: { id: true } }),
+    isOverPlanLimit(connection),
   ]);
+  const basis = wipReportBasis(connection, { paused });
   const s = buildWipSchedule(data.lifetimeJobs, now, new Set(filled.map((j) => j.id)));
   const anyFromTarget = s.inProgress.some((r) => r.costFromTarget);
   const anyPastContract = s.inProgress.some((r) => r.billedPastContract > 0);
@@ -61,7 +66,20 @@ export default async function WipReportPage() {
       <header className="border-b border-gray-300 pb-4">
         <h1 className="text-2xl font-bold">{company}</h1>
         <p className="text-lg">Work in Progress Schedule</p>
-        <p className="mt-1 text-sm text-gray-600">As of {formatDateIn(now, connection.emailTimezone)}. Prepared from QuickBooks Online data with JobProfitAI. Unaudited.</p>
+        <p className="mt-1 text-sm text-gray-600">
+          As of {formatDateIn(now, connection.emailTimezone)}. {basis.dataAsOf}. Prepared from QuickBooks Online data
+          with JobProfitAI. Unaudited.
+        </p>
+        {/* Printed with the report, so whoever it's sent to knows the
+            figures may be behind the books. */}
+        {basis.warning ? (
+          <p className="mt-2 rounded border border-amber-400 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900">
+            {basis.warning}
+            <span className="block text-xs font-normal print:hidden">
+              Worth sorting out before you send this report. Settings shows the sync status for each company.
+            </span>
+          </p>
+        ) : null}
       </header>
 
       <section className="mt-6">
@@ -233,8 +251,9 @@ export default async function WipReportPage() {
             ? " Where marked †, there was no cost estimate, so one was set from the target margin (the job type's, or the company's); estimated gross profit on those jobs reflects that target rather than a separate estimate."
             : ""}{" "}
           Revenue excludes sales tax. Costs are those tagged to each job in QuickBooks, with employee time at the cost rate
-          on each time entry{burden > 0 ? ` plus a ${Math.round(burden * 1000) / 10}% labor burden` : ""}. Figures come
-          from the books as recorded and have not been reviewed or audited.
+          on each time entry{burden > 0 ? ` plus a ${Math.round(burden * 1000) / 10}% labor burden` : ""}. Costs and
+          invoices dated after the as-of date are left out. Figures come from the books as recorded and have not been
+          reviewed or audited.
         </p>
       </footer>
     </main>

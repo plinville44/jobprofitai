@@ -13,7 +13,8 @@
  *    characters; for database errors, only the error code and the call,
  *  - where in the code it happened (function, file, line and column),
  *  - a few tags from an allow-list: the route's path pattern (never the real
- *    URL), the HTTP method, the route type and the cron job's name,
+ *    URL), the HTTP method, the route type, the cron job's name and the
+ *    feature that failed (such as brief-summary),
  *  - the environment and the commit it was built from.
  * Never a user, the request (URL, query string, headers, cookies, body), the
  * error's `cause`, or any other data attached to it.
@@ -43,6 +44,8 @@ export interface ErrorContext {
   router?: string;
   /** The scheduled job, such as nightly-sync. */
   cron?: string;
+  /** The feature that failed, such as brief-summary: what the report is about, in a word or two. */
+  feature?: string;
 }
 
 export interface SentryFrame {
@@ -252,6 +255,7 @@ function pickTags(context: ErrorContext | undefined): Record<string, string> {
     route_type: tagValue(c.routeType, /^[a-z][a-z-]{0,19}$/),
     router: tagValue(c.router, /^[A-Za-z ]{1,20}$/),
     cron: tagValue(c.cron, /^[a-z0-9-]{1,50}$/),
+    feature: tagValue(c.feature, /^[a-z0-9-]{1,50}$/),
   };
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(tags)) if (v) out[k] = v;

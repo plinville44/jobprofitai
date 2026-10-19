@@ -261,6 +261,18 @@ describe("matching transactions to jobs", () => {
   it("refuses to guess between two jobs under the same parent", () => {
     expect(resolveJob(index, "4")).toBeNull();
   });
+
+  it("doesn't give a parent's only job what was tagged to the parent long before that job was created", () => {
+    const dated = buildJobIndex([{ id: "job-a", qboId: "2", parentQboId: "1", qboCreatedAt: new Date("2026-06-01T09:30:00Z") }]);
+    // 60 days before the day it was created, and later: the job's.
+    expect(resolveJob(dated, "1", new Date("2026-04-02T00:00:00Z"))).toEqual({ jobId: "job-a", method: "parent_customer_fallback" });
+    // Earlier than that: the client's history, on no job.
+    expect(resolveJob(dated, "1", new Date("2026-04-01T00:00:00Z"))).toBeNull();
+    // Tagged to the job itself: always the job's.
+    expect(resolveJob(dated, "2", new Date("2019-04-01T00:00:00Z"))).toEqual({ jobId: "job-a", method: "direct" });
+    // No creation date stored: as before.
+    expect(resolveJob(index, "1", new Date("2019-04-01T00:00:00Z"))).toEqual({ jobId: "job-a", method: "parent_customer_fallback" });
+  });
 });
 
 describe("row ids", () => {
@@ -487,6 +499,17 @@ describe("what's still owed on an invoice", () => {
     expect(open.openBalance).toBe(3_210);
     expect(revenueFromTxn({ TxnDate: "2026-09-01", TotalAmt: 500, Balance: 0 }, "Invoice").openBalance).toBeNull();
     expect(revenueFromTxn({ TxnDate: "2026-09-01", TotalAmt: 500 }, "SalesReceipt").openBalance).toBeNull();
+  });
+
+  it("converts a sale in another currency at its exchange rate, balance included", () => {
+    const cad = revenueFromTxn({ TxnDate: "2026-09-01", TotalAmt: 10_700, Balance: 3_210, TxnTaxDetail: { TotalTax: 700 }, CurrencyRef: { value: "CAD" }, ExchangeRate: 0.75 }, "Invoice");
+    expect([cad.amount, cad.tax, cad.openBalance]).toEqual([7_500, 525, 2_407.5]);
+  });
+
+  it("in class mode, puts what's owed on the classes billed, never on a class with only a credit", () => {
+    const line = (amount: number, classId: string) => ({ Amount: amount, SalesItemLineDetail: { ClassRef: { value: classId } } });
+    const parts = revenueByClass({ TxnDate: "2026-09-01", TotalAmt: 1_000, Balance: 1_000, Line: [line(3_000, "A"), line(-2_000, "B")] }, "Invoice");
+    expect(parts.map((p) => [p.classQboId, p.openBalance])).toEqual([["A", 1_000], ["B", null]]);
   });
 
   it("keeps the invoice number and due date for Money Owed", () => {

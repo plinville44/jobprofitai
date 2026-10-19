@@ -3,14 +3,27 @@
 // ----------------------------------------------------------------------------
 // An invented contractor, "Example Builders", run through the real engine
 // (computeJobFinancials, computeOpportunityFeed, computeEstimateCheck,
-// computeActionOutcome) so the marketing site and /demo show exactly what the
+// computeActionOutcome, computeNeedsAttentionForJob, computeDashboardTotals,
+// computeWeekOverWeek) so the marketing site and /demo show exactly what the
 // product produces, wording and arithmetic included. Nothing here is a real
 // customer's data, and every place it's shown is labelled "Example data".
 //
 // Pure and fixed: the same "today" every time, so the site never drifts.
 // ============================================================================
 
-import { computeJobFinancials, type FinancialContext, type JobFinancials, type JobInput } from "./profitability";
+import {
+  computeDashboardTotals,
+  computeDataHealth,
+  computeJobFinancials,
+  computeNeedsAttentionForJob,
+  type ConnectionMetrics,
+  type DashboardTotals,
+  type FinancialContext,
+  type JobFinancials,
+  type JobInput,
+  type JobMetrics,
+  type NeedsAttentionItem,
+} from "./profitability";
 import {
   computeActionOutcome,
   computeEstimateCheck,
@@ -22,6 +35,10 @@ import {
   type PricedMix,
 } from "./opportunities";
 import type { EstimateLine } from "./qboNormalize";
+import { resolveDateRange } from "./dateRange";
+import { lastScheduledSend } from "./schedule";
+import { computeWeekOverWeek, type WeekOverWeekReport } from "./weekOverWeek";
+import { snapshotFromFeed, type BriefOpportunitySnapshot } from "./briefHeadline";
 
 export const SAMPLE_NOW = new Date("2026-09-01T12:00:00Z");
 export const SAMPLE_TARGET_PCT = 28;
@@ -259,12 +276,103 @@ export const SAMPLE_TRACKED = {
   action: "Raise prices on roofing jobs by about 10%. On the same work, that reaches your 28% target.",
 };
 
+/**
+ * What the books said at the previous Weekly Profit Brief, a week earlier:
+ * Harborview's last materials bill hadn't been entered yet, and Westgate
+ * Kitchen hadn't been marked completed. Every other job was as it is now.
+ * The brief preview's "What changed" is computeWeekOverWeek run on that week
+ * and this one, so its sentences are the ones the real email writes.
+ */
+export const SAMPLE_LAST_BRIEF = {
+  /** Costs entered since the last brief, by job and cost category. */
+  newCosts: { o1: { materials: 6_800 } } as Record<string, Record<string, number>>,
+  /** Jobs marked completed since the last brief. */
+  markedCompleted: ["k8"],
+};
+
+/** The brief goes out on Mondays at 8am (0 = Sunday), as in the preview's frame. */
+const SAMPLE_BRIEF_SCHEDULE = { day: 1, hour: 8, timeZone: "UTC" };
+
 export interface SampleCompany {
   jobs: JobFinancials[];
   feed: OpportunityFeed;
   estimates: (SampleEstimate & { check: EstimateCheckResult; typeLabel: string })[];
   tracked: { action: string; subjectLabel: string; baselineMarginPct: number; baselineJobs: number; startedAt: Date; outcome: ActionOutcome };
   jobNames: Record<string, string>;
+  /**
+   * The Profit Dashboard on the All tab for the last 12 months, on Profit
+   * Intelligence, worked out the way getConnectionProfitData does: the top row from
+   * the period's invoices and costs, Needs Your Attention from each whole
+   * job. No peer benchmarking and no forecasts (both Pro), and no earlier
+   * weekly snapshots, so no "margin declining" item.
+   */
+  dashboard: {
+    rangeLabel: string;
+    statusLabel: string;
+    totals: DashboardTotals;
+    needsAttention: NeedsAttentionItem[];
+    /**
+     * The rows the preview shows: the DASHBOARD_PREVIEW_ROWS items with the
+     * most money at stake, most serious first, as the dashboard orders them.
+     */
+    shown: NeedsAttentionItem[];
+  };
+  /**
+   * The Jobs page: the open jobs, then the latest finished job of each job
+   * type, each with the first Needs Your Attention item for it (or null).
+   */
+  jobList: { job: JobFinancials; issue: string | null }[];
+  /** This week's Weekly Profit Brief, compared with the one before (SAMPLE_LAST_BRIEF). */
+  brief: {
+    weekStarting: Date;
+    /** What last week's brief stored, in the shape the real brief stores it. */
+    priorMetrics: ConnectionMetrics & { opportunities: BriefOpportunitySnapshot };
+    whatChanged: WeekOverWeekReport;
+  };
+}
+
+const severityRank = (s: NeedsAttentionItem["severity"]) => (s === "high" ? 3 : s === "medium" ? 2 : 1);
+const DASHBOARD_PREVIEW_ROWS = 4;
+
+/** The jobs in the shape a stored brief keeps them (computeConnectionMetrics). */
+function toJobMetrics(f: JobFinancials): JobMetrics {
+  return {
+    jobId: f.jobId,
+    jobName: f.jobName,
+    customerName: f.customerName,
+    status: f.status,
+    estimatedCost: f.estimatedCost,
+    actualCost: f.costs,
+    estimatedRevenue: f.estimatedRevenue,
+    actualRevenue: f.revenue,
+    costByCategory: f.costByCategory,
+    marginPct: f.grossMarginPct,
+    varianceVsEstimate: f.varianceVsEstimate,
+    varianceVsEstimatePct: f.varianceVsEstimatePct,
+    flags: f.flags,
+  };
+}
+
+function connectionMetrics(jobs: JobFinancials[], weekStarting: Date): ConnectionMetrics {
+  const metrics = jobs.map(toJobMetrics);
+  const basis = jobs.filter((j) => j.revenue > 0 && j.costs > 0);
+  const basisRevenue = basis.reduce((s, j) => s + j.revenue, 0);
+  const dataHealth = computeDataHealth(jobs, SAMPLE_NOW, null, null);
+  return {
+    connectionId: "sample",
+    weekStarting,
+    jobs: metrics,
+    briefJobIds: metrics.map((j) => j.jobId),
+    topConcerns: [],
+    totals: {
+      activeJobs: jobs.filter((j) => j.status === "open").length,
+      totalActualCost: jobs.reduce((s, j) => s + j.costs, 0),
+      totalActualRevenue: jobs.reduce((s, j) => s + j.revenue, 0),
+      blendedMarginPct: basisRevenue > 0 ? (basisRevenue - basis.reduce((s, j) => s + j.costs, 0)) / basisRevenue : null,
+    },
+    dataHealth,
+    briefDataHealth: dataHealth,
+  };
 }
 
 let cached: SampleCompany | null = null;
@@ -322,18 +430,20 @@ export function getSampleCompany(): SampleCompany {
       method: e.check.method,
     }));
 
-  const feed = computeOpportunityFeed({
-    now: SAMPLE_NOW,
-    jobs,
-    forecasts: new Map(),
-    mixes,
-    typeLabel: sampleTypeLabel,
-    estimateFlags,
-    estimateCounts: {
-      pending: estimates.length,
-      checked: estimates.filter((e) => e.check.status === "below_target" || e.check.status === "on_target").length,
-    },
-  });
+  const feedFor = (forJobs: JobFinancials[]) =>
+    computeOpportunityFeed({
+      now: SAMPLE_NOW,
+      jobs: forJobs,
+      forecasts: new Map(),
+      mixes,
+      typeLabel: sampleTypeLabel,
+      estimateFlags,
+      estimateCounts: {
+        pending: estimates.length,
+        checked: estimates.filter((e) => e.check.status === "below_target" || e.check.status === "on_target").length,
+      },
+    });
+  const feed = feedFor(jobs);
 
   // The tracked change's baseline: the roofs set up before it started, as
   // the feed would have shown them then.
@@ -344,6 +454,52 @@ export function getSampleCompany(): SampleCompany {
     jobs,
     mixes
   );
+
+  // The dashboard, as getConnectionProfitData builds it for the All tab and
+  // the default period: totals from the period's money, Needs Your
+  // Attention from each whole job.
+  const { range, label: rangeLabel } = resolveDateRange("last_12_months", undefined, undefined, SAMPLE_NOW, "UTC");
+  const inRange = (d: Date) => d >= range.from && d <= range.to;
+  const windowed = inputs.map((i) =>
+    computeJobFinancials(
+      { ...i, costEntries: i.costEntries.filter((c) => inRange(c.txnDate)), invoices: i.invoices.filter((v) => inRange(v.txnDate)) },
+      { ...ctx, costsAreWindowed: true }
+    )
+  );
+  const needsAttention = jobs.flatMap((f) => computeNeedsAttentionForJob(f));
+  const totals = computeDashboardTotals(windowed, needsAttention, computeDataHealth(jobs, SAMPLE_NOW, null, null), SAMPLE_TARGET_PCT);
+
+  // The Jobs page preview: every open job, then the latest finished job of each type.
+  const firstIssue = new Map<string, string>();
+  for (const i of needsAttention) if (!firstIssue.has(i.jobId)) firstIssue.set(i.jobId, i.issue);
+  const lastActive = (f: JobFinancials) => f.lastFinancialActivity?.getTime() ?? 0;
+  const latestFinished = new Map<string, JobFinancials>();
+  for (const f of jobs) {
+    if (f.status !== "closed" || !f.category) continue;
+    const seen = latestFinished.get(f.category);
+    if (!seen || lastActive(f) > lastActive(seen)) latestFinished.set(f.category, f);
+  }
+  const jobList = [
+    ...jobs.filter((f) => f.status === "open"),
+    ...[...latestFinished.values()].sort((a, b) => lastActive(b) - lastActive(a)),
+  ].map((job) => ({ job, issue: firstIssue.get(job.jobId) ?? null }));
+
+  // This week's brief against last week's (SAMPLE_LAST_BRIEF), through the
+  // same comparison the real brief makes.
+  const { weekStarting } = lastScheduledSend(SAMPLE_NOW, SAMPLE_BRIEF_SCHEDULE);
+  const priorWeekStarting = new Date(weekStarting.getTime() - 7 * 86_400_000);
+  const priorJobs = inputs
+    .map((i) => {
+      const entered = SAMPLE_LAST_BRIEF.newCosts[i.id];
+      return {
+        ...i,
+        status: SAMPLE_LAST_BRIEF.markedCompleted.includes(i.id) ? "open" : i.status,
+        costEntries: entered ? i.costEntries.map((c) => ({ ...c, amount: c.amount - (entered[c.category] ?? 0) })) : i.costEntries,
+      };
+    })
+    .map((i) => computeJobFinancials(i, ctx));
+  const priorMetrics = { ...connectionMetrics(priorJobs, priorWeekStarting), opportunities: snapshotFromFeed(feedFor(priorJobs)) };
+  const whatChanged = computeWeekOverWeek({ weekStarting: priorWeekStarting, metrics: priorMetrics }, connectionMetrics(jobs, weekStarting));
 
   cached = {
     jobs,
@@ -358,6 +514,18 @@ export function getSampleCompany(): SampleCompany {
       outcome,
     },
     jobNames: Object.fromEntries(jobs.map((j) => [j.jobId, j.jobName])),
+    dashboard: {
+      rangeLabel,
+      statusLabel: "all",
+      totals,
+      needsAttention,
+      shown: [...needsAttention]
+        .sort((a, b) => (b.financialImpact ?? 0) - (a.financialImpact ?? 0))
+        .slice(0, DASHBOARD_PREVIEW_ROWS)
+        .sort((a, b) => severityRank(b.severity) - severityRank(a.severity)),
+    },
+    jobList,
+    brief: { weekStarting, priorMetrics, whatChanged },
   };
   return cached;
 }

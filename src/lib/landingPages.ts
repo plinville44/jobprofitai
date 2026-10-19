@@ -68,11 +68,14 @@ export const LANDING_PAGES: Record<LandingSlug, LandingPageConfig> = {
   },
   wip: {
     slug: "wip",
-    metaTitle: "Your WIP report, built from QuickBooks",
+    // Contract values come from QuickBooks estimates; each open job's cost
+    // budget is added in JobProfitAI (a job without one, or a percent
+    // complete, is listed as needing it). So no "automatically".
+    metaTitle: "Your WIP report from your QuickBooks jobs",
     metaDescription:
-      "The work in progress schedule banks and bonding companies ask for, built from QuickBooks automatically, plus what to change on your pricing. 14 days free, no credit card.",
+      "The WIP schedule banks and bonding companies ask for, from your QuickBooks jobs and estimates, plus what to change on your pricing. 14 days free, no credit card.",
     eyebrow: "WIP report for QuickBooks",
-    headline: "Your WIP report, built from QuickBooks automatically. Then what to change.",
+    headline: "Your WIP report from QuickBooks, plus what to change and what it's worth",
     subhead:
       "The bank-ready WIP schedule, plus what a WIP report can't tell you: what to change on your pricing, ranked in dollars.",
     heroPreview: "wip",

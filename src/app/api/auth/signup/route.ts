@@ -12,6 +12,7 @@ import { acceptanceData } from "@/lib/termsAcceptance";
 import { signupAdOptOut } from "@/lib/adOptOut";
 import { SOURCE_COOKIE } from "@/lib/adSource";
 import { reportServerEvent, signupAdSource, signupSessionId } from "@/lib/serverEvents";
+import { clientIp, recordSignup, signupLimitReached } from "@/lib/loginThrottle";
 
 export const runtime = "nodejs";
 
@@ -66,6 +67,16 @@ export async function POST(req: NextRequest) {
   // login handles both (see the login route).
   const email = parsed.data.email.trim().toLowerCase();
 
+  // Every signup mails a verification link to the address typed, so one
+  // network address gets a few an hour, or a script could mail anyone.
+  const ip = clientIp(req.headers);
+  if (await signupLimitReached(ip)) {
+    return NextResponse.json(
+      { error: "Too many accounts have been created from this network in the last hour. Please try again later." },
+      { status: 429 }
+    );
+  }
+
   const existing = await prisma.user.findFirst({
     where: { email: { equals: email, mode: "insensitive" } },
     select: { id: true },
@@ -110,6 +121,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Couldn't create your account. Please try again." }, { status: 500 });
   }
 
+  await recordSignup(ip);
   await createSession(user.id);
 
   // --- Everything below is best-effort and never fails the signup ---

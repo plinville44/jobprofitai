@@ -15,6 +15,7 @@ import {
   accessEndedAt,
   deletionDueAt,
   lapsedLongEnough,
+  revokedGraceOver,
 } from "@/lib/dataRetention";
 
 export * from "@/lib/dataRetention";
@@ -167,21 +168,27 @@ export async function companiesDueForDeletionReminder(now = new Date(), rulesSta
  * Companies QuickBooks has stopped letting us read (the owner disconnected
  * the app from their Intuit account while signed out of JobProfitAI, or the
  * grant otherwise ended) and that haven't been reconnected for
- * REVOKED_GRANT_GRACE_DAYS: treat them as disconnected, which starts the
- * deletion clock. Nothing can be synced from them in the meantime.
+ * REVOKED_GRANT_GRACE_DAYS since QuickBooks refused (revokedGraceOver):
+ * treat them as disconnected, which starts the deletion clock. Nothing can
+ * be synced from them in the meantime.
  */
-export async function disconnectRevokedGrants(now = new Date()): Promise<QuickBooksConnection[]> {
+export async function disconnectRevokedGrants(now = new Date(), rulesStart: Date = EARLIEST_RULES_START): Promise<QuickBooksConnection[]> {
   const stale = new Date(now.getTime() - REVOKED_GRANT_GRACE_DAYS * DAY_MS);
   const candidates = await prisma.quickBooksConnection.findMany({
     where: {
       disconnectedAt: null,
       lastSyncStatus: "error",
-      OR: [{ lastSyncedAt: { lt: stale } }, { lastSyncedAt: null, connectedAt: { lt: stale } }],
+      AND: [
+        { OR: [{ lastSyncedAt: { lt: stale } }, { lastSyncedAt: null, connectedAt: { lt: stale } }] },
+        // The refusal itself must be as old: the last attempt is when it happened.
+        { OR: [{ lastSyncAttemptAt: null }, { lastSyncAttemptAt: { lt: stale } }] },
+      ],
     },
+    orderBy: { connectedAt: "asc" },
     take: 500,
   });
   const done: QuickBooksConnection[] = [];
-  for (const c of candidates.filter((x) => needsReconnect(x.lastSyncError))) {
+  for (const c of candidates.filter((x) => needsReconnect(x.lastSyncError) && revokedGraceOver(x, now, rulesStart))) {
     const marked = await prisma.quickBooksConnection.updateMany({ where: { id: c.id, disconnectedAt: null }, data: { disconnectedAt: now } });
     if (marked.count === 0) continue;
     await removeClientAccess(c.userId, c.id);
@@ -197,7 +204,9 @@ export async function disconnectRevokedGrants(now = new Date()): Promise<QuickBo
  * paying customers never crowd lapsed ones out of the batch, and each owner
  * is handled whole so one email covers every company they lose. Returns what
  * was disconnected so the caller can email the owner. Complimentary
- * accounts are never touched.
+ * accounts are never touched, nor is an account that is live again by the
+ * time it's reached, or one whose Stripe subscription older code stored as
+ * "trialing" or "trial_expired" (accessEndedAt reads that as live).
  */
 export async function disconnectLapsedCompanies(now = new Date(), rulesStart: Date, ownerLimit = 100): Promise<QuickBooksConnection[]> {
   const candidates = await prisma.quickBooksConnection.findMany({
@@ -207,7 +216,8 @@ export async function disconnectLapsedCompanies(now = new Date(), rulesStart: Da
         OR: [
           { subscription: { is: null } },
           { subscription: { status: { notIn: ["active", "past_due", "trialing"] } } },
-          { subscription: { status: "trialing", trialEndsAt: { lt: now } } },
+          // Not a Stripe subscription stored as "trialing" by older code: that's a paid plan (see accessEndedAt).
+          { subscription: { status: "trialing", trialEndsAt: { lt: now }, stripeSubscriptionId: null } },
         ],
       },
     },
@@ -225,7 +235,10 @@ export async function disconnectLapsedCompanies(now = new Date(), rulesStart: Da
     const first = companies[0];
     const ended = accessEndedAt(first.user.subscription, first.user.createdAt, now);
     if (!lapsedLongEnough(ended, now, rulesStart)) continue;
-    if ((await getEntitlements(ownerId, now)).access === "complimentary") continue;
+    // Read fresh: the subscription above was loaded at the start of the run,
+    // and an owner who paid or was given access since keeps their companies.
+    const entitlements = await getEntitlements(ownerId, now);
+    if (entitlements.active || entitlements.access === "complimentary") continue;
     owners += 1;
     for (const c of companies) {
       const { user, ...connection } = c;

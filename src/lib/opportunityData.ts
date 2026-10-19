@@ -83,7 +83,7 @@ export async function getOpportunityData(connectionId: string, now: Date = new D
     }),
     prisma.job.findMany({
       where: { connectionId },
-      select: { id: true, qboId: true, parentQboId: true, name: true, category: true, estimatedCostSource: true, missingSince: true },
+      select: { id: true, qboId: true, parentQboId: true, name: true, category: true, estimatedCostSource: true, missingSince: true, qboCreatedAt: true },
     }),
     prisma.jobEstimate.findMany({ where: { connectionId } }),
     // The company's average cost rate over the last 12 months, from time
@@ -114,11 +114,13 @@ export async function getOpportunityData(connectionId: string, now: Date = new D
   const jobs = profitData.lifetimeJobs;
   const typeLabel = (key: string) => labelForJobType(jobTypes, key);
 
-  // Estimates onto jobs, by the same rule the sync uses for contract value.
+  // Estimates onto jobs, by the same rule the sync uses for contract value,
+  // dates included: an estimate on the parent customer from well before a
+  // job existed isn't that job's (see resolveJob).
   const index = buildJobIndex(jobRows);
   const estimatesByJob = new Map<string, typeof estimateRows>();
   for (const e of estimateRows) {
-    const r = resolveJob(index, e.customerQboId);
+    const r = resolveJob(index, e.customerQboId, e.txnDate);
     if (r) estimatesByJob.set(r.jobId, [...(estimatesByJob.get(r.jobId) ?? []), e]);
   }
   const mixes = new Map<string, PricedMix>();

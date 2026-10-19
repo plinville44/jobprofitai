@@ -367,6 +367,23 @@ describe("open jobs and cash", () => {
     expect(out.summary.billingChecked).toBe(1);
     expect(out.items.some((i) => i.kind === "underbilled")).toBe(false);
   });
+
+  it("names no unbilled work on a job the WIP schedule leaves out (entered under 25% with no estimate)", () => {
+    // The WIP report and Money Owed both show $0 for this job; the feed said
+    // "$19,000 of finished work isn't billed" and called it the WIP figure.
+    const early = job({
+      status: "open",
+      revenue: 1_000,
+      costs: 3_000,
+      estimatedRevenue: 100_000,
+      estimatedCost: null,
+      lastFinancialActivity: daysAgo(5),
+      wip: { percentComplete: 0.2, percentCompleteSource: "manual", earnedRevenue: 20_000, overUnderBilling: -19_000, costPastEstimate: false },
+    });
+    const out = feed([early]);
+    expect(out.items.some((i) => i.kind === "underbilled")).toBe(false);
+    expect([out.summary.unbilledWork, out.summary.billingChecked]).toEqual([0, 0]);
+  });
 });
 
 describe("estimates in the feed", () => {

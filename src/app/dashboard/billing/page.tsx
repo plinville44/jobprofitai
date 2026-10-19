@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { canConnectAnotherCompany, getEntitlements, getUsageAgainstLimits } from "@/lib/entitlements";
 import { NO_PLAN_STATUS, getTrialState } from "@/lib/trial";
 import { pausedCompaniesMessage, pausedCompanySummary, planFit } from "@/lib/planLimits";
+import { teamLoginsInUse } from "@/lib/team";
 import { getReferralSummary } from "@/lib/referrals";
 import {
   PLANS,
@@ -117,10 +118,11 @@ export default async function BillingPage(props: {
   // for a trial that ended at 7pm Pacific on Sep 15.
   const timeZone = connection?.emailTimezone ?? DEFAULT_TIME_ZONE;
 
-  const [usage, referrals, pausedSummary] = await Promise.all([
+  const [usage, referrals, pausedSummary, teamLogins] = await Promise.all([
     getUsageAgainstLimits(account.ownerId, entitlements),
     getReferralSummary(account.ownerId),
     pausedCompanySummary(account.ownerId),
+    teamLoginsInUse(account.ownerId),
   ]);
 
   const stripeReady = isStripeConfigured();
@@ -159,8 +161,19 @@ export default async function BillingPage(props: {
 
   // What the account already uses, shown on the plan chooser so a plan that
   // can't cover it is ruled out before checkout rather than refused after.
-  const usageLine = `You have ${usage.connections} QuickBooks ${usage.connections === 1 ? "company" : "companies"} and ${usage.activeJobs} open ${usage.activeJobs === 1 ? "job" : "jobs"}.`;
-  const firmFit = planFit(PLANS.firm, usage);
+  const companiesAndJobs = `${usage.connections} QuickBooks ${usage.connections === 1 ? "company" : "companies"}${teamLogins > 0 ? "," : " and"} ${usage.activeJobs} open ${usage.activeJobs === 1 ? "job" : "jobs"}`;
+  const usageLine =
+    teamLogins > 0
+      ? `You have ${companiesAndJobs} and ${teamLogins} team ${teamLogins === 1 ? "login" : "logins"} (in use or invited).`
+      : `You have ${companiesAndJobs}.`;
+  // Team logins count too: checkout refuses a plan with fewer than the
+  // account has (in use or invited), so the card says so first.
+  const fitUsage = { ...usage, teamLogins };
+  // A subscription left unpaid after Stripe's retries is still on file;
+  // checkout refuses a new one until it's paid (api/billing/checkout).
+  const unpaidReason =
+    entitlements.paymentIssue && !isPaid ? "Update your payment method above first: your unpaid subscription is still on file." : null;
+  const firmFit = planFit(PLANS.firm, fitUsage);
   // A paying Pro customer can move to the 1-company plan in Stripe's portal;
   // say before they do what that would pause.
   const downgradePauses =
@@ -465,7 +478,7 @@ export default async function BillingPage(props: {
                   // Disabled with the reason when the plan can't cover the
                   // companies already connected (checkout would refuse it);
                   // a warning only for the open-job limit, which isn't enforced.
-                  const fit = planFit(plan, usage);
+                  const fit = planFit(plan, fitUsage);
                   return (
                     <div
                       key={plan.id}
@@ -499,7 +512,7 @@ export default async function BillingPage(props: {
                         label={`Choose ${plan.name}`}
                         variant={plan.mostPopular && fit.fits ? "primary" : "secondary"}
                         className="mt-5"
-                        disabledReason={fit.reason}
+                        disabledReason={unpaidReason ?? fit.reason}
                       />
                     </div>
                   );
@@ -518,7 +531,7 @@ export default async function BillingPage(props: {
                       disconnect companies.
                     </p>
                   </div>
-                  <CheckoutButton plan="firm" label="Choose Firm" variant="secondary" disabledReason={firmFit.reason} />
+                  <CheckoutButton plan="firm" label="Choose Firm" variant="secondary" disabledReason={unpaidReason ?? firmFit.reason} />
                 </div>
               ) : null}
               <p className="mt-4 text-xs text-gray-500">

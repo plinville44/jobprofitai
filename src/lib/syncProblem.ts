@@ -4,7 +4,8 @@ import { formatDateTime } from "./format";
 /**
  * The strip every dashboard page shows when the company on screen isn't
  * being kept up to date: its last sync failed, QuickBooks needs
- * reconnecting, or the plan doesn't cover it (src/lib/planLimits.ts).
+ * reconnecting, or the plan doesn't cover it (src/lib/planLimits.ts). Also,
+ * as a softer note, while a full read of QuickBooks is still partway.
  * Without it a failing nightly sync only shows as an old "last synced" date,
  * and the figures look current when they aren't.
  *
@@ -25,6 +26,27 @@ const NO_CLASSES_PREFIX = "Your jobs are set to come from QuickBooks Classes";
 /** The start of FULL_SYNC_TOO_LONG_MESSAGE in quickbooksSync.ts (not imported, to keep this file free of the sync's dependencies). */
 const TOO_LONG_PREFIX = "Reading this company's QuickBooks history keeps running out of time";
 
+/**
+ * Whether the company's full read of QuickBooks keeps running out of time and
+ * is down to one try a day (the sync's fullSyncStuck, as it leaves the
+ * connection: FULL_SYNC_TOO_LONG_MESSAGE as the sync error).
+ */
+export function fullSyncTooLong(c: { lastSyncError?: string | null }): boolean {
+  return c.lastSyncError?.startsWith(TOO_LONG_PREFIX) ?? false;
+}
+
+/**
+ * Whether a full read of the company's QuickBooks data is partway: one is
+ * owed or stopped between steps (fullSyncContinueAt is set), and it isn't the
+ * once-a-day case above. Some data types are then read and others not yet,
+ * so on a first sync jobs show costs with no invoices, and on a later one
+ * some figures are older than others. Anything that judges the figures (the
+ * weekly brief, alerts, the WIP report) should wait while this is true. Pure.
+ */
+export function fullSyncPartway(c: { fullSyncContinueAt?: Date | null; lastSyncError?: string | null }): boolean {
+  return c.fullSyncContinueAt != null && !fullSyncTooLong(c);
+}
+
 export function syncProblemFor(
   company: {
     companyName: string | null;
@@ -32,6 +54,7 @@ export function syncProblemFor(
     lastSyncError: string | null;
     lastSyncedAt: Date | null;
     emailTimezone?: string | null;
+    fullSyncContinueAt?: Date | null;
   },
   opts: { paused: boolean; role: "owner" | "member" | "client" }
 ): SyncProblem | null {
@@ -81,7 +104,7 @@ export function syncProblemFor(
     if (client) {
       return { tone: "warning", message: `The last update of ${name} from QuickBooks didn't finish. ${since} Your bookkeeper can check it.`, link: null };
     }
-    if (company.lastSyncError?.startsWith(TOO_LONG_PREFIX)) {
+    if (fullSyncTooLong(company)) {
       // Sync now wouldn't help: this company's full read keeps running out
       // of time, and it's already being carried on once a day.
       return {
@@ -95,6 +118,17 @@ export function syncProblemFor(
       message: `The last sync of ${name} with QuickBooks didn't finish. ${since} It's tried again overnight, or use Sync now on the Dashboard. If it keeps failing, email support@jobprofitai.com.`,
       link: { href: "/dashboard/settings", label: "See sync status" },
     };
+  }
+
+  // Not a failure, but the figures aren't whole yet: a first read that
+  // stopped partway showed costs with no revenue and nothing said why.
+  if (fullSyncPartway(company)) {
+    const first = company.lastSyncedAt == null;
+    const what = first
+      ? `We're still reading ${name}'s QuickBooks history, so the figures here may be incomplete: some jobs can show costs before their invoices are read.`
+      : `We're partway through reading ${name}'s QuickBooks data in full, so some figures here may be incomplete until it finishes.`;
+    const next = client ? "It carries on automatically, usually overnight." : "It carries on automatically, usually overnight, or use Sync now on the Dashboard to carry on now.";
+    return { tone: "warning", message: `${what} ${next}`, link: null };
   }
 
   return null;

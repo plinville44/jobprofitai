@@ -15,6 +15,8 @@ vi.mock("@/lib/ai", () => ({
   AI_MODEL: "test-model",
   // The real one adds inference_geo: "us" (src/lib/ai.ts); its own test covers that.
   inUs: (params: any) => params,
+  // The real one reads the SDK's error shape (src/lib/ai.ts); these tests only throw plain errors.
+  aiFailureKind: (err: any) => (/timed out/i.test(err?.message ?? "") ? "timeout" : typeof err?.status === "number" && err.status < 500 ? "refused" : "other"),
   aiClient: () => ({
     messages: {
       create: async (params: any) => {
@@ -145,6 +147,32 @@ describe("checking the written summary", () => {
   });
 });
 
+// Found in the audit of Oct 19, 2026: correct sentences taken out, and the
+// sentence after one taken out left describing the wrong job. More in
+// audit1019Brief.test.ts.
+describe("job names come first", () => {
+  const withWarranty: SummaryFacts = { jobs: [...JOBS, { jobName: "Warranty", status: "completed", marginPct: 0.1 }], comparison: "skipped" };
+
+  it("pins a phrase on the clause's subject, never on a job named inside it or earlier in the sentence", () => {
+    expect(brief(withWarranty, "MX04 Expected Loss picked up $2,000 of warranty costs and is forecast to finish at -20%.")).toEqual([]);
+    expect(brief(skipped, "Torres Bath Remodel has $2,890 not yet billed, and the forecast for MX03 Billed Past Contract is a 28.4% margin.")).toEqual([]);
+  });
+
+  it("takes out the sentence after one taken out when it names no job and refers back", () => {
+    const text = "MX02 Past Estimate is forecast to finish at -41.7%. It has $34,000 spent against a $30,000 estimate. MX04 Expected Loss is forecast to finish at -20%.";
+    const problems = findSummaryProblems(text, skipped);
+    expect(problems.map((p) => p.sentence)).toEqual(["MX02 Past Estimate is forecast to finish at -41.7%."]);
+    expect(withoutSentences(text, problems.map((p) => p.sentence), JOBS)).toBe("MX04 Expected Loss is forecast to finish at -20%.");
+  });
+
+  it("keeps the Sep 28 summary's good sentences, and nothing that would read as about another job", () => {
+    const left = withoutSentences(SEP_28, findSummaryProblems(SEP_28, skipped).map((p) => p.sentence), JOBS);
+    // "The margin number there ..." went with the MX01 sentence before it.
+    expect(summarySentences(left, JOBS).map((p) => p.length)).toEqual([1, 1, 2]);
+    expect(left.startsWith("MX02 Past Estimate is the one to look at first.\n\nMX04 Expected Loss is on track to close")).toBe(true);
+  });
+});
+
 // --- In the brief itself -----------------------------------------------
 
 const job = (jobName: string, status: string, marginPct: number, forecastMarginPct: number | null) => ({
@@ -157,7 +185,7 @@ const metrics = {
   jobs: [job("MX02 Past Estimate", "open", -0.4167, null), job("MX04 Expected Loss", "open", -0.2, -0.2)],
   topConcerns: [],
   totals: {},
-  briefDataHealth: { overallConfidence: "high", jobsMissingEstimates: [], jobsMissingCosts: [], untaggedJobCostCount: 0, timeEntriesWithoutPayRate: 0, possibleDuplicates: [] },
+  briefDataHealth: { overallConfidence: "high", jobsMissingEstimates: [], jobsMissingCosts: [], untaggedJobCostCount: 0, timeEntriesWithoutPayRate: 0, possibleDuplicates: [], idleOpenJobs: [] },
 };
 const skippedWeek = { noComparisonReason: "basis_changed", changes: [] } as any;
 const GOOD = "MX04 Expected Loss is forecast to finish at a negative 20% margin.\n\nMX02 Past Estimate has $34,000 spent against a $30,000 estimate.";

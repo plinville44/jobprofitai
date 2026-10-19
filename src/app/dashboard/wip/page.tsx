@@ -4,7 +4,7 @@ import { getAccount, getActiveConnection } from "@/lib/account";
 import { getEntitlements } from "@/lib/entitlements";
 import UpgradeRequired from "@/components/dashboard/UpgradeRequired";
 import { getConnectionProfitData } from "@/lib/profitability";
-import { buildWipSchedule, NOT_SCHEDULED_NEED_TEXT } from "@/lib/wipSchedule";
+import { buildWipSchedule, NOT_SCHEDULED_NEED_TEXT, wipReportDay } from "@/lib/wipSchedule";
 import { forecastIsActionable } from "@/lib/forecastRules";
 import { prisma } from "@/lib/prisma";
 import { NO_VALUE, formatCurrency, formatPct } from "@/lib/format";
@@ -45,8 +45,10 @@ export default async function WipPage() {
   }
 
   const now = new Date();
+  // Nothing dated after today in the company's time zone, as on the
+  // bank-ready report and the CSV, so the three keep agreeing.
   const [data, filled] = await Promise.all([
-    getConnectionProfitData(connection.id, now, { statusFilter: "open" }),
+    getConnectionProfitData(connection.id, now, { statusFilter: "open", asOf: wipReportDay(now, connection.emailTimezone) }),
     prisma.job.findMany({ where: { connectionId: connection.id, estimatedCostSource: "target_margin" }, select: { id: true } }),
   ]);
   const s = buildWipSchedule(data.lifetimeJobs, now, new Set(filled.map((j) => j.id)));

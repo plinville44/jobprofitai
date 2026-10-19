@@ -53,3 +53,29 @@ export const INFERENCE_GEO = "us" as const;
 export function inUs(params: Anthropic.MessageCreateParamsNonStreaming): Anthropic.MessageCreateParamsNonStreaming {
   return { ...params, inference_geo: INFERENCE_GEO } as Anthropic.MessageCreateParamsNonStreaming;
 }
+
+/**
+ * How an AI request failed, read from the error's shape rather than the
+ * SDK's classes:
+ *  - "timeout": no answer in the time the request was given.
+ *  - "connection": the request never got an answer (the network, a dropped
+ *    connection).
+ *  - "refused": Anthropic answered with a 4xx. A bad request (an
+ *    ANTHROPIC_MODEL too old for inference_geo), a key that doesn't work, a
+ *    model that doesn't exist: trying again won't help, and someone needs
+ *    to know.
+ *  - "other": overloaded, a server error, or a reply that couldn't be used.
+ */
+export function aiFailureKind(err: unknown): "timeout" | "connection" | "refused" | "other" {
+  if (err === null || typeof err !== "object") return "other";
+  const e = err as { name?: unknown; status?: unknown; message?: unknown; constructor?: { name?: unknown } };
+  const name = [e.name, e.constructor?.name].filter((n): n is string => typeof n === "string").join(" ");
+  const message = typeof e.message === "string" ? e.message : "";
+  const status = typeof e.status === "number" ? e.status : null;
+  if (/ConnectionTimeout|TimeoutError/.test(name) || status === 408 || (status == null && /timed? ?out/i.test(message))) return "timeout";
+  if (/APIConnectionError/.test(name) || (status == null && /^connection error|fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up/i.test(message))) {
+    return "connection";
+  }
+  if (status != null && status >= 400 && status < 500) return "refused";
+  return "other";
+}

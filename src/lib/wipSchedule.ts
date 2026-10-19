@@ -1,5 +1,9 @@
 import type { JobFinancials } from "./profitability";
 import { MIN_ENTERED_PERCENT_TO_PROJECT } from "./forecastRules";
+import { isValidTimeZone, localParts } from "./schedule";
+import { DEFAULT_TIME_ZONE, formatDateTime } from "./format";
+import { needsReconnect } from "./quickbooks";
+import { fullSyncPartway } from "./syncProblem";
 
 /**
  * The Work in Progress schedule in the layout banks and bonding companies
@@ -296,4 +300,66 @@ export function buildWipSchedule(
     notScheduled,
     idle,
   };
+}
+
+// ---------------------------------------------------------------------------
+// What the bank-ready report and the CSV say about the data behind them
+// ---------------------------------------------------------------------------
+
+const zoneOf = (timeZone: string | null | undefined) =>
+  timeZone && isValidTimeZone(timeZone) ? timeZone : DEFAULT_TIME_ZONE;
+
+/**
+ * The calendar day a WIP report is worked out as of: today in the company's
+ * time zone, as UTC midnight of that date (how QuickBooks dates are stored),
+ * for getConnectionProfitData's asOf. A bill entered ahead of its date or a
+ * post-dated check isn't on a schedule headed with today's date. Pure.
+ */
+export function wipReportDay(now: Date, timeZone: string | null | undefined): Date {
+  const p = localParts(now, zoneOf(timeZone));
+  return new Date(Date.UTC(p.year, p.month, p.day));
+}
+
+export interface WipReportBasis {
+  /** "QuickBooks data as of Oct 19, 2026, 2:05 AM EDT": the last sync that finished, in the company's time zone. */
+  dataAsOf: string;
+  /** Why the figures may be out of date or incomplete, in plain words for whoever reads the report, or null. */
+  warning: string | null;
+}
+
+/**
+ * The data line and warning on the bank-ready report and the CSV. The
+ * report used to say only "As of <today>", so a schedule printed from a
+ * company whose sync had been failing for a month read as current. Pure.
+ */
+export function wipReportBasis(
+  company: {
+    lastSyncedAt: Date | null;
+    lastSyncStatus: string | null;
+    lastSyncError: string | null;
+    fullSyncContinueAt?: Date | null;
+    emailTimezone?: string | null;
+  },
+  opts: { paused: boolean }
+): WipReportBasis {
+  // lastSyncedAt only moves when a sync finishes, and is when it started:
+  // everything in QuickBooks up to then has been read.
+  const dataAsOf = company.lastSyncedAt
+    ? `QuickBooks data as of ${formatDateTime(company.lastSyncedAt, zoneOf(company.emailTimezone))}`
+    : "QuickBooks data: not read yet";
+  const sinceThen = "so anything entered in QuickBooks after that time isn't included.";
+  let warning: string | null = null;
+  if (company.lastSyncedAt == null) {
+    warning = "Not up to date: nothing has been read from QuickBooks for this company yet.";
+  } else if (opts.paused) {
+    warning = `Not up to date: updates from QuickBooks are paused for this company, ${sinceThen}`;
+  } else if (needsReconnect(company.lastSyncError)) {
+    warning = `Not up to date: QuickBooks needs to be reconnected for this company, ${sinceThen}`;
+  } else if (company.lastSyncStatus === "error") {
+    warning = `May not be up to date: the most recent update from QuickBooks didn't finish, ${sinceThen}`;
+  } else if (fullSyncPartway(company)) {
+    warning =
+      "May be incomplete: a full read of this company's QuickBooks data was partway through when this was prepared, so some figures may be missing entries until it finishes.";
+  }
+  return { dataAsOf, warning };
 }

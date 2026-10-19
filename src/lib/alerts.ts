@@ -7,6 +7,7 @@ import {
 } from "@/lib/profitability";
 import { isOverPlanLimit } from "@/lib/planLimits";
 import { basisCutoff, rebuildPending } from "@/lib/weekOverWeek";
+import { fullSyncPartway } from "@/lib/syncProblem";
 
 /**
  * Mid-week profit alerts.
@@ -107,7 +108,7 @@ export function alertsNeedBaseline(c: {
 export async function evaluateAlerts(
   connectionId: string,
   now: Date = new Date()
-): Promise<{ pending: NewAlert[]; baseline: boolean; paused?: boolean }> {
+): Promise<{ pending: NewAlert[]; baseline: boolean; paused?: boolean; partway?: boolean }> {
   const connection = await prisma.quickBooksConnection.findUniqueOrThrow({
     where: { id: connectionId },
     select: {
@@ -117,8 +118,16 @@ export async function evaluateAlerts(
       basisChangedAt: true,
       rebuildRequestedAt: true,
       lastFullSyncAt: true,
+      fullSyncContinueAt: true,
+      lastSyncError: true,
     },
   });
+
+  // A full read of QuickBooks is partway (src/lib/syncProblem.ts): some
+  // figures are read again and some aren't yet, so nothing is judged, sent
+  // or settled until the run that finishes it. Nothing is lost: what's
+  // still true then is alerted then.
+  if (fullSyncPartway(connection)) return { pending: [], baseline: false, partway: true };
 
   // A company the plan doesn't cover (see planLimits.ts) gets no alert
   // emails. Its baseline is cleared, so the first run after it's covered

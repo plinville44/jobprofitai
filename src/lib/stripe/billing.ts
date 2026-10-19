@@ -247,6 +247,42 @@ export async function createBillingPortalSession(
   return session.url;
 }
 
+/** Subscription statuses on file that mean the Stripe subscription may still charge. */
+const CHARGING_STATUSES = ["active", "trialing", "past_due"];
+
+export const CANCEL_FAILED_MESSAGE =
+  "We couldn't cancel your subscription with our payment processor, so your account hasn't been deleted and nothing has changed. Please try again in a few minutes, or email support@jobprofitai.com and we'll handle it.";
+
+/**
+ * Whether a failed subscription cancel must stop an account deletion
+ * (api/account/delete): only while the subscription on file may still
+ * charge, and not when Stripe says it's already canceled or doesn't exist,
+ * since then nothing is left to bill. Pure, for tests.
+ */
+export function cancelFailureBlocksDeletion(status: string | null | undefined, err: unknown): boolean {
+  if (!CHARGING_STATUSES.includes(status ?? "")) return false;
+  const e = err as { code?: string; statusCode?: number; message?: string } | null;
+  if (e?.code === "resource_missing" || e?.statusCode === 404) return false;
+  // Stripe's wording when the subscription was canceled already.
+  if (/already (been )?cancell?ed|canceled subscription/i.test(e?.message ?? "")) return false;
+  return true;
+}
+
+/**
+ * Asks Stripe whether a subscription has ended (or doesn't exist), for when
+ * cancelling it failed for a reason the error doesn't make plain. False when
+ * Stripe can't be reached, so the caller stays on the safe side. Stripe calls
+ * follow API 2024-06-20; not verified against live Stripe.
+ */
+export async function stripeSubscriptionEnded(subscriptionId: string): Promise<boolean> {
+  try {
+    const subscription = await getStripe().subscriptions.retrieve(subscriptionId);
+    return subscription.status === "canceled" || subscription.status === "incomplete_expired";
+  } catch (err) {
+    return (err as { code?: string } | null)?.code === "resource_missing";
+  }
+}
+
 /**
  * Applies a credit to a customer's Stripe balance. A NEGATIVE amount is a
  * credit in Stripe's model - it reduces what the customer owes on future

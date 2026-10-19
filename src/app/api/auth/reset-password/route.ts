@@ -3,6 +3,7 @@ import { z } from "zod";
 import { completePasswordReset, inspectPasswordReset } from "@/lib/passwordReset";
 import { sendPasswordChanged } from "@/lib/email/lifecycle";
 import { clearSession } from "@/lib/auth";
+import { clearFailedLogins } from "@/lib/loginThrottle";
 
 export const runtime = "nodejs";
 
@@ -72,6 +73,10 @@ export async function POST(req: NextRequest) {
       // tells anyone testing tokens which guesses were closest.
       return NextResponse.json({ error: INVALID_MESSAGE }, { status: 400 });
     }
+
+    // The reset proved the mailbox is theirs, so wrong passwords typed by
+    // anyone before it no longer lock the address (loginThrottle.ts).
+    await clearFailedLogins(result.email);
 
     // Best effort, and never allowed to fail the reset: the password has
     // already changed by this point, so throwing here would tell the

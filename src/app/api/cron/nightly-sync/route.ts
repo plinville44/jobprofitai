@@ -297,7 +297,9 @@ async function syncAndAlert(
       return { connectionId: connection.id, status: "synced" };
     }
     const owner = await prisma.user.findUnique({ where: { id: connection.userId }, select: { email: true, emailVerifiedAt: true } });
-    const { pending: newAlerts, baseline } = await evaluateAlerts(connection.id);
+    const { pending: newAlerts, baseline, partway } = await evaluateAlerts(connection.id);
+    // Read fresh after the sync: a full sync still partway holds the alerts.
+    if (partway) return { connectionId: connection.id, status: "synced", detail: "alerts wait for the full sync to finish" };
     if (baseline) return { connectionId: connection.id, status: "synced", detail: "alerts baselined" };
     // Unsent alerts stay pending and go out once the owner has verified.
     if (newAlerts.length === 0 || !owner?.emailVerifiedAt) return { connectionId: connection.id, status: "synced" };

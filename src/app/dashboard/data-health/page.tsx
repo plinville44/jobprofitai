@@ -8,7 +8,7 @@ import { formatCents, formatCurrency, formatDate, formatDateTime, NO_VALUE } fro
 import { DataQualityBadge, StatusDot } from "@/components/dashboard/Badges";
 import CloseIdleJobsButton from "@/components/dashboard/CloseIdleJobsButton";
 import { qboTxnUrl, untaggedKindLabel, UNTAGGED_LIST_LIMIT, type UntaggedCostView } from "@/lib/untaggedCosts";
-import { connectionRealmId, loadUntaggedCosts } from "@/lib/untaggedCostStore";
+import { connectionRealmId, loadUnmatchedRevenue, loadUntaggedCosts } from "@/lib/untaggedCostStore";
 
 /**
  * What each data-completeness level actually means for the customer's
@@ -58,9 +58,10 @@ export default async function DataHealthPage() {
   // property of the whole connection, not something that should change
   // depending on which calendar window happens to be selected.
   const now = new Date();
-  const [profitData, untagged] = await Promise.all([
+  const [profitData, untagged, revenueOffJobs] = await Promise.all([
     getConnectionProfitData(connection.id, now),
     loadUntaggedCosts(connection.id, now, UNTAGGED_LIST_LIMIT),
+    loadUnmatchedRevenue(connection.id),
   ]);
   const h = profitData.dataHealth;
   const byClass = connection.jobSource === "classes";
@@ -71,7 +72,8 @@ export default async function DataHealthPage() {
       <p className="mt-2 text-sm text-gray-500">
         A plain-English look at where your QuickBooks data is complete enough to trust, and where it isn&apos;t, so nothing
         about your numbers is a surprise. It covers every open job and every job with activity in the last 12 months;
-        older finished jobs are left out.
+        older finished jobs are left out. Open jobs with no activity in 90 days are listed once at the top instead of in
+        the checks below.
       </p>
 
       {h.idleOpenJobs.length > 0 ? (
@@ -81,8 +83,8 @@ export default async function DataHealthPage() {
           </h2>
           <p className="mt-1 text-sm text-gray-700">
             These are almost always finished jobs that were never marked complete. QuickBooks doesn&apos;t tell us when a
-            project wraps up, so until they are marked here they count as active, show up as stale, and are left out of the
-            comparisons between finished jobs. You can reopen any of them later from its job page.
+            project wraps up, so until they are marked here they count as active and are left out of the checks below, Needs
+            Your Attention, and the comparisons between finished jobs. You can reopen any of them later from its job page.
           </p>
           <ul className="mt-3 max-h-40 space-y-1 overflow-y-auto text-sm">
             {h.idleOpenJobs.slice(0, 50).map((j) => (
@@ -190,8 +192,8 @@ export default async function DataHealthPage() {
 
       <p className="mt-8 text-xs text-gray-500">
         {h.countsAsOf
-          ? `Expenses and time entries below are counted during a full sync of your whole company, last run ${formatDateTime(h.countsAsOf, connection.emailTimezone)}. Possible duplicates, and the lists above, are worked out from your synced data every time this page loads.`
-          : "Expenses and time entries below are counted during a full sync of your whole company, which hasn't run yet for this connection. Possible duplicates, and the lists above, are worked out from your synced data every time this page loads."}
+          ? `Expenses, sales and time entries below are counted during a full sync of your whole company, last run ${formatDateTime(h.countsAsOf, connection.emailTimezone)}. Possible duplicates, and the lists above, are worked out from your synced data every time this page loads.`
+          : "Expenses, sales and time entries below are counted during a full sync of your whole company, which hasn't run yet for this connection. Possible duplicates, and the lists above, are worked out from your synced data every time this page loads."}
       </p>
 
       <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -209,12 +211,30 @@ export default async function DataHealthPage() {
           title={byClass ? "Expenses tagged to an unrecognized class" : "Expenses tagged to an unrecognized customer"}
           help={
             byClass
-              ? "Last 12 months. Tagged to a QuickBooks class that isn't one of your tracked jobs, and not unambiguously one of its sub-classes either, so it isn't counted toward any job's cost. Usually the class has two or more sub-classes and the cost was tagged to the parent class instead of the job's."
-              : "Last 12 months. Tagged to a real QuickBooks customer, but not one of your tracked jobs, and not unambiguously one of their projects either, so it isn't counted toward any job's cost. Usually the customer has two or more projects and the cost was tagged to the customer instead of the project."
+              ? "Last 12 months. Tagged to a QuickBooks class that isn't one of your tracked jobs, and not unambiguously one of its sub-classes either, so it isn't counted toward any job's cost. Usually the class has two or more sub-classes and the cost was tagged to the parent class instead of the job's. A cost on a parent class dated more than 60 days before its only sub-class was created is counted here too, since it's likely from earlier work."
+              : "Last 12 months. Tagged to a real QuickBooks customer, but not one of your tracked jobs, and not unambiguously one of their projects either, so it isn't counted toward any job's cost. Usually the customer has two or more projects and the cost was tagged to the customer instead of the project. A cost on a customer dated more than 60 days before their only project was created is counted here too, since it's likely from an earlier job."
           }
           count={h.unresolvedExpenseCount}
           amount={h.unresolvedExpenseAmount}
         />
+        <CountAmountSection
+          title={byClass ? "Sales tagged to an unrecognized class" : "Sales tagged to an unrecognized customer"}
+          help={
+            byClass
+              ? "Last 12 months. Invoices, sales receipts, deposits and other income tagged to a QuickBooks class that isn't one of your tracked jobs, so it isn't counted toward any job's revenue. Usually the class has two or more sub-classes and the sale was tagged to the parent class instead of the job's, or it's dated more than 60 days before its only sub-class was created. Pick the job's class on the sale in QuickBooks."
+              : "Last 12 months. Invoices, sales receipts, deposits and other income tagged to a real QuickBooks customer, but not one of your tracked jobs, so it isn't counted toward any job's revenue. Usually the customer has two or more projects and the sale was tagged to the customer instead of the project, or it's dated more than 60 days before their only project was created. Pick the project on the sale in QuickBooks."
+          }
+          count={revenueOffJobs.unresolvedCount}
+          amount={revenueOffJobs.unresolvedAmount}
+        />
+        {byClass ? (
+          <CountAmountSection
+            title="Sales with no class (last 12 months)"
+            help="Invoices, sales receipts and other income with no class on the line or the sale, so they aren't counted toward any job's revenue. Pick the job's class on each line in QuickBooks."
+            count={revenueOffJobs.unclassedCount}
+            amount={revenueOffJobs.unclassedAmount}
+          />
+        ) : null}
       </div>
 
       <UntaggedCostList
@@ -232,8 +252,8 @@ export default async function DataHealthPage() {
           title={byClass ? "Costs matched via a parent class" : "Costs matched via a parent customer"}
           help={
             byClass
-              ? "Not a problem: these were tagged to a job's parent class instead of the job's own class, and matched automatically since that parent has only one tracked job. Worth a quick glance for accuracy, not a fix."
-              : "Not a problem: these were tagged to a job's top-level customer instead of the job itself, and matched automatically since that customer has only one tracked job. Worth a quick glance for accuracy, not a fix."
+              ? "Not a problem: these were tagged to a job's parent class instead of the job's own class, and matched automatically since that parent has only one tracked job and the cost isn't from well before that job was created. Worth a quick glance for accuracy, not a fix."
+              : "Not a problem: these were tagged to a job's top-level customer instead of the job itself, and matched automatically since that customer has only one tracked job and the cost isn't from well before that job was created. Worth a quick glance for accuracy, not a fix."
           }
           count={h.costsMatchedViaParentCount}
           amount={h.costsMatchedViaParentAmount}
@@ -242,7 +262,7 @@ export default async function DataHealthPage() {
         <DuplicatesSection items={h.possibleDuplicates} />
         <JobListSection
           title="Labor that may be counted twice"
-          help="These jobs have labor from timesheets and labor from journal entries (often a payroll service posting wages to jobs). That is usually the same wages twice. If your payroll posts to jobs, turn off labor from time entries in Settings; otherwise check the journal entries."
+          help="These jobs have labor from timesheets and labor from journal entries, checks or bills to a labor account (often a payroll service posting wages to jobs, or wages paid by check). That is usually the same wages twice. If your payroll posts to jobs, turn off labor from time entries in Settings; otherwise check those entries."
           items={h.jobsWithDoubleLabor}
         />
       </div>

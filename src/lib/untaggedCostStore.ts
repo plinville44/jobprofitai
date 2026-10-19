@@ -1,7 +1,13 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { decryptToken } from "@/lib/crypto";
-import { UNTAGGED_WINDOW_DAYS, type UntaggedCostRow, type UntaggedCostView } from "@/lib/untaggedCosts";
+import {
+  UNTAGGED_WINDOW_DAYS,
+  unmatchedRevenueFrom,
+  type UnmatchedRevenue,
+  type UntaggedCostRow,
+  type UntaggedCostView,
+} from "@/lib/untaggedCosts";
 
 /**
  * Database side of the list of job costs not on any job (see
@@ -99,6 +105,20 @@ export async function loadUntaggedCosts(
     prisma.untaggedCost.count({ where }),
   ]);
   return { rows: rows.map((r) => ({ ...r, amount: Number(r.amount) })), total };
+}
+
+/**
+ * Revenue on no job, from the last finished full sync: the same sync record
+ * Data Health's other counts come from (an incremental sync's tallies are
+ * only what changed, not the company's state).
+ */
+export async function loadUnmatchedRevenue(connectionId: string): Promise<UnmatchedRevenue> {
+  const latestFullSync = await prisma.syncRun.findFirst({
+    where: { connectionId, status: "success", mode: "full" },
+    orderBy: { startedAt: "desc" },
+    select: { entitiesUpdated: true },
+  });
+  return unmatchedRevenueFrom(latestFullSync?.entitiesUpdated ?? null);
 }
 
 /**

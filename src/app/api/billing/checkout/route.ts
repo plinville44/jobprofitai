@@ -3,7 +3,10 @@ import { getAccount, refuseClient } from "@/lib/account";
 import { PLANS, isPlanId } from "@/lib/plans";
 import { prisma } from "@/lib/prisma";
 import { CheckoutBlockedError, createCheckoutSession } from "@/lib/stripe/billing";
+import { UNPAID_SUBSCRIPTION_MESSAGE } from "@/lib/stripe/duplicateSubscription";
 import { getEntitlements } from "@/lib/entitlements";
+import { teamLoginsMisfit } from "@/lib/planLimits";
+import { teamLoginsInUse } from "@/lib/team";
 import { reportServerEvent } from "@/lib/serverEvents";
 
 /**
@@ -52,6 +55,12 @@ export async function POST(req: NextRequest) {
         { status: 409 }
       );
     }
+    // An unpaid subscription (Stripe stopped retrying) is still there and
+    // can still be paid, so a second one could bill twice. paymentIssue on
+    // an inactive account means exactly that status (entitlements.ts).
+    if (entitlements.paymentIssue) {
+      return NextResponse.json({ error: UNPAID_SUBSCRIPTION_MESSAGE }, { status: 409 });
+    }
 
     // A plan must cover the companies already connected. Without this, an
     // account that connected dozens of companies on Firm could cancel and
@@ -66,6 +75,13 @@ export async function POST(req: NextRequest) {
         },
         { status: 409 }
       );
+    }
+    // The same for team logins: a trial can have ten, the $149 plan three.
+    // Logins past the limit would lose access (accountFor), so the plan has
+    // to cover them before checkout starts.
+    const teamMisfit = teamLoginsMisfit(PLANS[plan].name, PLANS[plan].limits.maxTeamMembers, await teamLoginsInUse(account.ownerId));
+    if (teamMisfit) {
+      return NextResponse.json({ error: teamMisfit }, { status: 409 });
     }
 
     const { url } = await createCheckoutSession(account.ownerId, plan);

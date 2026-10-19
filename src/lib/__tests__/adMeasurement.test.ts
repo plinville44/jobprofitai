@@ -186,8 +186,13 @@ describe("where the steps are reported", () => {
     const intuit = flat("app/api/auth/intuit/create/route.ts");
     expect(intuit).toContain("...signupAdSource(req.headers),");
     expect(intuit).toContain('await reportServerEvent(userId, "sign_up", { method: "intuit" }');
-    // An App Store arrival never passed our pages, so nothing is kept or reported for it.
-    expect(flat("lib/intuitSignIn.ts")).toContain("user = await provisionIntuitUser({ sub: info.sub, email: info.email, name: displayName(info) });");
+    // An App Store arrival never passed our pages, so nothing is kept or
+    // reported for it; the button on /signup is measured like the email form.
+    const intuitFlow = flat("lib/intuitSignIn.ts");
+    expect(intuitFlow).toContain("const fromSignupPage = connecting && payload.signup === true;");
+    expect(intuitFlow).toContain("fromSignupPage ? { ...signupAdOptOut({ headers: reqHeaders }), ...signupAdSource(reqHeaders) } : {}");
+    expect(intuitFlow).toContain('await reportServerEvent(user.id, "sign_up", { method: "intuit" }');
+    expect(flat("app/signup/SignupForm.tsx")).toContain('<SignInWithIntuitButton intent="signup" />');
   });
 
   it("reports the first QuickBooks connection, checkout and the subscription", () => {
@@ -201,6 +206,8 @@ describe("where the steps are reported", () => {
     expect(loader).toContain("if (allowedHere && trackingAllowed({ gpc, cookieHeader: document.cookie })) rememberAdSource();");
     expect(loader).toContain("if (europeanTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone)) return;");
     expect(europeanTimeZone("Europe/Berlin")).toBe(true);
+    expect(europeanTimeZone("Asia/Nicosia")).toBe(true);
+    expect(europeanTimeZone("Atlantic/Canary")).toBe(true);
     expect(europeanTimeZone("America/Indiana/Indianapolis")).toBe(false);
   });
 
