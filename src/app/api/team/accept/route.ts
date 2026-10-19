@@ -4,6 +4,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { createSession, getSession, hashPassword } from "@/lib/auth";
 import { acceptInvite, findUsableInvite } from "@/lib/team";
+import { findLoginByEmail } from "@/lib/loginThrottle";
 
 export const runtime = "nodejs";
 
@@ -46,10 +47,8 @@ export async function POST(req: NextRequest) {
       { status: 410 }
     );
   }
-  const existing = await prisma.user.findFirst({
-    where: { email: { equals: invite.email, mode: "insensitive" } },
-    select: { id: true },
-  });
+  // Exact, ignoring case, never a wildcard match (findLoginByEmail).
+  const existing = await findLoginByEmail(invite.email);
   if (existing) {
     return NextResponse.json(
       { error: `There's already a login for ${invite.email}. Sign in with it, then open the invitation link again.` },

@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import type { QuickBooksConnection } from "@prisma/client";
 import { prisma } from "./prisma";
 import { getSession } from "./auth";
-import { getEntitlements } from "./entitlements";
+import { getEntitlements, pausedTeamLoginFor, teamLoginLimitState } from "./entitlements";
 import { REMOVED_ROLE } from "./teamRemoval";
 
 /**
@@ -31,6 +31,13 @@ export interface AccountContext {
   role: "owner" | "member" | "client";
   /** Client logins only: the one company they may see. Null for owners and members. */
   connectionId: string | null;
+  /**
+   * Set (true) for a team login paused because the account it joined is over
+   * its plan's login limit. It is shown an empty account of its own, but
+   * can't choose a plan, connect a company or invite anyone there
+   * (PAUSED_LOGIN_MESSAGE). Absent for everyone else.
+   */
+  paused?: true;
 }
 
 export async function getAccount(): Promise<AccountContext | null> {
@@ -58,9 +65,30 @@ export async function accountFor(userId: string): Promise<AccountContext> {
         connectionId: allowed ? membership.connectionId ?? "" : "",
       };
     }
-    return { userId, ownerId: membership.ownerUserId, role: "member", connectionId: null };
+    // A plan covers so many team logins. Past that (a trial that invited ten
+    // people, then chose a plan with three) the logins who joined last are
+    // paused: they see an empty account of their own, like a removed login,
+    // marked `paused` so nothing an owner does works there, and the
+    // dashboard says why (pausedLoginNoticeFor).
+    if (!(await teamLoginLimitState(membership.ownerUserId)).paused.has(userId)) {
+      return { userId, ownerId: membership.ownerUserId, role: "member", connectionId: null };
+    }
+    return { userId, ownerId: userId, role: "owner", connectionId: null, paused: true };
   }
   return { userId, ownerId: userId, role: "owner", connectionId: null };
+}
+
+/**
+ * What the dashboard says to a team login paused by its account's limit:
+ * whose account it is and how many logins that plan covers. Null otherwise.
+ */
+export async function pausedLoginNoticeFor(
+  userId: string
+): Promise<{ ownerName: string | null; ownerEmail: string | null; maxTeamMembers: number } | null> {
+  const paused = await pausedTeamLoginFor(userId);
+  if (!paused) return null;
+  const owner = await prisma.user.findUnique({ where: { id: paused.ownerUserId }, select: { name: true, email: true } });
+  return { ownerName: owner?.name ?? null, ownerEmail: owner?.email ?? null, maxTeamMembers: paused.maxTeamMembers };
 }
 
 /**

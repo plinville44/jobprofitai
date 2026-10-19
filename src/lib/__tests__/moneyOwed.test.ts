@@ -148,3 +148,30 @@ describe("money owed: unpaid invoices (U5, C15g)", () => {
     expect(owed.unpaid.jobs.map((j) => j.invoices)).toEqual([1, 1]);
   });
 });
+
+describe("money owed as of today (audit 2026-10-19)", () => {
+  const row = (p: { jobId: string; txn: Date; balance: number; id: string }) => ({
+    jobId: p.jobId,
+    jobName: p.jobId,
+    customerName: null,
+    qboInvoiceId: p.id,
+    txnDate: p.txn,
+    dueDate: null,
+    openBalance: p.balance,
+  });
+
+  it("leaves out an unpaid invoice dated after the as-of day, and keeps the whole of that day", () => {
+    // QuickBooks dates are UTC midnight of the date, and so is the as-of day.
+    const asOf = new Date("2026-09-28T00:00:00Z");
+    const openInvoices = [
+      row({ jobId: "A", txn: new Date("2026-09-20T00:00:00Z"), balance: 5_000, id: "past" }),
+      row({ jobId: "A", txn: new Date("2026-09-28T00:00:00Z"), balance: 1_000, id: "today" }),
+      row({ jobId: "A", txn: new Date("2026-09-29T00:00:00Z"), balance: 9_000, id: "tomorrow" }),
+    ];
+    const owed = computeMoneyOwed({ now: NOW, jobs: [], openInvoices, asOf });
+    expect(owed.unpaid.jobs[0].invoiceList.map((i) => i.qboInvoiceId)).toEqual(["past", "today"]);
+    expect([owed.unpaid.total, owed.unpaid.invoices]).toEqual([6_000, 2]);
+    // Without an as-of day, nothing is left out, as before.
+    expect(computeMoneyOwed({ now: NOW, jobs: [], openInvoices }).unpaid.total).toBe(15_000);
+  });
+});

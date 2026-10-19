@@ -15,7 +15,7 @@ export default function DataHealthSummary({ dataHealth, byClass = false }: { dat
   // Every check in the "Data Issues" tile is listed here too. When the card
   // listed fewer, it could say "No data quality issues found" under a tile
   // reading "Data Issues: 9". If a check is added to the tile, add it here.
-  // The first seven are exactly what computeDashboardTotals adds into the
+  // The first nine are what computeDashboardTotals adds into the
   // "Data Issues" tile. Missing estimates are listed after them as setup
   // rather than a data problem, which is why the tile doesn't count them.
   const rows: { label: string; count: number | null }[] = [
@@ -29,6 +29,8 @@ export default function DataHealthSummary({ dataHealth, byClass = false }: { dat
     { label: unrecognized, count: dataHealth.unresolvedExpenseCount },
     { label: "employee time entries with no cost rate", count: dataHealth.timeEntriesWithoutPayRate },
     { label: "possible duplicate cost entries", count: dataHealth.possibleDuplicates.length },
+    { label: "open jobs with no activity in 90 days (mark them finished)", count: dataHealth.idleOpenJobs.length },
+    { label: "jobs to check for labor counted twice (timesheets plus payroll or wages)", count: dataHealth.jobsWithDoubleLabor.length },
     { label: "open jobs missing a cost estimate (setup)", count: dataHealth.jobsMissingEstimates.length },
   ];
   const flagged = rows.filter((r) => (r.count ?? 0) > 0);

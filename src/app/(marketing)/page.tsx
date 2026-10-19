@@ -24,9 +24,12 @@ import FitCheck from "@/components/marketing/FitCheck";
 import { PLANS } from "@/lib/plans";
 import { OG_IMAGE } from "@/lib/siteMeta";
 import { DISCONNECTED_RETENTION_DAYS, LAPSED_DISCONNECT_DAYS } from "@/lib/dataRetention";
+import { IDLE_JOB_DAYS } from "@/lib/profitability";
 
 export const metadata: Metadata = {
-  title: "JobProfitAI: Profit Intelligence for QuickBooks",
+  // Absolute: the root layout's "%s | JobProfitAI" template would otherwise
+  // name the brand twice.
+  title: { absolute: "JobProfitAI: Profit Intelligence for QuickBooks" },
   description:
     "QuickBooks shows how your jobs did. JobProfitAI shows contractors what to change to make more money, and what each change is worth: underpriced job types, thin labor pricing, and estimates to fix before you send them.",
   alternates: { canonical: "/" },
@@ -67,8 +70,9 @@ const FAQ_ITEMS = [
         and by how much, whether labor, materials or subs is the thin part of your price, and
         whether a pending estimate is priced high enough before it goes out. Each one comes with a
         dollar figure, the jobs behind it and what to do, and when you make a change, JobProfitAI
-        measures whether it worked. It also builds the WIP (over and under billing) report in the
-        layout banks and bonding companies read, shows the money you&rsquo;re owed (work not billed
+        measures whether it worked. Alongside that, on Plus as well as Advanced, it builds the WIP
+        (over and under billing) report in the layout banks and bonding companies read, shows the
+        money you&rsquo;re owed (work not billed
         yet, possible change orders, unpaid invoices), emails you after the nightly sync when an
         open job&rsquo;s costs go more than 10% over its estimate, and shows what&rsquo;s missing
         from your books before you trust a number.
@@ -250,7 +254,7 @@ export default function HomePage() {
         <SectionHeading
           eyebrow="Works with QuickBooks"
           title="QuickBooks is your system of record. JobProfitAI is the profit layer on top of it."
-          intro="Nothing to re-enter and nothing to switch. JobProfitAI only reads QuickBooks, and you keep working there exactly as you do now."
+          intro="Works with QuickBooks Online Plus or Advanced, with no upgrade and nothing new to switch to. JobProfitAI only reads QuickBooks, and you keep working there exactly as you do now."
           align="center"
         />
         <QuickBooksComparison />
@@ -301,7 +305,7 @@ export default function HomePage() {
         <SectionHeading
           eyebrow="What you get"
           title="Not another report. A list of what to change, and what it's worth."
-          intro="Revenue, costs and estimates come straight from your QuickBooks company. The one thing QuickBooks can't tell us, what kind of job each one is, we suggest from the job names and estimates for you to confirm."
+          intro="Revenue, costs and contract values come straight from your QuickBooks company. What QuickBooks can't tell us you add once: the type of each job (we suggest it for you to confirm), which jobs are finished, and a cost budget for open jobs."
           align="center"
         />
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
@@ -344,7 +348,8 @@ export default function HomePage() {
         </div>
         <p className="mx-auto mt-10 max-w-3xl text-center text-[15px] leading-relaxed text-jp-slate">
           Built on the basics, done properly: profit by job with labor at the cost rates in your
-          QuickBooks time entries, plus any labor burden they don&rsquo;t already include; email
+          QuickBooks time entries, plus the labor burden you set in Settings when those rates
+          don&rsquo;t already include it; email
           alerts after the nightly sync when an open job goes more than 10% over its estimate; and
           a Data Health page that shows what&rsquo;s missing from your books before you trust a
           number. Jobs come from
@@ -365,10 +370,13 @@ export default function HomePage() {
             title="Connect QuickBooks"
             body="Through Intuit's own login. JobProfitAI only reads your books; you never give it your QuickBooks password."
           />
+          {/* Every pricing opportunity is worked out from finished jobs, and
+              QuickBooks doesn't tell us when a Project is completed, so
+              marking them is part of setup, not an afterthought. */}
           <StepCard
             number={2}
-            title="Set your target and job types"
-            body="Tell us the margin you aim for. We suggest a job type for each job from its name and estimate, and you confirm them in one go."
+            title="Fill in what QuickBooks can't"
+            body={`Tell us the margin you aim for, mark the jobs that are finished (one click for jobs idle ${IDLE_JOB_DAYS} days), and confirm the job type we suggest for each.`}
           />
           <StepCard
             number={3}
@@ -400,7 +408,7 @@ export default function HomePage() {
                   <br className="hidden sm:block" /> Which part of which price, and by how much.
                 </>
               }
-              intro="A report tells you kitchens came in at 22%. JobProfitAI tells you it's the labor: customers paid for it and it cost nearly as much again. Then it tells you how much to add to the labor on your next kitchen estimate, and what that's worth over a year."
+              intro="A report tells you kitchens came in at 21%. JobProfitAI tells you it's the labor: it cost nearly everything customers paid for it. Then it tells you how much to add to the labor on your next kitchen estimate, and what that's worth over a year."
             />
             <ul className="space-y-4">
               {[

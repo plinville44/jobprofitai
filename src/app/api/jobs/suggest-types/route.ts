@@ -3,6 +3,9 @@ import { connectionForAccount, getAccount, refuseClient } from "@/lib/account";
 import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
 import { refuseCrossSite } from "@/lib/sameOrigin";
 import { SuggestionCooldownError, suggestJobTypesWithAI } from "@/lib/jobTypeSuggestions";
+import { overLimitConnectionIds } from "@/lib/planLimits";
+import { aiFailureKind } from "@/lib/ai";
+import { reportError } from "@/lib/monitoring";
 
 export const maxDuration = 120;
 
@@ -26,6 +29,10 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const connection = await connectionForAccount(account, body?.connectionId);
     if (!connection) return NextResponse.json({ error: "Company not found" }, { status: 404 });
+    // A paused company (past the plan's company limit) gets no AI work, as with the brief and analysis.
+    if ((await overLimitConnectionIds(account.ownerId)).has(connection.id)) {
+      return NextResponse.json({ error: "This company is paused because your plan doesn't cover this many companies. Billing shows what to do.", code: "company_paused" }, { status: 403 });
+    }
     if (!process.env.ANTHROPIC_API_KEY) return NextResponse.json({ error: "AI suggestions aren't switched on." }, { status: 503 });
 
     const result = await suggestJobTypesWithAI(connection.id);
@@ -40,6 +47,10 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     if (err instanceof SuggestionCooldownError) return NextResponse.json({ error: err.message }, { status: 429 });
     console.error("jobs/suggest-types failed:", err instanceof Error ? err.message : "Unknown error");
+    // Reported so a refused AI request (an old ANTHROPIC_MODEL, a revoked key) is noticed. A timeout isn't a fault.
+    if (aiFailureKind(err) !== "timeout") {
+      await reportError(err, { route: "/api/jobs/suggest-types", method: "POST", feature: "job-type-suggestions" });
+    }
     return NextResponse.json({ error: "The suggestions couldn't be made just now. Please try again." }, { status: 500 });
   }
 }

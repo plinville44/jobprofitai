@@ -3,70 +3,26 @@ import { getSampleCompany, SAMPLE_NOW, SAMPLE_TARGET_PCT } from "@/lib/sampleCom
 import { buildWipSchedule, NOT_SCHEDULED_NEED_TEXT } from "@/lib/wipSchedule";
 import { coreCategoryName, GAIN_KINDS, type FeedItem } from "@/lib/opportunities";
 import { computeBriefHeadline, snapshotFromFeed } from "@/lib/briefHeadline";
+import { jobChangeSentence } from "@/lib/weekOverWeek";
 
 /**
  * Product proof for the marketing site.
  *
  * This is NOT a screenshot and NOT a mockup of something that doesn't exist.
  * It renders the same structures the real app renders - the KPI row, the
- * "Needs Your Attention" table, the Profit Opportunity Feed, the Estimate
- * Check and tracked changes - using the same layout, columns and wording.
- * The feed, estimate and tracking previews are computed by the real engine
- * from an invented company (src/lib/sampleCompany.ts).
+ * "Needs Your Attention" table, the Jobs list, the Profit Opportunity Feed,
+ * the Estimate Check, tracked changes, the WIP schedule and the Weekly
+ * Profit Brief - using the same layout, columns and wording. Every figure,
+ * job name and finding is computed by the real engine from an invented
+ * company (src/lib/sampleCompany.ts); nothing here is typed by hand except
+ * the brief's written summary, which in the product the AI writes, and
+ * whose figures here also come from the engine.
  *
- * The numbers are illustrative, and every instance is explicitly labelled
- * "Example" in the UI. That labelling isn't decoration: presenting invented
- * figures as though they were a real customer's results would be a
- * fabricated case study, which is exactly the kind of thing this site
- * deliberately doesn't do.
+ * Every instance is explicitly labelled "Example data" in the UI. That
+ * labelling isn't decoration: presenting invented figures as though they
+ * were a real customer's results would be a fabricated case study, which is
+ * exactly the kind of thing this site deliberately doesn't do.
  */
-
-// Labels and issue wording are copied from the real dashboard and from
-// computeNeedsAttentionForJob, and the example jobs agree with the Weekly
-// Profit Brief preview below (Harborview is 14% over a $72,600 estimate in
-// both). The two previews used to describe the same example company with
-// different numbers.
-const EXAMPLE_KPIS = [
-  { label: "Active Jobs With Activity", value: "18" },
-  { label: "Revenue", value: formatCurrency(1_284_500) },
-  { label: "Tracked Job Costs", value: formatCurrency(982_140) },
-  { label: "Job Gross Profit", value: formatCurrency(302_360) },
-  { label: "Average Job Margin", value: "23.5%" },
-  { label: "Your Target Margin", value: "28%" },
-  { label: "Jobs Below Target", value: "5", tone: "warning" as const },
-  { label: "Profit At Risk", value: formatCurrency(58_420), tone: "critical" as const },
-];
-
-const EXAMPLE_ATTENTION = [
-  {
-    job: "Harborview Roof Replacement",
-    issue: "Actual costs are 14% over the estimate",
-    impact: formatCurrency(10_200),
-    severity: "high" as const,
-    confidence: "Strong evidence",
-  },
-  {
-    job: "Cedar Ln. Deck Rebuild",
-    issue: "Margin has declined over the last several weekly briefs",
-    impact: formatCurrency(14_900),
-    severity: "high" as const,
-    confidence: "Some evidence",
-  },
-  {
-    job: "Riverside HVAC Retrofit",
-    issue: "Labor cost is unusually high vs. similar completed jobs",
-    impact: formatCurrency(9_260),
-    severity: "medium" as const,
-    confidence: "Some evidence",
-  },
-  {
-    job: "Oakfield Warehouse Fit-Out",
-    issue: "Margin is 6.2 points below your 28% target",
-    impact: formatCurrency(12_860),
-    severity: "medium" as const,
-    confidence: "Strong evidence",
-  },
-];
 
 const SEVERITY_STYLES = {
   high: "bg-red-50 text-red-700 ring-red-600/20",
@@ -100,16 +56,38 @@ function AppFrame({ children, label }: { children: React.ReactNode; label: strin
   );
 }
 
-/** The KPI row + Needs Attention table, mirroring the real Profit Dashboard. */
+/**
+ * The KPI row + Needs Attention table, mirroring the real Profit Dashboard on
+ * the All tab for the last 12 months, on Profit Intelligence: the sample company's
+ * totals and findings from the real engine (getSampleCompany().dashboard).
+ */
 export function DashboardPreview() {
+  const { dashboard } = getSampleCompany();
+  const t = dashboard.totals;
+  const kpis: { label: string; value: string; wholeJob?: boolean; tone?: "warning" | "critical" }[] = [
+    { label: "Jobs With Activity", value: String(t.jobsInView) },
+    { label: "Revenue", value: formatCurrency(t.revenue) },
+    { label: "Tracked Job Costs", value: formatCurrency(t.trackedJobCosts) },
+    { label: "Job Gross Profit", value: formatCurrency(t.jobGrossProfit) },
+    // Named by tab, as on the dashboard: "Margin to Date" on Active, "Job Margin" otherwise.
+    { label: dashboard.statusLabel === "open" ? "Margin to Date" : "Job Margin", value: formatPct(t.avgJobMarginPct) },
+    { label: "Your Target Margin", value: t.targetMarginPct != null ? `${t.targetMarginPct}%` : "Not set" },
+    { label: "Jobs Below Target", value: String(t.jobsBelowTarget), wholeJob: true, tone: t.jobsBelowTarget > 0 ? "warning" : undefined },
+    { label: "Profit At Risk", value: formatCurrency(t.profitAtRisk), wholeJob: true, tone: t.profitAtRisk > 0 ? "critical" : undefined },
+  ];
   return (
     <AppFrame label="Profit Dashboard">
       <div className="p-4 sm:p-6">
+        <p className="mb-3 text-xs text-jp-muted">
+          Showing {dashboard.rangeLabel.toLowerCase()}, {dashboard.statusLabel} jobs. The top row follows the period;
+          tiles marked &ldquo;whole job&rdquo; and Needs Your Attention cover each job from start to finish.
+        </p>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {EXAMPLE_KPIS.map((kpi) => (
+          {kpis.map((kpi) => (
             <div key={kpi.label} className="rounded-lg border border-jp-line px-3.5 py-3">
               <div className="text-[11px] font-medium uppercase tracking-wide text-jp-muted">
                 {kpi.label}
+                {kpi.wholeJob ? <span className="ml-1 font-normal normal-case tracking-normal">· whole job</span> : null}
               </div>
               <div
                 className={`mt-1 text-lg font-bold tabular-nums ${
@@ -139,11 +117,11 @@ export function DashboardPreview() {
               </tr>
             </thead>
             <tbody className="divide-y divide-jp-line">
-              {EXAMPLE_ATTENTION.map((row) => (
-                <tr key={row.job}>
-                  <td className="px-4 py-3 font-medium text-jp-ink">{row.job}</td>
+              {dashboard.shown.map((row) => (
+                <tr key={`${row.jobId}:${row.issueCode}`}>
+                  <td className="px-4 py-3 font-medium text-jp-ink">{row.jobName}</td>
                   <td className="px-4 py-3 text-jp-slate">{row.issue}</td>
-                  <td className="px-4 py-3 font-medium tabular-nums text-jp-ink">{row.impact}</td>
+                  <td className="px-4 py-3 font-medium tabular-nums text-jp-ink">{formatCurrency(row.financialImpact)}</td>
                   <td className="px-4 py-3">
                     <span
                       className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize ring-1 ring-inset ${SEVERITY_STYLES[row.severity]}`}
@@ -151,41 +129,33 @@ export function DashboardPreview() {
                       {row.severity}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-jp-muted">{row.confidence}</td>
+                  <td className="px-4 py-3 text-jp-muted">{confidenceLabel(row.confidence)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+        <p className="mt-3 text-xs text-jp-muted">
+          The {dashboard.shown.length} items with the most money at stake, of {dashboard.needsAttention.length}. In the
+          app the list runs most serious first, and each job page lists everything for that job.
+        </p>
       </div>
     </AppFrame>
   );
 }
 
-// The same example company as the previews above and below: Harborview is
-// $100,000 billed and $82,800 spent (17.2%, 14% over its $72,600 estimate),
-// Oakfield finished 6.2 points under the 28% target, and Laurel Ave finished
-// at 31.4%. Used on /demo so a visitor can see a whole job list, not just the
-// attention table.
-//
-// Only finished jobs are judged against the target margin. An open job's
-// margin to date is mostly billing timing, so the product judges open jobs on
-// their estimate (and, on Pro, their forecast) instead; the notes on open
-// jobs below say only what the product says about them.
-const EXAMPLE_JOBS = [
-  { job: "Harborview Roof Replacement", status: "Active", revenue: 100_000, costs: 82_800, note: "14% over estimate" },
-  { job: "Cedar Ln. Deck Rebuild", status: "Active", revenue: 64_000, costs: 52_300, note: "Margin falling" },
-  { job: "Oakfield Warehouse Fit-Out", status: "Completed", revenue: 206_000, costs: 161_100, note: "Finished below target" },
-  { job: "Riverside HVAC Retrofit", status: "Active", revenue: 88_500, costs: 67_700, note: "Labor running high" },
-  { job: "Pine Ridge Addition", status: "Active", revenue: 142_000, costs: 98_700, note: "Nothing flagged" },
-  { job: "Laurel Ave Bath Remodel", status: "Completed", revenue: 54_000, costs: 37_040, note: "On target" },
-  { job: "Elm Ct. Siding", status: "Completed", revenue: 31_500, costs: 21_900, note: "On target" },
-];
-
-const EXAMPLE_TARGET_MARGIN_PCT = 28;
-
-/** A job list with margin against target, mirroring the real Jobs page. */
+/**
+ * A job list with margin against target, mirroring the real Jobs page: the
+ * sample company's open jobs, then its latest finished job of each type
+ * (getSampleCompany().jobList), each with what Needs Your Attention says
+ * about it.
+ *
+ * Only finished jobs are judged against the target margin. An open job's
+ * margin to date is mostly billing timing, so the product judges open jobs on
+ * their estimate (and, on Pro, their forecast) instead.
+ */
 export function JobListPreview() {
+  const { jobList, jobs } = getSampleCompany();
   return (
     <AppFrame label="Jobs">
       <div className="p-4 sm:p-6">
@@ -198,28 +168,25 @@ export function JobListPreview() {
                 <th scope="col" className="px-4 py-2.5 text-right font-semibold">Revenue</th>
                 <th scope="col" className="px-4 py-2.5 text-right font-semibold">Job Costs</th>
                 <th scope="col" className="px-4 py-2.5 text-right font-semibold">Margin</th>
-                <th scope="col" className="px-4 py-2.5 font-semibold">Note</th>
+                <th scope="col" className="px-4 py-2.5 font-semibold">Needs attention</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-jp-line">
-              {EXAMPLE_JOBS.map((row) => {
-                const marginPct = ((row.revenue - row.costs) / row.revenue) * 100;
-                const judged = row.status === "Completed";
+              {jobList.map(({ job, issue }) => {
+                const judged = job.status === "closed" && job.targetMarginPct != null && job.grossMarginPct != null;
                 const tone = !judged
                   ? "text-jp-ink"
-                  : marginPct < EXAMPLE_TARGET_MARGIN_PCT
+                  : job.grossMarginPct! * 100 < job.targetMarginPct!
                     ? "text-amber-600"
                     : "text-green-700";
                 return (
-                  <tr key={row.job}>
-                    <td className="px-4 py-3 font-medium text-jp-ink">{row.job}</td>
-                    <td className="px-4 py-3 text-jp-slate">{row.status}</td>
-                    <td className="px-4 py-3 text-right tabular-nums text-jp-ink">{formatCurrency(row.revenue)}</td>
-                    <td className="px-4 py-3 text-right tabular-nums text-jp-ink">{formatCurrency(row.costs)}</td>
-                    <td className={`px-4 py-3 text-right font-semibold tabular-nums ${tone}`}>
-                      {marginPct.toFixed(1)}%
-                    </td>
-                    <td className="px-4 py-3 text-jp-muted">{row.note}</td>
+                  <tr key={job.jobId}>
+                    <td className="px-4 py-3 font-medium text-jp-ink">{job.jobName}</td>
+                    <td className="px-4 py-3 text-jp-slate">{job.status === "open" ? "Active" : "Completed"}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-jp-ink">{formatCurrency(job.revenue)}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-jp-ink">{formatCurrency(job.costs)}</td>
+                    <td className={`px-4 py-3 text-right font-semibold tabular-nums ${tone}`}>{formatPct(job.grossMarginPct)}</td>
+                    <td className="px-4 py-3 text-jp-muted">{issue ?? "Nothing flagged"}</td>
                   </tr>
                 );
               })}
@@ -227,67 +194,10 @@ export function JobListPreview() {
           </table>
         </div>
         <p className="mt-3 text-xs text-jp-muted">
-          Finished jobs&rsquo; margins are colored against a {EXAMPLE_TARGET_MARGIN_PCT}% target margin, which you set in
+          {jobList.length} of the {jobs.length} jobs: every open job, then the latest finished job of each type.
+          Finished jobs&rsquo; margins are colored against a {SAMPLE_TARGET_PCT}% target margin, which you set in
           Settings. Open jobs are judged on their estimate instead, since margin partway through a job mostly reflects
           when you last billed.
-        </p>
-      </div>
-    </AppFrame>
-  );
-}
-
-/**
- * A Profit Insight card, matching the real Finding / Evidence / Impact /
- * Action / Confidence structure that src/lib/intelligence.ts produces and
- * the ProfitInsight table stores.
- */
-export function InsightPreview() {
-  return (
-    <AppFrame label="Profit Intelligence">
-      <div className="p-4 sm:p-6">
-        <div className="rounded-lg border border-jp-line p-5">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <h3 className="text-base font-semibold text-jp-ink">
-              Roofing jobs are coming in over estimate by an average of 14%
-            </h3>
-            <span className="inline-flex items-center rounded-full bg-jp-surface-2 px-2.5 py-0.5 text-xs font-medium text-jp-navy">
-              Strong evidence
-            </span>
-          </div>
-
-          <dl className="mt-4 space-y-3.5 text-sm">
-            <div>
-              <dt className="text-[11px] font-semibold uppercase tracking-wide text-jp-muted">
-                Evidence
-              </dt>
-              <dd className="mt-1 leading-relaxed text-jp-slate">
-                Across 6 completed roofing jobs, actual cost exceeded the estimate on 5 of them, by
-                an average of 14%. Material cost accounts for most of the gap.
-              </dd>
-            </div>
-            <div>
-              <dt className="text-[11px] font-semibold uppercase tracking-wide text-jp-muted">
-                Financial impact
-              </dt>
-              <dd className="mt-1 font-semibold tabular-nums text-jp-ink">
-                {formatCurrency(47_300)} of margin across those jobs
-              </dd>
-            </div>
-            <div>
-              <dt className="text-[11px] font-semibold uppercase tracking-wide text-jp-muted">
-                Recommended action
-              </dt>
-              <dd className="mt-1 leading-relaxed text-jp-slate">
-                Review how material quantities are estimated on roofing work before quoting the next
-                one, and check current supplier pricing against the figures your estimates assume.
-              </dd>
-            </div>
-          </dl>
-        </div>
-
-        <p className="mt-4 text-xs leading-relaxed text-jp-muted">
-          Every insight traces back to the specific jobs behind it. Dollar amounts and confidence
-          levels are calculated from your QuickBooks data, not written by the AI.
         </p>
       </div>
     </AppFrame>
@@ -602,22 +512,22 @@ export function WipPreview() {
   );
 }
 
-/** The Weekly Profit Brief, as it arrives in an inbox. */
 /**
- * The Weekly Profit Brief as it actually arrives: the deterministic "What
- * changed" section first, then the written summary. An illustration with
- * made-up jobs, but everything shown is something the real email produces,
- * and the figures are consistent with each other (the Harborview lines
- * imply $100,000 billed, $82,800 spent against a $72,600 estimate).
- *
- * The previous version showed a subject line the email no longer uses, a
- * "profit at risk" total the brief is never given, and a margin "fallen in
- * each of the last three months" that no part of the brief computes.
+ * The Weekly Profit Brief as it actually arrives: the money headline, the
+ * deterministic "What changed" section, then the written summary. The
+ * headline and "What changed" are the real brief's own calculations
+ * (computeBriefHeadline, computeWeekOverWeek, jobChangeSentence) run on the
+ * sample company against its previous week (SAMPLE_LAST_BRIEF in
+ * src/lib/sampleCompany.ts). In the product the AI writes the summary; here
+ * it's an example of one, and every figure in it comes from the engine.
  */
 export function WeeklyBriefPreview() {
-  const { feed } = getSampleCompany();
-  // As if last week's brief had no open-job risk on file.
-  const headline = computeBriefHeadline(snapshotFromFeed(feed), { opportunities: { openRiskByJob: {} } }, "Example Builders");
+  const { feed, brief, jobs, jobNames } = getSampleCompany();
+  const companyName = "Example Builders";
+  const headline = computeBriefHeadline(snapshotFromFeed(feed), brief.priorMetrics, companyName);
+  const wow = brief.whatChanged;
+  const over = jobs.find((j) => j.status === "open" && j.flags.includes("over_budget_10pct_plus"));
+  const unbilled = feed.items.find((i) => i.kind === "underbilled");
   return (
     <AppFrame label="Weekly Profit Brief. Monday, 8:00am">
       <div className="p-4 sm:p-6">
@@ -625,7 +535,9 @@ export function WeeklyBriefPreview() {
           <p className="text-xs text-jp-muted">
             <span className="font-medium text-jp-ink">JobProfitAI</span> &lt;noreply@jobprofitai.com&gt;
           </p>
-          <p className="mt-1 text-sm font-semibold text-jp-ink">{headline.subject ?? "Example Builders: Weekly Profit Brief"}</p>
+          <p className="mt-1 text-sm font-semibold text-jp-ink">
+            {headline.subject ?? `${companyName}: Weekly Profit Brief, week of ${formatDate(brief.weekStarting)}`}
+          </p>
         </div>
         <div className="mt-4 rounded-lg border border-jp-line bg-jp-surface px-4 py-3">
           <p className="text-[15px] font-semibold leading-snug text-jp-ink">{headline.headline}</p>
@@ -639,32 +551,36 @@ export function WeeklyBriefPreview() {
           </ul>
         </div>
         <div className="mt-4 space-y-3 text-sm leading-relaxed text-jp-slate">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-jp-ink">
-              What changed since the brief for the week of Mar 3
+          {wow.comparedToWeekStarting && wow.changes.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-jp-ink">
+                What changed since the brief for the week of {formatDate(wow.comparedToWeekStarting)}
+              </p>
+              <ul className="mt-2 space-y-1">
+                {wow.changes.slice(0, 8).map((c) => (
+                  <li key={c.jobId}>
+                    {c.jobName}: {jobChangeSentence(c)}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {(over || unbilled) && (
+            <p className="text-xs font-semibold uppercase tracking-wide text-jp-ink">The summary</p>
+          )}
+          {over && over.grossMarginPct != null && over.grossMarginPct > 0 && (
+            <p>
+              {over.jobName} is the one to look at. It is now {formatCurrency(over.varianceVsEstimate)} over its{" "}
+              {formatCurrency(over.estimatedCost)} estimate with the job still open. It is still profitable, at{" "}
+              {formatPct(over.grossMarginPct)} margin, so this is an overrun to watch, not a loss.
             </p>
-            <ul className="mt-2 space-y-1">
-              <li>
-                Harborview Roof Replacement: {formatCurrency(6_800)} in new costs. Margin 24.0% to
-                17.2%. Now 14% over its estimate.
-              </li>
-              <li>Laurel Ave Bath Remodel: Marked completed. Finished at 31.4% margin.</li>
-              <li>
-                Spruce Ct. Bath: New job, {formatCurrency(18_200)} billed and {formatCurrency(4_650)} in
-                costs so far.
-              </li>
-            </ul>
-          </div>
-          <p>
-            Harborview Roof Replacement is the one to look at. It is now{" "}
-            {formatCurrency(10_200)} over its {formatCurrency(72_600)} estimate with the job still
-            open. It is still profitable, at 17.2% margin, so this is an overrun to watch, not a
-            loss.
-          </p>
-          <p>
-            Two jobs still have no cost estimate on file, so they&rsquo;re left out of the
-            over-budget numbers rather than guessed at.
-          </p>
+          )}
+          {unbilled?.impact != null && (
+            <p>
+              {jobNames[unbilled.jobIds[0]]} has {formatCurrency(unbilled.impact)} of work done that hasn&rsquo;t been
+              billed yet, so the next invoice is worth sending.
+            </p>
+          )}
         </div>
       </div>
     </AppFrame>

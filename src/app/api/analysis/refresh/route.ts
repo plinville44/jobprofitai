@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAccount, refuseClient } from "@/lib/account";
+import { connectionForAccount, getAccount, refuseClient } from "@/lib/account";
 import { tryMarkFirstAnalysis } from "@/lib/trial";
 import { tryAnnounceAnalysisReady } from "@/lib/email/lifecycle";
 import { jobSourceQuestionPending } from "@/lib/jobSetup";
@@ -8,6 +8,9 @@ import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
 import { type ProfitOpportunity } from "@/lib/profitability";
 import { getOpportunityData } from "@/lib/opportunityData";
 import { generateProfitInsights } from "@/lib/intelligence";
+import { overLimitConnectionIds, pausedCompaniesMessage } from "@/lib/planLimits";
+import { aiFailureKind } from "@/lib/ai";
+import { reportError } from "@/lib/monitoring";
 
 /**
  * POST /api/analysis/refresh  { connectionId }
@@ -73,14 +76,30 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { connectionId, force } = await req.json();
-    if (!connectionId || typeof connectionId !== "string") {
+    const body = await req.json().catch(() => ({}));
+    const { force } = body ?? {};
+    if (!body?.connectionId || typeof body.connectionId !== "string") {
       return NextResponse.json({ error: "Missing connectionId" }, { status: 400 });
     }
 
-    const connection = await prisma.quickBooksConnection.findUnique({ where: { id: connectionId } });
-    if (!connection || connection.userId !== account.ownerId) {
+    // Scoped to this login's account, and never a disconnected company: the
+    // same checks Sync now makes (api/quickbooks/sync).
+    const connection = await connectionForAccount(account, body.connectionId);
+    if (!connection) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+    }
+    const connectionId = connection.id;
+    // A company past the plan's company limit is paused (src/lib/planLimits.ts):
+    // no sync, no brief, and no AI analysis on demand.
+    if ((await overLimitConnectionIds(account.ownerId)).has(connectionId)) {
+      const name = connection.companyName?.trim() || "This company";
+      return NextResponse.json(
+        {
+          error: `${pausedCompaniesMessage([name], entitlements.limits.maxConnections)} A paused company keeps its figures but its analysis isn't refreshed. Billing shows what to do.`,
+          code: "company_paused",
+        },
+        { status: 403 }
+      );
     }
 
     const latestRun = await prisma.analysisRun.findFirst({
@@ -210,6 +229,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, refreshed: true, count: drafts.length });
   } catch (err) {
     console.error("analysis/refresh failed:", err instanceof Error ? err.message : "Unknown error");
+    // A refused AI request (an old ANTHROPIC_MODEL, a revoked key) would
+    // otherwise fail every refresh with nobody told. A timeout isn't a fault.
+    if (aiFailureKind(err) !== "timeout") {
+      await reportError(err, { route: "/api/analysis/refresh", method: "POST", feature: "profit-insights" });
+    }
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Couldn't refresh analysis." },
       { status: 500 }

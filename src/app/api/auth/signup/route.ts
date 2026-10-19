@@ -12,6 +12,7 @@ import { acceptanceData } from "@/lib/termsAcceptance";
 import { signupAdOptOut } from "@/lib/adOptOut";
 import { SOURCE_COOKIE } from "@/lib/adSource";
 import { reportServerEvent, signupAdSource, signupSessionId } from "@/lib/serverEvents";
+import { claimSignupSlot, clientIp, findLoginByEmail, releaseSignupSlot } from "@/lib/loginThrottle";
 
 export const runtime = "nodejs";
 
@@ -66,11 +67,24 @@ export async function POST(req: NextRequest) {
   // login handles both (see the login route).
   const email = parsed.data.email.trim().toLowerCase();
 
-  const existing = await prisma.user.findFirst({
-    where: { email: { equals: email, mode: "insensitive" } },
-    select: { id: true },
-  });
+  // Every signup mails a verification link to the address typed, so one
+  // network address gets a few an hour, or a script could mail anyone. The
+  // place is taken before anything slow (the hash, the insert), so signups
+  // sent at once can't all get through; one that creates no account gives
+  // it back.
+  const slot = await claimSignupSlot(clientIp(req.headers));
+  if (!slot.ok) {
+    return NextResponse.json(
+      { error: "Too many accounts have been created from this network in the last hour. Please try again later." },
+      { status: 429 }
+    );
+  }
+
+  // Exact, ignoring case: a wildcard match would wrongly say a different
+  // address is taken (findLoginByEmail).
+  const existing = await findLoginByEmail(email);
   if (existing) {
+    await releaseSignupSlot(slot.slotId);
     return NextResponse.json(
       { error: "An account with that email already exists." },
       { status: 409 }
@@ -100,6 +114,7 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err) {
+    await releaseSignupSlot(slot.slotId);
     if ((err as { code?: string })?.code === "P2002") {
       return NextResponse.json(
         { error: "An account with that email already exists." },

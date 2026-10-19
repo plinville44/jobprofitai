@@ -155,7 +155,9 @@ async function runLifecycle() {
     }
   });
   await runStage(counters, "revoked-grants", async () => {
-    counters.revokedCompaniesDisconnected = (await disconnectRevokedGrants(now)).length;
+    // Clamped to the rules' start like the other stages.
+    if (!rulesStart) return;
+    counters.revokedCompaniesDisconnected = (await disconnectRevokedGrants(now, rulesStart)).length;
   });
   await runStage(counters, "deletion-reminders", async () => {
     if (!rulesStart) return;
@@ -337,8 +339,17 @@ async function processTestimonialRequests(counters: Counters, now: Date): Promis
       // Only people who actually use the product - asking someone who never
       // ran an analysis for a testimonial would be absurd.
       activatedAt: { not: null },
+      // Not anyone already asked, or who turned tips off (they'd never be
+      // sent one): past 200 of those, the same ones came back every hour
+      // and nobody new was ever asked.
+      user: {
+        tipsEmailsOffAt: null,
+        emailEvents: { none: { emailType: "testimonial_request", status: "sent" } },
+      },
     },
     select: { userId: true },
+    // Longest-paying first, in a fixed order.
+    orderBy: [{ firstPaidAt: "asc" }, { userId: "asc" }],
     take: 200,
   });
 

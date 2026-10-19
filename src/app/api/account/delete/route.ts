@@ -4,7 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { clearSession, getSession, revokeAllSessions, verifyPassword } from "@/lib/auth";
 import { decryptToken } from "@/lib/crypto";
 import { revokeToken } from "@/lib/quickbooks";
-import { getStripe } from "@/lib/stripe/client";
+import { CANCEL_FAILED_MESSAGE, stopAllBilling } from "@/lib/stripe/billing";
+import { reportError } from "@/lib/monitoring";
+import { REMOVED_ROLE, removeFromRecipientLists } from "@/lib/teamRemoval";
 
 /**
  * POST /api/account/delete  { password, confirm: "DELETE" }
@@ -13,12 +15,16 @@ import { getStripe } from "@/lib/stripe/client";
  *
  * Order matters here, and it's deliberately "external first, database last":
  *
- *   1. Revoke QuickBooks tokens with Intuit. Done FIRST, because once the
- *      row is gone the encrypted token is gone with it and we would have no
- *      way to revoke it - leaving a live grant against the customer's
- *      QuickBooks company with nothing on our side to revoke it with.
- *   2. Cancel any Stripe subscription, so deleting an account can never
- *      leave someone being billed for a product they no longer have.
+ *   1. Cancel every Stripe subscription on the account's customer and close
+ *      its open checkouts, so deleting an account can never leave someone
+ *      being billed for a product they no longer have. First, because if it
+ *      fails nothing has changed yet: the account stays and the customer is
+ *      asked to try again (stopAllBilling in src/lib/stripe/billing.ts).
+ *   2. Revoke QuickBooks tokens with Intuit. Done before the delete,
+ *      because once the row is gone the encrypted token is gone with it and
+ *      we would have no way to revoke it - leaving a live grant against the
+ *      customer's QuickBooks company with nothing on our side to revoke it
+ *      with.
  *   3. Delete the user row, which cascades to connections, jobs, cost
  *      entries, invoices, digests, month-end WIP snapshots, insights,
  *      feedback and referral data.
@@ -60,7 +66,26 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "That password isn't correct." }, { status: 401 });
     }
 
-    // 1. Revoke every live QuickBooks grant while we still hold the tokens.
+    // 1. Stop billing so nobody is charged after their account is gone:
+    //    every live subscription on the Stripe customer and every open
+    //    checkout, not only the subscription on file (stopAllBilling). If
+    //    anything can't be stopped, nothing is deleted: deleting could leave
+    //    it charging an account that no longer exists, with nothing on our
+    //    side to stop it.
+    const billing = user.subscription;
+    if (billing?.stripeCustomerId || billing?.stripeSubscriptionId) {
+      const stopped = await stopAllBilling(billing);
+      if (!stopped.ok) {
+        console.error(
+          "account/delete: could not stop Stripe billing:",
+          stopped.error instanceof Error ? stopped.error.message : "Unknown error"
+        );
+        await reportError(stopped.error, { route: "/api/account/delete", method: "POST" });
+        return NextResponse.json({ error: CANCEL_FAILED_MESSAGE }, { status: 502 });
+      }
+    }
+
+    // 2. Revoke every live QuickBooks grant while we still hold the tokens.
     for (const connection of user.connections) {
       if (connection.disconnectedAt) continue;
       try {
@@ -69,21 +94,6 @@ export async function POST(req: NextRequest) {
         // Best-effort: an already-invalid token must not block deletion.
         console.error(
           "account/delete: token revoke failed for a connection:",
-          err instanceof Error ? err.message : "Unknown error"
-        );
-      }
-    }
-
-    // 2. Cancel billing so nobody is charged after their account is gone.
-    const stripeSubscriptionId = user.subscription?.stripeSubscriptionId;
-    if (stripeSubscriptionId) {
-      try {
-        await getStripe().subscriptions.cancel(stripeSubscriptionId);
-      } catch (err) {
-        // Log loudly: this is the one failure a human genuinely needs to
-        // know about, because it leaves a live subscription behind.
-        console.error(
-          `account/delete: could not cancel Stripe subscription ${stripeSubscriptionId}:`,
           err instanceof Error ? err.message : "Unknown error"
         );
       }
@@ -102,11 +112,31 @@ export async function POST(req: NextRequest) {
       where: { ownerUserId: user.id, memberUserId: { not: null } },
       select: { memberUserId: true },
     });
+    // A team member or client deleting their own login: their address comes
+    // off the brief and alert lists of the account they belonged to, as when
+    // the owner removes them (teamRemoval.ts). The membership row itself goes
+    // with the login (onDelete: Cascade).
+    const membership = await prisma.teamMember.findUnique({
+      where: { memberUserId: user.id },
+      select: { ownerUserId: true, email: true, acceptedAt: true, role: true },
+    });
 
     await prisma.$transaction([
       prisma.feedback.deleteMany({ where: { userId: user.id } }),
       prisma.user.delete({ where: { id: user.id } }),
     ]);
+
+    // Only a login that really belonged to that account: not an invitation
+    // it never accepted, and not the marker left when it was removed (its
+    // address came off the lists then).
+    if (membership?.acceptedAt && membership.role !== REMOVED_ROLE && membership.ownerUserId !== user.id) {
+      await removeFromRecipientLists(membership.ownerUserId, [membership.email, user.email]).catch((err) => {
+        console.error(
+          "account/delete: could not take the address off the team's email lists:",
+          err instanceof Error ? err.message : "Unknown error"
+        );
+      });
+    }
 
     for (const m of members) {
       if (m.memberUserId) await revokeAllSessions(m.memberUserId).catch(() => {});

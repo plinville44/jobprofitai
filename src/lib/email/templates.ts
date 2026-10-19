@@ -30,6 +30,11 @@ const MUTED = "#6B7280";
 const BORDER = "#E5E7EB";
 const BG = "#F6F7F9";
 
+/** Intuit's trademark wording, word for word, as Intuit gave it (the site footers show the same). */
+export const EMAIL_TRADEMARK_LINE = "Intuit and QuickBooks are registered trademarks of Intuit Inc. Used with permission.";
+/** The same with the independence line, where an email says JobProfitAI isn't Intuit's. */
+export const EMAIL_TRADEMARK_NOTICE = `${EMAIL_TRADEMARK_LINE} JobProfitAI is an independent product and is not endorsed or sponsored by Intuit Inc.`;
+
 export function appUrl(path = ""): string {
   const base = (process.env.APP_URL ?? "https://jobprofitai.com").replace(/\/+$/, "");
   return path ? `${base}${path.startsWith("/") ? path : `/${path}`}` : base;
@@ -139,7 +144,7 @@ export function renderHtml(content: EmailContent): string {
           <p style="margin:0;font-size:12px;line-height:1.5;color:${MUTED};">
             JobProfitAI: Profit Intelligence for QuickBooks. A product of ${COMPANY_LEGAL_NAME},<br>
             ${COMPANY_MAILING_ADDRESS}.<br>
-            QuickBooks is a trademark of Intuit Inc. JobProfitAI is not affiliated with or endorsed by Intuit.
+            ${EMAIL_TRADEMARK_NOTICE}
           </p>
           ${UNSUBSCRIBE_MARKER}
         </div>
@@ -171,7 +176,7 @@ export function renderText(content: EmailContent): string {
     "---",
     `Questions? Reply to this email or write to ${SUPPORT_EMAIL}.`,
     `JobProfitAI: Profit Intelligence for QuickBooks. A product of ${COMPANY_LEGAL_NAME}, ${COMPANY_MAILING_ADDRESS}.`,
-    "QuickBooks is a trademark of Intuit Inc. JobProfitAI is not affiliated with or endorsed by Intuit."
+    EMAIL_TRADEMARK_NOTICE
   );
   return parts.join("\n");
 }

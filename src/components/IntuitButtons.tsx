@@ -72,8 +72,12 @@ export function ConnectToQuickBooksButton({ href = "/api/quickbooks/connect" }: 
   );
 }
 
-/** The Sign in with Intuit button, on every sign-in page. */
-export function SignInWithIntuitButton({ intent = "signin" }: { intent?: "signin" | "appstore" }) {
+/**
+ * The Sign in with Intuit button, on every sign-in page. "signup" is the one
+ * on /signup: QuickBooks access in the same step, and the new account is
+ * measured as a signup from our page (src/lib/intuitSignIn.ts).
+ */
+export function SignInWithIntuitButton({ intent = "signin" }: { intent?: "signin" | "appstore" | "signup" }) {
   return (
     <ImageButton
       href={`/api/auth/intuit?intent=${intent}`}

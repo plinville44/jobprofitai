@@ -97,9 +97,10 @@ export default function SignupForm() {
         <>
           {/* One step with the QuickBooks login they already have: Intuit
               sign-in and QuickBooks access together, account and trial
-              created on the way back (see src/lib/intuitSignIn.ts). */}
+              created on the way back (see src/lib/intuitSignIn.ts). Its own
+              intent, so the signup is measured like the email one below. */}
           <div className="mt-7 flex flex-col items-center gap-2">
-            <SignInWithIntuitButton intent="appstore" />
+            <SignInWithIntuitButton intent="signup" />
             <p className="text-center text-xs text-jp-muted">
               Uses your QuickBooks login and connects your company in the same step.
             </p>

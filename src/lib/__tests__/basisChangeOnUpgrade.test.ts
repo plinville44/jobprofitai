@@ -26,7 +26,11 @@ vi.mock("@/lib/crypto", () => ({
 const qbo: { data: Record<string, any[]>; cdc: Record<string, any[]> } = { data: {}, cdc: {} };
 vi.mock("@/lib/quickbooks", () => ({
   qboQueryAll: async (_realm: string, _token: string, _query: string, entity: string) => qbo.data[entity] ?? [],
-  qboQuery: async () => ({}),
+  // SELECT COUNT(*): QuickBooks' own count, which a full sync checks its read against before removing anything.
+  qboQuery: async (_realm: string, _token: string, query: string) => {
+    const entity = /FROM\s+(\w+)/i.exec(query)?.[1] ?? "";
+    return { QueryResponse: { totalCount: (qbo.data[entity] ?? []).length } };
+  },
   qboCompanyInfo: async () => ({}),
   qboCdc: async (_realm: string, _token: string, entities: string[]) => ({
     CDCResponse: [{ QueryResponse: entities.filter((e) => qbo.cdc[e]).map((e) => ({ [e]: qbo.cdc[e] })) }],

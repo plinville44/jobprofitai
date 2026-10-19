@@ -15,6 +15,8 @@ vi.mock("@/lib/ai", () => ({
   AI_MODEL: "test-model",
   // The real one adds inference_geo: "us" (src/lib/ai.ts); its own test covers that.
   inUs: (params: any) => params,
+  // The real one reads the SDK's error shape (src/lib/ai.ts); these tests only throw plain errors.
+  aiFailureKind: (err: any) => (/timed out/i.test(err?.message ?? "") ? "timeout" : [400, 401, 403, 404, 413, 422].includes(err?.status) ? "refused" : "other"),
   aiClient: () => ({
     messages: {
       create: async (params: any) => {
@@ -145,6 +147,110 @@ describe("checking the written summary", () => {
   });
 });
 
+// Found in the audit of Oct 19, 2026: correct sentences taken out, and the
+// sentence after one taken out left describing the wrong job. More in
+// audit1019Brief.test.ts.
+describe("job names come first", () => {
+  const withWarranty: SummaryFacts = { jobs: [...JOBS, { jobName: "Warranty", status: "completed", marginPct: 0.1 }], comparison: "skipped" };
+
+  it("pins a phrase on the clause's subject, never on a job named inside it or earlier in the sentence", () => {
+    expect(brief(withWarranty, "MX04 Expected Loss picked up $2,000 of warranty costs and is forecast to finish at -20%.")).toEqual([]);
+    expect(brief(skipped, "Torres Bath Remodel has $2,890 not yet billed, and the forecast for MX03 Billed Past Contract is a 28.4% margin.")).toEqual([]);
+  });
+
+  it("takes out the sentence after one taken out when it names no job and refers back", () => {
+    const text = "MX02 Past Estimate is forecast to finish at -41.7%. It has $34,000 spent against a $30,000 estimate. MX04 Expected Loss is forecast to finish at -20%.";
+    const problems = findSummaryProblems(text, skipped);
+    expect(problems.map((p) => p.sentence)).toEqual(["MX02 Past Estimate is forecast to finish at -41.7%."]);
+    expect(withoutSentences(text, problems.map((p) => p.sentence), JOBS)).toBe("MX04 Expected Loss is forecast to finish at -20%.");
+  });
+
+  it("keeps the Sep 28 summary's good sentences, and nothing that would read as about another job", () => {
+    const left = withoutSentences(SEP_28, findSummaryProblems(SEP_28, skipped).map((p) => p.sentence), JOBS);
+    // "The margin number there ..." went with the MX01 sentence before it.
+    expect(summarySentences(left, JOBS).map((p) => p.length)).toEqual([1, 1, 2]);
+    expect(left.startsWith("MX02 Past Estimate is the one to look at first.\n\nMX04 Expected Loss is on track to close")).toBe(true);
+  });
+});
+
+// From the review of the Oct 19 fixes.
+describe("a phrase in a clause that names no job", () => {
+  const facts = (jobs: SummaryJobFacts[]): SummaryFacts => ({ jobs, comparison: "changes" });
+  const smith = (forecastMarginPct: number | null): SummaryJobFacts => ({ jobName: "Smith Kitchen", status: "open", marginPct: 0.2, forecastMarginPct });
+  const torres = (forecastMarginPct: number | null): SummaryJobFacts => ({ jobName: "Torres Bath", status: "open", marginPct: 0.2, forecastMarginPct });
+
+  it("is about the job named last before it, not the first", () => {
+    for (const s of [
+      "Smith Kitchen is running well ahead of Torres Bath, which is forecast to finish at 2%.",
+      "Smith Kitchen is running well ahead of Torres Bath which is forecast to finish at 2%.",
+    ]) {
+      expect(brief(facts([smith(0.2), torres(null)]), s)).toEqual([["forecast_without_forecast", "Torres Bath", s.slice(0, 40)]]);
+      // The other way round the sentence is true, and stays.
+      expect(brief(facts([smith(null), torres(0.02)]), s)).toEqual([]);
+    }
+    const acme = (marginPct: number): SummaryJobFacts => ({ jobName: "Acme Supply Co.", status: "completed", marginPct });
+    const done = (marginPct: number): SummaryJobFacts => ({ jobName: "Smith Kitchen", status: "completed", marginPct });
+    const s = "Smith Kitchen did better than Acme Supply Co., which lost money.";
+    expect(brief(facts([done(-0.05), acme(0.3)]), s)).toEqual([["loss_without_loss", "Acme Supply Co.", s.slice(0, 40)]]);
+    expect(brief(facts([done(0.3), acme(-0.05)]), s)).toEqual([]);
+  });
+
+  it("is about the previous clause's subject when it starts with 'it' or plainly, not a job named later in it", () => {
+    const s = "Smith Kitchen has spent more than Torres Bath so far, and it's forecast to finish at 5%.";
+    expect(brief(facts([smith(null), torres(0.05)]), s)).toEqual([["forecast_without_forecast", "Smith Kitchen", s.slice(0, 40)]]);
+    // The other way round the sentence is true, and stays.
+    expect(brief(facts([smith(0.05), torres(null)]), s)).toEqual([]);
+    const plain = "Smith Kitchen has spent more than Torres Bath so far, and is forecast to finish at 5%.";
+    expect(brief(facts([smith(null), torres(0.05)]), plain).map((p) => p[1])).toEqual(["Smith Kitchen"]);
+    expect(brief(facts([smith(0.05), torres(null)]), plain)).toEqual([]);
+  });
+
+  it("is about each job when the last thing named is a pair of them", () => {
+    const s = "Ruiz Kitchen Remodel and Harborview closed over estimate, and both lost money.";
+    expect(brief(skipped, s)).toEqual([["loss_without_loss", "Ruiz Kitchen Remodel", s.slice(0, 40)]]);
+  });
+});
+
+describe("a sentence that ends in an abbreviation or an initial", () => {
+  const jobs: SummaryJobFacts[] = [
+    { jobName: "Harborview Building C", status: "open", marginPct: 0.3, forecastMarginPct: 0.25 },
+    { jobName: "Torres Bath", status: "open", marginPct: 0.2, forecastMarginPct: null },
+  ];
+  const facts: SummaryFacts = { jobs, comparison: "changes" };
+  const claim = "Torres Bath is forecast to finish at 8%.";
+
+  it("ends where a job's name ends at the full stop, or a job's name or an opening word starts the next one", () => {
+    for (const first of ["Costs are highest on Harborview Building C.", "The last of the work wrapped up on Elm St."]) {
+      expect(summarySentences(`${first} ${claim}`, jobs)).toEqual([[first, claim]]);
+      expect(findSummaryProblems(`${first} ${claim}`, facts).map((p) => p.sentence)).toEqual([claim]);
+      expect(withoutSentences(`${first} ${claim}`, [claim], jobs)).toBe(first);
+    }
+    expect(summarySentences("Crews finished on Elm St. The forecast is next.")).toEqual([["Crews finished on Elm St.", "The forecast is next."]]);
+  });
+
+  it("still doesn't end inside a name, after an initial, or before a number", () => {
+    expect(summarySentences("J. Smith Bath has $2,000 spent. 1418 Elm St. Remodel is next. Smith Inc. paid it. No. 5 is last.")).toEqual([
+      ["J. Smith Bath has $2,000 spent.", "1418 Elm St. Remodel is next.", "Smith Inc. paid it.", "No. 5 is last."],
+    ]);
+  });
+});
+
+describe("a job code that looks like a year or a month", () => {
+  it("isn't taken for the job when it's a bare year, but a numbered code like 2024-07 is", () => {
+    const jobs: SummaryJobFacts[] = [
+      { jobName: "2025 Warranty Work", status: "completed", marginPct: 0.1 },
+      { jobName: "2024-07 Deck", status: "completed", marginPct: 0.1 },
+      { jobName: "Torres Bath", status: "open", marginPct: 0.2, forecastMarginPct: null },
+    ];
+    const s = "Torres Bath, open since 2025, is forecast to lose money.";
+    expect(brief({ jobs, comparison: "changes" }, s)).toEqual([
+      ["forecast_without_forecast", "Torres Bath", s.slice(0, 40)],
+      ["loss_without_loss", "Torres Bath", s.slice(0, 40)],
+    ]);
+    expect(brief({ jobs, comparison: "changes" }, "2024-07 lost money on the railing.")).toEqual([["loss_without_loss", "2024-07 Deck", "2024-07 lost money on the railing."]]);
+  });
+});
+
 // --- In the brief itself -----------------------------------------------
 
 const job = (jobName: string, status: string, marginPct: number, forecastMarginPct: number | null) => ({
@@ -157,7 +263,7 @@ const metrics = {
   jobs: [job("MX02 Past Estimate", "open", -0.4167, null), job("MX04 Expected Loss", "open", -0.2, -0.2)],
   topConcerns: [],
   totals: {},
-  briefDataHealth: { overallConfidence: "high", jobsMissingEstimates: [], jobsMissingCosts: [], untaggedJobCostCount: 0, timeEntriesWithoutPayRate: 0, possibleDuplicates: [] },
+  briefDataHealth: { overallConfidence: "high", jobsMissingEstimates: [], jobsMissingCosts: [], untaggedJobCostCount: 0, timeEntriesWithoutPayRate: 0, possibleDuplicates: [], idleOpenJobs: [] },
 };
 const skippedWeek = { noComparisonReason: "basis_changed", changes: [] } as any;
 const GOOD = "MX04 Expected Loss is forecast to finish at a negative 20% margin.\n\nMX02 Past Estimate has $34,000 spent against a $30,000 estimate.";

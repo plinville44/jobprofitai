@@ -103,7 +103,18 @@ export function pausedCompaniesMessage(pausedNames: string[], maxConnections: nu
 
 export interface PlanForFit {
   name: string;
-  limits: { maxConnections: number; maxActiveJobs: number | null };
+  limits: { maxConnections: number; maxActiveJobs: number | null; maxTeamMembers?: number };
+}
+
+/**
+ * Why a plan can't take the account's team logins, or null when it can.
+ * `used` counts accepted logins and live invitations (client logins aside),
+ * the same count createInvite holds the plan to. Pure, for tests.
+ */
+export function teamLoginsMisfit(planName: string, maxTeamMembers: number, used: number): string | null {
+  if (used <= maxTeamMembers) return null;
+  const extra = used - maxTeamMembers;
+  return `${planName} includes ${maxTeamMembers} team ${maxTeamMembers === 1 ? "login" : "logins"} and you have ${used} (in use or invited). Remove ${extra} in Settings first, or choose a plan that includes them all.`;
 }
 
 export interface PlanFit {
@@ -119,10 +130,15 @@ export interface PlanFit {
  * Whether a plan covers what the account already uses, for the plan cards
  * on Billing. Companies are a hard limit (checkout refuses a plan that can't
  * cover them, see api/billing/checkout), so the card is disabled with the
- * reason. The open-job limit on the $149 plan isn't enforced anywhere, so it
- * only warns. Pure, for tests.
+ * reason. Team logins are a hard limit too (checkout refuses a plan with
+ * fewer than the account has, and logins past the limit lose access, see
+ * accountFor). The open-job limit on the $149 plan isn't enforced anywhere,
+ * so it only warns. Pure, for tests.
  */
-export function planFit(plan: PlanForFit, usage: { connections: number; activeJobs: number }): PlanFit {
+export function planFit(
+  plan: PlanForFit,
+  usage: { connections: number; activeJobs: number; teamLogins?: number }
+): PlanFit {
   const maxCompanies = plan.limits.maxConnections;
   if (usage.connections > maxCompanies) {
     const extra = usage.connections - maxCompanies;
@@ -132,6 +148,11 @@ export function planFit(plan: PlanForFit, usage: { connections: number; activeJo
       warning: null,
     };
   }
+  const teamReason =
+    plan.limits.maxTeamMembers != null && usage.teamLogins != null
+      ? teamLoginsMisfit(plan.name, plan.limits.maxTeamMembers, usage.teamLogins)
+      : null;
+  if (teamReason) return { fits: false, reason: teamReason, warning: null };
   const maxJobs = plan.limits.maxActiveJobs;
   if (maxJobs != null && usage.activeJobs > maxJobs) {
     return {

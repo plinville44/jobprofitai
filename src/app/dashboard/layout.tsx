@@ -4,7 +4,7 @@ import { headers } from "next/headers";
 import { hasAcceptedCurrentTerms } from "@/lib/termsAcceptance";
 import { noteBrowserOptOut } from "@/lib/adOptOut";
 import Link from "next/link";
-import { getAccount, getActiveConnection } from "@/lib/account";
+import { getAccount, getActiveConnection, pausedLoginNoticeFor } from "@/lib/account";
 import CompanySwitcher from "@/components/dashboard/CompanySwitcher";
 import ActiveCompanyLabel from "@/components/dashboard/ActiveCompanyLabel";
 import { getEntitlements, isAdminUser } from "@/lib/entitlements";
@@ -36,7 +36,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   await noteBrowserOptOut(account.userId, await headers()).catch(() => {});
 
   const client = account.role === "client";
-  const [isAdmin, partner, user, { connection: activeCompany, companies }, firm, entitlements, removed] = await Promise.all([
+  const [isAdmin, partner, user, { connection: activeCompany, companies }, firm, entitlements, removed, pausedLogin] = await Promise.all([
     isAdminUser(account.userId),
     prisma.partner.findUnique({
       where: { userId: account.userId },
@@ -54,6 +54,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
     // page works as usual, Billing and deleting the login included, with a
     // plain line saying their access to the other account was removed.
     account.role === "owner" ? removedAccessFor(account.userId) : null,
+    // A team login past the plan's limit is shown its own empty account the
+    // same way (accountFor), with a line saying why.
+    account.paused ? pausedLoginNoticeFor(account.userId) : null,
   ]);
 
   // Whether the company on screen is being kept up to date. Only for a live
@@ -105,6 +108,13 @@ export default async function DashboardLayout({ children }: { children: React.Re
       </nav>
 
       {removed ? <RemovedAccessNotice ownerName={removed.ownerName} ownerEmail={removed.ownerEmail} /> : null}
+      {pausedLogin ? (
+        <PausedLoginNotice
+          ownerName={pausedLogin.ownerName}
+          ownerEmail={pausedLogin.ownerEmail}
+          maxTeamMembers={pausedLogin.maxTeamMembers}
+        />
+      ) : null}
 
       {/* Trial countdown / billing status. Rendered server-side from the
           same entitlement source the access checks use, so what the banner
@@ -187,6 +197,36 @@ function RemovedAccessNotice({ ownerName, ownerEmail }: { ownerName: string | nu
           Settings
         </Link>
         . If you think it&apos;s a mistake, ask the account owner to invite you again.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Shown to a team login paused because the account's plan covers fewer team
+ * logins than have joined (the ones who joined first keep access). It comes
+ * back by itself once the owner makes room.
+ */
+function PausedLoginNotice({
+  ownerName,
+  ownerEmail,
+  maxTeamMembers,
+}: {
+  ownerName: string | null;
+  ownerEmail: string | null;
+  maxTeamMembers: number;
+}) {
+  const who = ownerName ?? ownerEmail;
+  return (
+    <div className="border-b border-amber-200 bg-amber-50">
+      <p className="mx-auto max-w-6xl px-6 py-2.5 text-sm text-amber-900">
+        <strong className="font-semibold">
+          Your access to the JobProfitAI account you were invited to{who ? ` by ${who}` : ""} is paused.
+        </strong>{" "}
+        Their plan includes {maxTeamMembers} team {maxTeamMembers === 1 ? "login" : "logins"}, and they&apos;re used
+        by people who joined before you. You&apos;ll have access again as soon as the account owner removes a login or
+        moves to a plan with more. Until then this login shows an empty account of its own, and you don&apos;t need to
+        choose a plan for it.
       </p>
     </div>
   );

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { refuseCrossSite } from "@/lib/sameOrigin";
-import { prisma } from "@/lib/prisma";
 import { createSession } from "@/lib/auth";
 import { clearPendingIntuitIdentity, provisionIntuitUser, readPendingIntuitIdentity } from "@/lib/intuitSignIn";
 import { sendTrialWelcome } from "@/lib/email/lifecycle";
@@ -8,6 +7,7 @@ import { acceptanceData } from "@/lib/termsAcceptance";
 import { signupAdOptOut } from "@/lib/adOptOut";
 import { SOURCE_COOKIE } from "@/lib/adSource";
 import { reportServerEvent, signupAdSource, signupSessionId } from "@/lib/serverEvents";
+import { findLoginByEmail } from "@/lib/loginThrottle";
 
 export const runtime = "nodejs";
 
@@ -33,10 +33,8 @@ export async function POST(req: Request) {
   if (!pending || !pending.email) {
     return NextResponse.json({ error: "That took too long. Choose Sign in with Intuit again." }, { status: 410 });
   }
-  const existing = await prisma.user.findFirst({
-    where: { email: { equals: pending.email, mode: "insensitive" } },
-    select: { id: true },
-  });
+  // Exact, ignoring case, never a wildcard match (findLoginByEmail).
+  const existing = await findLoginByEmail(pending.email);
   if (existing) {
     return NextResponse.json(
       { error: `There's already a JobProfitAI login for ${pending.email}. Enter its password to link it instead.` },

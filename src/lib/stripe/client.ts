@@ -40,7 +40,12 @@ export function getStripe(): Stripe {
     // Stripe's own transient-failure retry. Safe because every write we make
     // is either idempotent by construction or guarded by a database unique
     // constraint (see StripeEvent / ReferralReward / PartnerCommission).
-    maxNetworkRetries: 2,
+    // One retry and a 15 second timeout (the SDK's default is 80 seconds),
+    // so a hung call fails inside the webhook's 60 second limit and the
+    // event is released for Stripe to retry, instead of the function being
+    // killed mid-way.
+    maxNetworkRetries: 1,
+    timeout: 15_000,
   });
   return cachedStripe;
 }

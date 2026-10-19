@@ -67,7 +67,8 @@ async function seedPartnerWithClients(payingClients: number) {
     const clientId = `client_${i}`;
     await fake.client.user.create({ data: { id: clientId, email: `${clientId}@example.com` } });
     await fake.client.subscription.create({
-      data: { userId: clientId, status: "active", plan: "profit_intelligence" },
+      // Paying: live, and a payment on record.
+      data: { userId: clientId, status: "active", plan: "profit_intelligence", firstPaidAt: new Date("2026-01-15T00:00:00Z") },
     });
     const referral = await fake.client.referral.create({
       data: {
@@ -102,6 +103,14 @@ describe("commission rate tiers", () => {
 
     expect(result?.rateBps).toBe(2000);
     expect(result?.commissionCents).toBe(2_980); // 20% of $149
+  });
+
+  it("doesn't count a client as paying before a payment is recorded (a trial set in Stripe is stored as active)", async () => {
+    const { partner } = await seedPartnerWithClients(10);
+    expect(await countPayingClients(partner.id)).toBe(10);
+    await fake.client.subscription.update({ where: { userId: "client_9" }, data: { firstPaidAt: null } });
+    expect(await countPayingClients(partner.id)).toBe(9);
+    expect((await currentPartnerTier(partner.id)).ratePct).toBe(20);
   });
 
   it("pays 25% at ten or more paying clients", async () => {
@@ -155,7 +164,7 @@ describe("commission rate tiers", () => {
       const clientId = `later_${i}`;
       await fake.client.user.create({ data: { id: clientId, email: `${clientId}@example.com` } });
       await fake.client.subscription.create({
-        data: { userId: clientId, status: "active", plan: "profit_intelligence" },
+        data: { userId: clientId, status: "active", plan: "profit_intelligence", firstPaidAt: NOW },
       });
       await fake.client.referral.create({
         data: {

@@ -1,11 +1,14 @@
 import { randomBytes } from "crypto";
 import type { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { SignJWT, jwtVerify } from "jose";
 import { prisma } from "./prisma";
 import { createSession, hashPassword } from "./auth";
-import { carryAdOptOutToBrowser } from "./adOptOut";
+import { carryAdOptOutToBrowser, noteBrowserOptOut, signupAdOptOut } from "./adOptOut";
+import { SOURCE_COOKIE } from "./adSource";
+import { reportServerEvent, signupAdSource, signupSessionId } from "./serverEvents";
+import { findLoginByEmail } from "./loginThrottle";
 import { accountFor, ACTIVE_COMPANY_COOKIE } from "./account";
 import { attachCompany, OWNER_ONLY_CONNECT_NOTICE } from "./connectCompany";
 import { hashRealmId, legacyHashRealmId } from "./crypto";
@@ -36,6 +39,12 @@ import {
  *                   account and a free trial with the company connected,
  *                   and no password, plan or payment questions, which is
  *                   what the App Store's one-click trial requires.
+ *                   The button on /signup uses this flow too, with
+ *                   `signup: true` in the state: that visitor came through
+ *                   our pages, so a new account there is measured like any
+ *                   other signup (opt-out, where they came from, sign_up).
+ *                   A real App Store arrival never passed our pages, and
+ *                   nothing about it is kept or reported.
  *
  * Intuit's rules, and where each is enforced:
  *   - Accounts are matched on Intuit's `sub`, never the email address
@@ -60,13 +69,18 @@ const cookieBase = () => ({
   secure: process.env.NODE_ENV === "production",
 });
 
-export type IntuitIntent = "signin" | "appstore";
+/** "signup" is the button on /signup: the App Store flow, from our own page. */
+export type IntuitIntent = "signin" | "appstore" | "signup";
 
 /** Sends the browser to Intuit's sign-in. */
 export async function startIntuitFlow(intent: IntuitIntent, opts: { realmId?: string | null } = {}): Promise<NextResponse> {
   const nonce = randomBytes(16).toString("base64url");
+  const connecting = intent !== "signin";
   const state = await new SignJWT({
-    flow: intent === "appstore" ? "intuit_appstore" : "intuit_signin",
+    flow: connecting ? "intuit_appstore" : "intuit_signin",
+    // Signed with the rest of the state, so only our signup page can ask
+    // for a new account to be measured.
+    ...(intent === "signup" ? { signup: true } : {}),
     nonce,
     // QuickBooks Online Accountant launches for a particular company; land
     // on that one if it belongs to the account.
@@ -77,9 +91,7 @@ export async function startIntuitFlow(intent: IntuitIntent, opts: { realmId?: st
     .setExpirationTime("10m")
     .sign(secret());
 
-  const res = NextResponse.redirect(
-    await buildAuthorizeUrl(state, intent === "appstore" ? CONNECT_WITH_OPENID_SCOPES : OPENID_SCOPES)
-  );
+  const res = NextResponse.redirect(await buildAuthorizeUrl(state, connecting ? CONNECT_WITH_OPENID_SCOPES : OPENID_SCOPES));
   res.cookies.set(OIDC_NONCE_COOKIE, nonce, { ...cookieBase(), maxAge: 600 });
   return res;
 }
@@ -129,10 +141,11 @@ export async function provisionIntuitUser(
   identity: { sub: string; email: string; name: string | null },
   /**
    * The agreement record (and any opt-out, or else where they came from)
-   * when the person ticked the box on /login/intuit. An App Store arrival
-   * has none of these, so it's asked to agree at /accept-terms before the
-   * app opens (src/lib/termsAcceptance.ts), and nothing about it is ever
-   * reported to Google from the server.
+   * when the person ticked the box on /login/intuit; the opt-out or source
+   * alone for the button on /signup, which has no box to tick. An App Store
+   * arrival has none of these, so it's asked to agree at /accept-terms
+   * before the app opens (src/lib/termsAcceptance.ts), and nothing about it
+   * is ever reported to Google from the server.
    */
   extra: Pick<
     Prisma.UserCreateInput,
@@ -182,17 +195,35 @@ async function discardGrant(realmId: string, refreshToken: string): Promise<void
   }
 }
 
-/** The callback half. `flow` is "intuit_signin" or "intuit_appstore". */
+/** The request's headers, read through Next.js when the caller didn't pass them. */
+async function headersOr(given: Headers | undefined): Promise<Headers> {
+  if (given) return given;
+  try {
+    return new Headers(await headers());
+  } catch {
+    return new Headers();
+  }
+}
+
+/**
+ * The callback half. `flow` is "intuit_signin" or "intuit_appstore".
+ * `requestHeaders` are the callback request's, for the opt-out and ad source
+ * checks; read through Next.js when not passed.
+ */
 export async function handleIntuitFlow(
   flow: string,
   payload: Record<string, unknown>,
   code: string,
-  realmId: string | null
+  realmId: string | null,
+  requestHeaders?: Headers
 ): Promise<NextResponse> {
   if (flow !== "intuit_signin" && flow !== "intuit_appstore") {
     return NextResponse.redirect(appUrl("/login?notice=invalid_state"));
   }
   const connecting = flow === "intuit_appstore";
+  // Started from the button on /signup (startIntuitFlow), not the App Store.
+  const fromSignupPage = connecting && payload.signup === true;
+  const reqHeaders = await headersOr(requestHeaders);
 
   const cookieStore = await cookies();
   const nonce = cookieStore.get(OIDC_NONCE_COOKIE)?.value;
@@ -221,12 +252,11 @@ export async function handleIntuitFlow(
   }
 
   let user = await prisma.user.findUnique({ where: { intuitSub: info.sub } });
+  let newUser = false;
 
   if (!user) {
-    const sameEmail = await prisma.user.findFirst({
-      where: { email: { equals: info.email, mode: "insensitive" } },
-      select: { id: true },
-    });
+    // Exact, ignoring case, never a wildcard match (findLoginByEmail).
+    const sameEmail = await findLoginByEmail(info.email);
     if (sameEmail || !connecting) {
       // Unknown Intuit identity. Either a login with this address already
       // exists (it can only be linked after its password is entered), or
@@ -247,9 +277,16 @@ export async function handleIntuitFlow(
       res.cookies.set(INTUIT_PENDING_COOKIE, pending, { ...cookieBase(), maxAge: 900 });
       return res;
     }
-    // New person arriving from the App Store: account and trial, no questions.
+    // New person arriving from the App Store, or from the button on our
+    // signup page: account and trial, no questions. Only the signup page's
+    // carries an opt-out or where they came from (as the email signup
+    // does); an App Store arrival gets neither.
     try {
-      user = await provisionIntuitUser({ sub: info.sub, email: info.email, name: displayName(info) });
+      user = await provisionIntuitUser(
+        { sub: info.sub, email: info.email, name: displayName(info) },
+        fromSignupPage ? { ...signupAdOptOut({ headers: reqHeaders }), ...signupAdSource(reqHeaders) } : {}
+      );
+      newUser = true;
     } catch (err) {
       if ((err as { code?: string })?.code === "P2002") {
         return NextResponse.redirect(appUrl("/login?notice=intuit_failed"));
@@ -259,11 +296,33 @@ export async function handleIntuitFlow(
   }
 
   await createSession(user.id);
+  // Opt-outs go both ways, as on the login form: this browser's onto the
+  // account before anything below can be reported (connecting the company
+  // reports qbo_connected), and the account's onto this browser.
+  await noteBrowserOptOut(user.id, reqHeaders).catch(() => {});
   await carryAdOptOutToBrowser(user);
   const account = await accountFor(user.id);
 
+  // The signup, before the company is attached so the steps arrive in
+  // order. Only from our signup page: an App Store arrival is never
+  // reported, as the Privacy Policy promises (and has no browser ID saved).
+  const measuredSignup = newUser && fromSignupPage;
+  if (measuredSignup) {
+    await reportServerEvent(user.id, "sign_up", { method: "intuit" }, { sessionId: signupSessionId(reqHeaders) });
+  }
+  // A new account hasn't agreed to the Terms yet (no form to tick on this
+  // path), so it goes by /accept-terms on its way to where it was headed,
+  // keeping that address (the dashboard would otherwise send it there and
+  // lose ?qbo_connected=1). Where they came from is on the account now, so
+  // the browser's jpai_src goes, as after an email signup.
+  const redirectTo = (path: string) => {
+    const res = NextResponse.redirect(appUrl(newUser ? `/accept-terms?next=${encodeURIComponent(path)}` : path));
+    if (measuredSignup) res.cookies.set(SOURCE_COOKIE, "", { path: "/", maxAge: 0 });
+    return res;
+  };
+
   if (!connecting) {
-    const res = NextResponse.redirect(appUrl("/dashboard"));
+    const res = redirectTo("/dashboard");
     const hint = typeof payload.realmHint === "string" ? payload.realmHint : null;
     if (hint) {
       const company = await prisma.quickBooksConnection.findFirst({
@@ -279,7 +338,7 @@ export async function handleIntuitFlow(
   // (the firm would be billed for it).
   if (account.role === "client") {
     await discardGrant(realmId!, tokens.refresh_token);
-    return NextResponse.redirect(appUrl("/dashboard?qbo_error=view_only"));
+    return redirectTo("/dashboard?qbo_error=view_only");
   }
   // The role goes along so a Firm team member can't add a billed company
   // this way either, same as through Settings (see attachCompany).
@@ -291,9 +350,9 @@ export async function handleIntuitFlow(
         : result.code === "owner_only"
           ? `/dashboard/settings?notice=${OWNER_ONLY_CONNECT_NOTICE}`
           : `/dashboard/billing?limit=${result.code}`;
-    return NextResponse.redirect(appUrl(target));
+    return redirectTo(target);
   }
-  const res = NextResponse.redirect(appUrl("/dashboard?qbo_connected=1"));
+  const res = redirectTo("/dashboard?qbo_connected=1");
   res.cookies.set(ACTIVE_COMPANY_COOKIE, result.connectionId, { ...cookieBase(), maxAge: 60 * 60 * 24 * 365 });
   return res;
 }

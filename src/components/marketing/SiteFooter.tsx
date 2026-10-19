@@ -1,6 +1,7 @@
 import { COMPANY_MAILING_ADDRESS } from "@/lib/company";
 import Link from "next/link";
 import { Logo } from "./Logo";
+import { TRADEMARK_NOTICE } from "./trademark";
 
 const PRODUCT_LINKS = [
   { href: "/how-it-works", label: "How It Works" },
@@ -55,12 +56,7 @@ export default function SiteFooter() {
             &copy; {year} PWL Solutions LLC. All rights reserved. JobProfitAI is a product of PWL
             Solutions LLC, {COMPANY_MAILING_ADDRESS}.
           </p>
-          <p className="mt-2 text-xs leading-relaxed text-jp-muted">
-            QuickBooks and QuickBooks Online are trademarks of Intuit Inc., registered in the United
-            States and other countries. JobProfitAI is an independent product and is not affiliated
-            with, endorsed by, or sponsored by Intuit Inc. Use of the QuickBooks name is for
-            identification purposes only.
-          </p>
+          <p className="mt-2 text-xs leading-relaxed text-jp-muted">{TRADEMARK_NOTICE}</p>
         </div>
       </div>
     </footer>

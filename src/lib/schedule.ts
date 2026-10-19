@@ -101,6 +101,20 @@ export function lastScheduledSend(
   return { scheduledAt, weekStarting };
 }
 
+/** A brief emailed more than this long ago isn't this week's, whichever week it is stored under. */
+export const RESEND_AFTER_MS = 6 * DAY_MS;
+
+/**
+ * Whether a brief already emailed at `emailedAt` stands for this week's
+ * send. One emailed more than six days ago doesn't, even when it is stored
+ * under the same week: moving the send day later in the week (Monday's
+ * brief sent, then Sunday chosen) puts Sunday in the same Monday-to-Sunday
+ * week as Monday, and the next brief went out 13 days after the last.
+ */
+export function sentForThisSchedule(emailedAt: Date | null | undefined, now: Date): boolean {
+  return emailedAt != null && now.getTime() - emailedAt.getTime() <= RESEND_AFTER_MS;
+}
+
 /** Whether a brief scheduled at `scheduledAt` should still be sent at `now`. */
 export function withinCatchUp(now: Date, scheduledAt: Date): boolean {
   const late = now.getTime() - scheduledAt.getTime();

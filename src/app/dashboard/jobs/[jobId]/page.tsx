@@ -504,8 +504,10 @@ function Stat({ label, value, help }: { label: string; value: string; help: stri
  * Why an open job shows no forecast figures yet. A forecast from a small
  * share billed or a small percent entered divides early costs by a small
  * number: $30,000 of materials on a job 10% billed reads as a job three
- * times over budget. The feed, alerts and WIP page already leave these out;
- * the job page says why instead of showing the number.
+ * times over budget. One from billing with no cost estimate errs the other
+ * way: a 50% deposit and the first materials read as a 60% margin. The feed,
+ * alerts and WIP page already leave these out; the job page says why
+ * instead of showing the number.
  */
 function forecastNotYetText(f: JobFinancials, fc: ForecastResult): string {
   const pctText = fc.progress != null ? `${Math.round(fc.progress * 100)}%` : null;
@@ -514,6 +516,11 @@ function forecastNotYetText(f: JobFinancials, fc: ForecastResult): string {
   }
   if (fc.progressSource === "billing" && f.wip != null && f.wip.overUnderBilling < 0) {
     return "Not forecast yet: the costs are further along than the bills, so this job may be under billed rather than over budget. Enter a percent complete in Job Details for a forecast.";
+  }
+  // However much is billed: a deposit runs ahead of the work, and without a
+  // cost estimate there's nothing to check the forecast against.
+  if (fc.progressSource === "billing" && (f.estimatedCost == null || f.estimatedCost <= 0)) {
+    return `Too early to forecast from billing: ${pctText ?? "some"} of the contract is billed, but with no cost estimate a deposit billed ahead of the work makes the forecast run high. Add a cost estimate, or enter a percent complete, in Job Details for a forecast.`;
   }
   if (fc.progressSource === "billing") {
     return `Too early to forecast from billing: ${pctText ?? "little"} of the contract is billed so far. Enter a percent complete in Job Details for a forecast now.`;

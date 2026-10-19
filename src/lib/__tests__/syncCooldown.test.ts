@@ -27,6 +27,13 @@ describe("Sync now's pause and a waiting rebuild", () => {
     expect(syncCooldownSecondsLeft({ lastSyncAttemptAt: ago(10), lastSyncStatus: "error" }, NOW)).toBe(SYNC_COOLDOWN_SECONDS - 10);
   });
 
+  it("doesn't pause a press that carries on a full read stopped partway, unless it's down to once a day", () => {
+    expect(syncCooldownSecondsLeft({ ...justSynced, fullSyncContinueAt: ago(10), lastSyncError: null }, NOW)).toBe(0);
+    expect(syncCooldownSecondsLeft({ ...justSynced, fullSyncContinueAt: new Date(NOW.getTime() + 60_000), lastSyncError: null }, NOW)).toBe(SYNC_COOLDOWN_SECONDS - 10);
+    const tooLong = "Reading this company's QuickBooks history keeps running out of time, so some of its figures may be out of date.";
+    expect(syncCooldownSecondsLeft({ ...justSynced, fullSyncContinueAt: ago(10), lastSyncError: tooLong }, NOW)).toBe(SYNC_COOLDOWN_SECONDS - 10);
+  });
+
   it("counts a rebuild as waiting when no sync start is known", () => {
     expect(rebuildWaiting({ rebuildRequestedAt: ago(5), lastSyncStartedAt: null })).toBe(true);
     expect(rebuildWaiting({ rebuildRequestedAt: null, lastSyncStartedAt: null })).toBe(false);

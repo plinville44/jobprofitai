@@ -4,6 +4,7 @@ import { join } from "path";
 import { QUESTIONS, notesFor, planFor, type Answers } from "@/components/marketing/fitCheckRules";
 import { PLANS, PARTNER_TIERS } from "@/lib/plans";
 import { OG_IMAGE } from "@/lib/siteMeta";
+import { getSampleCompany } from "@/lib/sampleCompany";
 
 // The website, legal pages and in-app settings text make promises about what
 // the product does. These tests hold the ones that have gone wrong before to
@@ -196,11 +197,13 @@ describe("client logins and bookkeepers", () => {
 
 describe("example data", () => {
   it("only judges finished jobs against the target in the job list preview", () => {
+    // The job list is the sample company run through the engine (audit of
+    // 2026-10-19): no open job's row says anything about the target margin.
+    const { jobList } = getSampleCompany();
+    expect(jobList.some((r) => r.job.status === "closed" && /target/.test(r.issue ?? ""))).toBe(true);
+    for (const r of jobList.filter((x) => x.job.status === "open")) expect(r.issue ?? "").not.toMatch(/[Tt]arget/);
     const preview = read("components/marketing/ProductPreview.tsx");
-    // The one job the attention table says is below target is a finished one.
-    expect(preview).toMatch(/Oakfield Warehouse Fit-Out", status: "Completed"/);
-    const openRows = preview.split("\n").filter((l) => l.includes('status: "Active"'));
-    for (const row of openRows) expect(row).not.toMatch(/[Tt]arget/);
+    expect(preview).toContain('const judged = job.status === "closed"');
   });
 });
 

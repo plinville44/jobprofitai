@@ -24,7 +24,7 @@ export default function RefreshAnalysisButton({ connectionId }: { connectionId: 
         data = null;
       }
       if (res.ok) {
-        setStatus(data.message ?? (data.refreshed ? `Analysis refreshed - ${data.count} insight(s).` : "Up to date."));
+        setStatus(data.message ?? (data.refreshed ? `Analysis refreshed: ${data.count} ${data.count === 1 ? "insight" : "insights"}.` : "Up to date."));
         router.refresh();
       } else {
         setStatus(`Failed: ${data?.error ?? `Server returned status ${res.status}.`}`);

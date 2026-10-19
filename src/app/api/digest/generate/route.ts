@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { localWeekStarting, isValidTimeZone } from "@/lib/schedule";
 import { prisma } from "@/lib/prisma";
-import { getAccount, refuseClient } from "@/lib/account";
+import { connectionForAccount, getAccount, refuseClient } from "@/lib/account";
 import { tryMarkFirstAnalysis } from "@/lib/trial";
 import { tryAnnounceAnalysisReady } from "@/lib/email/lifecycle";
 import { jobSourceQuestionPending } from "@/lib/jobSetup";
 import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
-import { generateWeeklyDigestForConnection } from "@/lib/digest";
+import { generateWeeklyDigestForConnection, SummaryOutOfTimeError } from "@/lib/digest";
+import { overLimitConnectionIds, pausedCompaniesMessage } from "@/lib/planLimits";
+import { fullSyncPartway } from "@/lib/syncProblem";
+import { aiFailureKind } from "@/lib/ai";
+import { reportError } from "@/lib/monitoring";
 
 /**
  * POST /api/digest/generate  { connectionId }
@@ -41,12 +45,37 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { connectionId } = await req.json();
-    const connection = await prisma.quickBooksConnection.findUnique({
-      where: { id: connectionId },
-    });
-    if (!connection || connection.userId !== account.ownerId) {
+    const body = await req.json().catch(() => ({}));
+    // Scoped to this login's account, and a disconnected company gets no
+    // new brief: the same checks Sync now makes (api/quickbooks/sync).
+    const connection = await connectionForAccount(account, body?.connectionId);
+    if (!connection) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
+    }
+    // Nor does a company past the plan's company limit (src/lib/planLimits.ts):
+    // it isn't synced and gets no weekly brief, so no AI brief on demand either.
+    if ((await overLimitConnectionIds(account.ownerId)).has(connection.id)) {
+      const name = connection.companyName?.trim() || "This company";
+      return NextResponse.json(
+        {
+          error: `${pausedCompaniesMessage([name], entitlements.limits.maxConnections)} A paused company keeps its figures but gets no new brief. Billing shows what to do.`,
+          code: "company_paused",
+        },
+        { status: 403 }
+      );
+    }
+    // A full read of QuickBooks still partway leaves some data read and some
+    // not: a brief now would show costs without their invoices. Not once the
+    // read's last try failed: a stuck read is put off again every time, and
+    // the button would refuse for good. The dashboard says the sync failed.
+    if (fullSyncPartway(connection) && connection.lastSyncStatus !== "error") {
+      return NextResponse.json(
+        {
+          error: "Your QuickBooks history is still being read, so the brief would show costs without their invoices. It's made once the read finishes, usually overnight.",
+          code: "sync_partway",
+        },
+        { status: 409 }
+      );
     }
 
     // One brief a minute per company. Each one is an AI call; without a
@@ -119,6 +148,11 @@ export async function POST(req: NextRequest) {
     // Message only, never the full error object - see the matching comment
     // in api/quickbooks/sync/route.ts for why.
     console.error("digest/generate failed:", err instanceof Error ? err.message : "Unknown error");
+    // A refused AI request (an old ANTHROPIC_MODEL, a revoked key) used to
+    // end here unreported. A plain timeout is the wait, not a fault.
+    if (!(err instanceof SummaryOutOfTimeError) && aiFailureKind(err) !== "timeout") {
+      await reportError(err, { route: "/api/digest/generate", method: "POST", feature: "brief-summary" });
+    }
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Digest generation failed." },
       { status: 500 }

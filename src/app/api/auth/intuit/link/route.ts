@@ -5,7 +5,8 @@ import { refuseCrossSite } from "@/lib/sameOrigin";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { createSession, verifyPassword } from "@/lib/auth";
-import { clientIp, isLockedOut, recordLoginAttempt, WINDOW_MINUTES } from "@/lib/loginThrottle";
+import { clientIp, findLoginByEmail, finishLoginAttempt, startLoginAttempt, WINDOW_MINUTES } from "@/lib/loginThrottle";
+import { carryAdOptOutToBrowser, noteBrowserOptOut } from "@/lib/adOptOut";
 import { clearPendingIntuitIdentity, readPendingIntuitIdentity } from "@/lib/intuitSignIn";
 
 export const runtime = "nodejs";
@@ -35,15 +36,19 @@ export async function POST(req: NextRequest) {
 
   const email = parsed.data.email.trim();
   const ip = clientIp(req.headers);
-  if (await isLockedOut(email, ip)) {
+  // Written as a failed attempt before the password is checked, so
+  // requests sent at once can't make more guesses than the limit.
+  const attempt = await startLoginAttempt(email, ip);
+  if (attempt.locked) {
     return NextResponse.json(
       { error: `Too many sign-in attempts. Wait ${WINDOW_MINUTES} minutes and try again, or reset your password.` },
       { status: 429 }
     );
   }
-  const user = await prisma.user.findFirst({ where: { email: { equals: email, mode: "insensitive" } } });
+  // Exactly the address typed, ignoring case (findLoginByEmail), never a wildcard match.
+  const user = await findLoginByEmail(email);
   const valid = user ? await verifyPassword(parsed.data.password, user.passwordHash) : false;
-  await recordLoginAttempt(email, ip, valid);
+  await finishLoginAttempt(attempt.attemptId, valid);
   if (!user || !valid) return NextResponse.json({ error: "Incorrect email or password." }, { status: 401 });
 
   if (user.intuitSub && user.intuitSub !== pending.sub) {
@@ -62,6 +67,11 @@ export async function POST(req: NextRequest) {
   }
   await clearPendingIntuitIdentity();
   await createSession(user.id);
+  // Opt-outs go both ways, as on the login form: this browser's onto the
+  // account before anything can be reported (connecting QuickBooks comes
+  // next), and the account's onto this browser.
+  await noteBrowserOptOut(user.id, req.headers).catch(() => {});
+  await carryAdOptOutToBrowser(user);
   // Tell the owner, so a link they didn't make doesn't go unnoticed.
   await sendEmail({ to: user.email, ...intuitLinkedEmail() }).catch(() => {});
   return NextResponse.json({ ok: true, connect: pending.connect });

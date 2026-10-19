@@ -261,6 +261,18 @@ describe("matching transactions to jobs", () => {
   it("refuses to guess between two jobs under the same parent", () => {
     expect(resolveJob(index, "4")).toBeNull();
   });
+
+  it("doesn't give a parent's only job what was tagged to the parent long before that job was created", () => {
+    const dated = buildJobIndex([{ id: "job-a", qboId: "2", parentQboId: "1", qboCreatedAt: new Date("2026-06-01T09:30:00Z") }]);
+    // 60 days before the day it was created, and later: the job's.
+    expect(resolveJob(dated, "1", new Date("2026-04-02T00:00:00Z"))).toEqual({ jobId: "job-a", method: "parent_customer_fallback" });
+    // Earlier than that: the client's history, on no job.
+    expect(resolveJob(dated, "1", new Date("2026-04-01T00:00:00Z"))).toBeNull();
+    // Tagged to the job itself: always the job's.
+    expect(resolveJob(dated, "2", new Date("2019-04-01T00:00:00Z"))).toEqual({ jobId: "job-a", method: "direct" });
+    // No creation date stored: as before.
+    expect(resolveJob(index, "1", new Date("2019-04-01T00:00:00Z"))).toEqual({ jobId: "job-a", method: "parent_customer_fallback" });
+  });
 });
 
 describe("row ids", () => {
@@ -489,6 +501,17 @@ describe("what's still owed on an invoice", () => {
     expect(revenueFromTxn({ TxnDate: "2026-09-01", TotalAmt: 500 }, "SalesReceipt").openBalance).toBeNull();
   });
 
+  it("converts a sale in another currency at its exchange rate, balance included", () => {
+    const cad = revenueFromTxn({ TxnDate: "2026-09-01", TotalAmt: 10_700, Balance: 3_210, TxnTaxDetail: { TotalTax: 700 }, CurrencyRef: { value: "CAD" }, ExchangeRate: 0.75 }, "Invoice");
+    expect([cad.amount, cad.tax, cad.openBalance]).toEqual([7_500, 525, 2_407.5]);
+  });
+
+  it("in class mode, puts what's owed on the classes billed, never on a class with only a credit", () => {
+    const line = (amount: number, classId: string) => ({ Amount: amount, SalesItemLineDetail: { ClassRef: { value: classId } } });
+    const parts = revenueByClass({ TxnDate: "2026-09-01", TotalAmt: 1_000, Balance: 1_000, Line: [line(3_000, "A"), line(-2_000, "B")] }, "Invoice");
+    expect(parts.map((p) => [p.classQboId, p.openBalance])).toEqual([["A", 1_000], ["B", 0]]);
+  });
+
   it("keeps the invoice number and due date for Money Owed", () => {
     const inv = revenueFromTxn({ TxnDate: "2026-09-01", DocNumber: "1042", DueDate: "2026-10-01", TotalAmt: 500, Balance: 500 }, "Invoice");
     expect(inv.docNumber).toBe("1042");
@@ -595,6 +618,25 @@ describe("class-mode income without an invoice", () => {
     };
     expect(journalRevenueLines(je, lookups)).toEqual([]);
     expect(journalRevenueLines(je, lookups, true).map((l) => [l.classQboId, l.amount])).toEqual([["3", 400]]);
+  });
+
+  it("returns income with no class too when asked, for the count of sales on no job", () => {
+    const deposit = {
+      Id: "902",
+      TxnDate: "2026-09-12",
+      Line: [
+        { Id: "1", Amount: 900, DepositLineDetail: { AccountRef: { value: "40" }, ClassRef: { value: "3" } } },
+        { Id: "2", Amount: 50, DepositLineDetail: { AccountRef: { value: "40" } } },
+        // Still not a vendor's.
+        { Id: "3", Amount: 70, DepositLineDetail: { Entity: { value: "9", type: "VENDOR" }, AccountRef: { value: "40" } } },
+      ],
+    };
+    expect(depositRevenueLines(deposit, lookups, true, true).map((l) => [l.lineId, l.classQboId])).toEqual([["1", "3"], ["2", null]]);
+    const je = { Id: "612", TxnDate: "2026-09-01", Line: [{ Id: "0", Amount: 400, JournalEntryLineDetail: { PostingType: "Credit", AccountRef: { value: "40" } } }] };
+    expect(journalRevenueLines(je, lookups, true, true).map((l) => [l.classQboId, l.amount])).toEqual([[null, 400]]);
+    // Not asked, or not jobs by class: as before.
+    expect(journalRevenueLines(je, lookups, true)).toEqual([]);
+    expect(journalRevenueLines(je, lookups, false, true)).toEqual([]);
   });
 });
 

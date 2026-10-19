@@ -3,6 +3,7 @@ import Link from "next/link";
 import { LogoLink } from "@/components/marketing/Logo";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
+import { findLoginByEmail } from "@/lib/loginThrottle";
 import { findUsableInvite } from "@/lib/team";
 import AcceptInviteForm from "./AcceptInviteForm";
 
@@ -22,12 +23,8 @@ export default async function InvitePage(props: { params: Promise<{ token: strin
   const signedIn = session
     ? await prisma.user.findUnique({ where: { id: session.userId }, select: { email: true } })
     : null;
-  const existingLogin = invite && !signedIn
-    ? await prisma.user.findFirst({
-        where: { email: { equals: invite.email, mode: "insensitive" } },
-        select: { id: true },
-      })
-    : null;
+  // Exact, ignoring case, never a wildcard match (findLoginByEmail).
+  const existingLogin = invite && !signedIn ? await findLoginByEmail(invite.email) : null;
   const inviter = invite ? invite.ownerName ?? invite.ownerEmail : "";
   const next = `/invite/${encodeURIComponent(token)}`;
 

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { LogoLink } from "@/components/marketing/Logo";
-import { prisma } from "@/lib/prisma";
+import { findLoginByEmail } from "@/lib/loginThrottle";
 import { readPendingIntuitIdentity } from "@/lib/intuitSignIn";
 import IntuitLinkForm from "./IntuitLinkForm";
 
@@ -17,12 +17,8 @@ export default async function IntuitLinkPage() {
   const pending = await readPendingIntuitIdentity();
   if (!pending) redirect("/login?notice=intuit_session");
 
-  const existing = pending.email
-    ? await prisma.user.findFirst({
-        where: { email: { equals: pending.email, mode: "insensitive" } },
-        select: { id: true },
-      })
-    : null;
+  // Exact, ignoring case, never a wildcard match (findLoginByEmail).
+  const existing = pending.email ? await findLoginByEmail(pending.email) : null;
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6 py-12">

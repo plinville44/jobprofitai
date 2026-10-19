@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { connectionForAccount, getAccount } from "@/lib/account";
 import { getEntitlements } from "@/lib/entitlements";
 import { getConnectionProfitData } from "@/lib/profitability";
-import { buildWipSchedule, NOT_SCHEDULED_NEED_TEXT } from "@/lib/wipSchedule";
+import { buildWipSchedule, NOT_SCHEDULED_NEED_TEXT, wipReportBasis, wipReportDay } from "@/lib/wipSchedule";
 import { forecastIsActionable } from "@/lib/forecastRules";
+import { isOverPlanLimit } from "@/lib/planLimits";
 import { toCsv } from "@/lib/csv";
 import { formatCurrency } from "@/lib/format";
 import { prisma } from "@/lib/prisma";
@@ -12,7 +13,9 @@ import { prisma } from "@/lib/prisma";
  * GET /api/wip/export?connectionId=...  The Work in Progress schedule as a
  * CSV, for the bookkeeper, bank or bonding company. Same figures as the WIP
  * page and the bank-ready report: one row per contract in progress, a total
- * row, then open jobs that aren't on the schedule and why (the Note column).
+ * row, then open jobs that aren't on the schedule and why (the Note column),
+ * then the line saying when the QuickBooks data was read and, when the
+ * figures may be behind the books, a note row saying why.
  */
 export async function GET(req: NextRequest) {
   const account = await getAccount();
@@ -23,10 +26,14 @@ export async function GET(req: NextRequest) {
   if (!connection) return NextResponse.json({ error: "Company not found" }, { status: 404 });
 
   const now = new Date();
-  const [data, filled] = await Promise.all([
-    getConnectionProfitData(connection.id, now, { statusFilter: "open" }),
+  // As the books stand at the end of today in the company's time zone, as
+  // on the bank-ready report: nothing dated after today.
+  const [data, filled, paused] = await Promise.all([
+    getConnectionProfitData(connection.id, now, { statusFilter: "open", asOf: wipReportDay(now, connection.emailTimezone) }),
     prisma.job.findMany({ where: { connectionId: connection.id, estimatedCostSource: "target_margin" }, select: { id: true } }),
+    isOverPlanLimit(connection),
   ]);
+  const basis = wipReportBasis(connection, { paused });
   const schedule = buildWipSchedule(data.lifetimeJobs, now, new Set(filled.map((j) => j.id)));
   const canForecast = entitlements.has("forecast_at_completion");
   const round = (n: number | null | undefined) => (n == null ? "" : Math.round(n * 100) / 100);
@@ -88,6 +95,12 @@ export async function GET(req: NextRequest) {
   };
   for (const j of schedule.notScheduled) noteOnly(j.jobName, `not on schedule: ${NOT_SCHEDULED_NEED_TEXT[j.needs]}`);
   for (const j of schedule.idle) noteOnly(j.jobName, "not on schedule: no cost or invoice in the last 90 days");
+  // Last, after the figures, so the header stays the first row for anyone
+  // importing the file. The date line goes in the first column to be seen.
+  const dataLine: (string | number)[] = new Array(header.length).fill("");
+  dataLine[0] = `${basis.dataAsOf}. Costs and invoices dated after ${isoDateIn(now, connection.emailTimezone)} are left out.`;
+  rows.push(dataLine);
+  if (basis.warning) noteOnly("Data warning", basis.warning);
   const name = (connection.companyName ?? "company").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
   return new NextResponse(toCsv([header, ...rows]), {
     headers: {

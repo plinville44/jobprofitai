@@ -21,6 +21,10 @@
  *    per-company numbers, so "Purchase 145" exists in almost every company;
  *    an id without the connection in it made two companies write to the
  *    same row.
+ *  - Amounts are in the company's home currency. A transaction in another
+ *    currency carries ExchangeRate (home currency per one unit of its own),
+ *    and every amount on it is multiplied by that: a CAD $10,000 bill is not
+ *    USD $10,000. Time entry cost rates are already in home currency.
  */
 
 export type CostCategory = "labor" | "materials" | "subcontractor" | "equipment" | "overhead" | "other";
@@ -82,6 +86,16 @@ export const estimateRowId = (connectionId: string, estimateId: string) => `${co
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : 0);
 const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : v != null && typeof v !== "object" ? String(v) : null);
 export const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * Home-currency units per one unit of the transaction's currency
+ * (QuickBooks' ExchangeRate), or 1 when the transaction has none, which is
+ * every transaction in a company without multicurrency.
+ */
+export function exchangeRate(txn: any): number {
+  const rate = num(txn?.ExchangeRate);
+  return rate > 0 ? rate : 1;
+}
 
 /** QuickBooks sends dates as "YYYY-MM-DD". Stored as midnight UTC of that day. */
 export function qboDate(v: unknown): Date | null {
@@ -264,6 +278,7 @@ export interface NormalizedCostLine {
 export function expenseLines(txn: any, sourceType: ExpenseSourceType, lookups: Lookups): NormalizedCostLine[] {
   const out: NormalizedCostLine[] = [];
   const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
+  const rate = exchangeRate(txn);
 
   if (sourceType === "JournalEntry") {
     for (const [i, line] of lines.entries()) {
@@ -292,7 +307,7 @@ export function expenseLines(txn: any, sourceType: ExpenseSourceType, lookups: L
       if (kind !== "cost" && !(isCustomer && entity?.EntityRef?.value != null) && d.ClassRef?.value == null) continue;
       const raw = num(line.Amount);
       if (raw === 0) continue;
-      const amount = (d.PostingType === "Credit" ? -1 : 1) * raw;
+      const amount = (d.PostingType === "Credit" ? -1 : 1) * raw * rate;
       const sourceName = str(d.AccountRef?.name) ?? account?.fullName ?? null;
       const { category, isJobCostAccount } = categorizeLine({ sourceName, accountId, itemId: null }, lookups);
       out.push({
@@ -335,7 +350,7 @@ export function expenseLines(txn: any, sourceType: ExpenseSourceType, lookups: L
       customerQboId: str(acct?.CustomerRef?.value) ?? str(item?.CustomerRef?.value),
       customerName: str(acct?.CustomerRef?.name) ?? str(item?.CustomerRef?.name),
       classQboId: str(acct?.ClassRef?.value) ?? str(item?.ClassRef?.value) ?? str(txn?.ClassRef?.value),
-      amount: round2(sign * raw),
+      amount: round2(sign * raw * rate),
       category,
       accountName: sourceName,
       isJobCostAccount,
@@ -414,8 +429,10 @@ export interface NormalizedRevenue {
 }
 
 export function revenueFromTxn(txn: any, sourceType: RevenueSourceType): NormalizedRevenue {
-  const total = num(txn?.TotalAmt);
-  const tax = num(txn?.TxnTaxDetail?.TotalTax);
+  // TotalAmt, the tax and Balance are all in the sale's own currency.
+  const rate = exchangeRate(txn);
+  const total = num(txn?.TotalAmt) * rate;
+  const tax = num(txn?.TxnTaxDetail?.TotalTax) * rate;
   const net = total - tax;
   const negative = sourceType === "CreditMemo" || sourceType === "RefundReceipt";
   return {
@@ -424,7 +441,7 @@ export function revenueFromTxn(txn: any, sourceType: RevenueSourceType): Normali
     tax: round2(negative ? -tax : tax),
     status: negative ? "credit" : sourceType === "Invoice" && num(txn?.Balance) > 0 ? "open" : "paid",
     txnDate: qboDate(txn?.TxnDate),
-    openBalance: sourceType === "Invoice" && num(txn?.Balance) > 0 ? round2(num(txn?.Balance)) : null,
+    openBalance: sourceType === "Invoice" && num(txn?.Balance) > 0 ? round2(num(txn?.Balance) * rate) : null,
     docNumber: str(txn?.DocNumber),
     dueDate: sourceType === "Invoice" ? qboDate(txn?.DueDate) : null,
   };
@@ -485,13 +502,32 @@ export function revenueByClass(
       },
     ];
   }
+  // What's still owed goes to the classes billed on the invoice, never to a
+  // class with only a credit on it (that one owes 0). Shared by the positive classes alone, so
+  // together they are owed exactly the invoice's balance: by share of the
+  // whole, a +$3,000 line for one job and a -$2,000 line for another with
+  // $1,000 owed read as $3,000 owed on the first job.
+  const positive = [...byClass].filter(([, a]) => a > 0);
+  const positiveTotal = positive.reduce((s, [, a]) => s + a, 0);
+  const owed = new Map<string | null, number>();
+  if (whole.openBalance != null && positiveTotal > 0) {
+    let left = whole.openBalance;
+    positive.forEach(([key, a], i) => {
+      // The last one takes what rounding left, so the parts add up to the balance.
+      const part = i === positive.length - 1 ? round2(left) : round2((whole.openBalance! * a) / positiveTotal);
+      owed.set(key, part);
+      left -= part;
+    });
+  }
   return [...byClass].map(([classQboId, amount]) => {
     const share = amount / gross;
     return {
       classQboId,
       amount: round2(whole.amount * share),
       tax: round2(whole.tax * share),
-      openBalance: whole.openBalance == null ? null : round2(whole.openBalance * share),
+      // On an open invoice every class has a balance, if only 0: null reads
+      // as "not known yet" on Money Owed.
+      openBalance: whole.openBalance == null ? null : owed.get(classQboId) ?? 0,
       // Every class's share is part of the same invoice, due the same day.
       docNumber: whole.docNumber,
       dueDate: whole.dueDate,
@@ -505,8 +541,9 @@ export function revenueByClass(
 
 export interface NormalizedRevenueLine {
   lineId: string;
-  /** Null only for a class-mode line with the job's class and no customer. */
+  /** Null only for a class-mode line with the job's class and no customer, or with no class (withUnclassed). */
   customerQboId: string | null;
+  /** Null in class mode only for a line with no class, returned with withUnclassed for Data Health's count. */
   classQboId: string | null;
   /** Signed: money in to an income account is positive. */
   amount: number;
@@ -533,9 +570,16 @@ function isIncomeAccount(accountId: string | null, lookups: Lookups): boolean {
  * Lines to anything but an income account (a customer deposit held as a
  * liability, a transfer, a refund from a supplier) aren't revenue either.
  */
-export function depositRevenueLines(txn: any, lookups: Lookups, byClass = false): NormalizedRevenueLine[] {
+export function depositRevenueLines(
+  txn: any,
+  lookups: Lookups,
+  byClass = false,
+  /** Jobs by class: also return income lines with no class (classQboId null), so they can be counted as on no job. */
+  withUnclassed = false
+): NormalizedRevenueLine[] {
   const out: NormalizedRevenueLine[] = [];
   const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
+  const rate = exchangeRate(txn);
   for (const [i, line] of lines.entries()) {
     if (Array.isArray(line?.LinkedTxn) && line.LinkedTxn.length > 0) continue;
     const d = line?.DepositLineDetail;
@@ -546,7 +590,7 @@ export function depositRevenueLines(txn: any, lookups: Lookups, byClass = false)
     const classQboId = str(d.ClassRef?.value) ?? str(txn?.ClassRef?.value);
     // Jobs by class: income with the job's class counts whether or not a
     // customer is named, as it does in QuickBooks' report for that class.
-    if (byClass ? !classQboId || (entityType !== "" && entityType !== "customer") : !customerQboId) continue;
+    if (byClass ? (!classQboId && !withUnclassed) || (entityType !== "" && entityType !== "customer") : !customerQboId) continue;
     if (!isIncomeAccount(str(d.AccountRef?.value), lookups)) continue;
     const amount = num(line.Amount);
     if (amount === 0) continue;
@@ -554,7 +598,7 @@ export function depositRevenueLines(txn: any, lookups: Lookups, byClass = false)
       lineId: str(line.Id) ?? String(i),
       customerQboId,
       classQboId,
-      amount: round2(amount),
+      amount: round2(amount * rate),
       txnDate: qboDate(txn?.TxnDate),
     });
   }
@@ -566,9 +610,16 @@ export function depositRevenueLines(txn: any, lookups: Lookups, byClass = false)
  * adds income, a debit takes it away. (Cost lines on the same entry are
  * read by expenseLines.)
  */
-export function journalRevenueLines(txn: any, lookups: Lookups, byClass = false): NormalizedRevenueLine[] {
+export function journalRevenueLines(
+  txn: any,
+  lookups: Lookups,
+  byClass = false,
+  /** As for depositRevenueLines. */
+  withUnclassed = false
+): NormalizedRevenueLine[] {
   const out: NormalizedRevenueLine[] = [];
   const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
+  const rate = exchangeRate(txn);
   for (const [i, line] of lines.entries()) {
     const d = line?.JournalEntryLineDetail;
     if (!d) continue;
@@ -576,7 +627,7 @@ export function journalRevenueLines(txn: any, lookups: Lookups, byClass = false)
     const entityType = String(entity?.Type ?? "").toLowerCase();
     const customerQboId = entityType === "customer" ? str(entity?.EntityRef?.value) : null;
     const classQboId = str(d.ClassRef?.value);
-    if (byClass ? !classQboId || (entityType !== "" && entityType !== "customer") : !customerQboId) continue;
+    if (byClass ? (!classQboId && !withUnclassed) || (entityType !== "" && entityType !== "customer") : !customerQboId) continue;
     if (!isIncomeAccount(str(d.AccountRef?.value), lookups)) continue;
     const raw = num(line.Amount);
     if (raw === 0) continue;
@@ -584,7 +635,7 @@ export function journalRevenueLines(txn: any, lookups: Lookups, byClass = false)
       lineId: str(line.Id) ?? String(i),
       customerQboId,
       classQboId,
-      amount: round2((d.PostingType === "Credit" ? 1 : -1) * raw),
+      amount: round2((d.PostingType === "Credit" ? 1 : -1) * raw * rate),
       txnDate: qboDate(txn?.TxnDate),
     });
   }
@@ -603,25 +654,28 @@ export function expenseRevenueLines(
   txn: any,
   sourceType: "Purchase" | "Bill" | "VendorCredit",
   lookups: Lookups,
-  byClass = false
+  byClass = false,
+  /** As for depositRevenueLines. */
+  withUnclassed = false
 ): NormalizedRevenueLine[] {
   const out: NormalizedRevenueLine[] = [];
   const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
   const moneyBack = sourceType === "VendorCredit" || (sourceType === "Purchase" && txn?.Credit === true);
+  const rate = exchangeRate(txn);
   for (const [i, line] of lines.entries()) {
     const d = line?.AccountBasedExpenseLineDetail;
     if (!d) continue;
     if (!isIncomeAccount(str(d.AccountRef?.value), lookups)) continue;
     const customerQboId = str(d.CustomerRef?.value);
     const classQboId = str(d.ClassRef?.value) ?? str(txn?.ClassRef?.value);
-    if (byClass ? !classQboId : !customerQboId) continue;
+    if (byClass ? !classQboId && !withUnclassed : !customerQboId) continue;
     const raw = num(line.Amount);
     if (raw === 0) continue;
     out.push({
       lineId: str(line.Id) ?? String(i),
       customerQboId,
       classQboId,
-      amount: round2(moneyBack ? raw : -raw),
+      amount: round2((moneyBack ? raw : -raw) * rate),
       txnDate: qboDate(txn?.TxnDate),
     });
   }
@@ -640,6 +694,7 @@ export function expenseRevenueLines(
 export function depositCostLines(txn: any, lookups: Lookups): NormalizedCostLine[] {
   const out: NormalizedCostLine[] = [];
   const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
+  const rate = exchangeRate(txn);
   for (const [i, line] of lines.entries()) {
     if (Array.isArray(line?.LinkedTxn) && line.LinkedTxn.length > 0) continue;
     const d = line?.DepositLineDetail;
@@ -660,7 +715,7 @@ export function depositCostLines(txn: any, lookups: Lookups): NormalizedCostLine
       customerName: isCustomer ? str(entity?.name ?? entity?.EntityRef?.name) : null,
       classQboId: str(d.ClassRef?.value) ?? str(txn?.ClassRef?.value),
       // Money in against a cost: a reduction.
-      amount: round2(-raw),
+      amount: round2(-raw * rate),
       category,
       accountName: sourceName,
       isJobCostAccount,
@@ -757,6 +812,9 @@ export interface EstimateDetails {
  */
 export function estimateLines(est: any, lookups: Lookups, netTotal: number): EstimateLine[] {
   const raw: { name: string | null; itemId: string | null; amount: number; qty: number }[] = [];
+  // In home currency before anything is compared with an item's purchase
+  // cost, which QuickBooks keeps in home currency.
+  const rate = exchangeRate(est);
   const walk = (lines: unknown) => {
     if (!Array.isArray(lines)) return;
     for (const line of lines) {
@@ -768,7 +826,7 @@ export function estimateLines(est: any, lookups: Lookups, netTotal: number): Est
       if (!d) continue; // subtotal, discount, description-only
       const amount = num(line.Amount);
       if (amount === 0) continue;
-      raw.push({ name: str(d.ItemRef?.name), itemId: str(d.ItemRef?.value), amount, qty: num(d.Qty) });
+      raw.push({ name: str(d.ItemRef?.name), itemId: str(d.ItemRef?.value), amount: amount * rate, qty: num(d.Qty) });
     }
   };
   walk(est?.Line);
@@ -828,7 +886,7 @@ export function estimateFromTxn(
   lookups?: Lookups
 ): { customerQboId: string | null; classQboId: string | null; record: EstimateRecord | null; details: EstimateDetails } {
   const txnDate = qboDate(est?.TxnDate);
-  const total = num(est?.TotalAmt) - num(est?.TxnTaxDetail?.TotalTax);
+  const total = (num(est?.TotalAmt) - num(est?.TxnTaxDetail?.TotalTax)) * exchangeRate(est);
   return {
     customerQboId: str(est?.CustomerRef?.value),
     classQboId: estimateClass(est),
@@ -976,29 +1034,76 @@ export function selectJobCustomers(
 export interface JobIndex {
   byQboId: Map<string, string>; // QuickBooks customer id -> Job.id
   byParent: Map<string, string[]>; // parent customer id -> Job.ids under it
+  /** Job.id -> when the job was created in QuickBooks, for jobs where that's known. */
+  createdAt?: Map<string, Date>;
 }
 
-export function buildJobIndex(jobs: { id: string; qboId: string; parentQboId: string | null }[]): JobIndex {
+export function buildJobIndex(jobs: { id: string; qboId: string; parentQboId: string | null; qboCreatedAt?: Date | null }[]): JobIndex {
   const byQboId = new Map<string, string>();
   const byParent = new Map<string, string[]>();
+  const createdAt = new Map<string, Date>();
   for (const j of jobs) {
     byQboId.set(j.qboId, j.id);
     if (j.parentQboId) byParent.set(j.parentQboId, [...(byParent.get(j.parentQboId) ?? []), j.id]);
+    if (j.qboCreatedAt instanceof Date && Number.isFinite(j.qboCreatedAt.getTime())) createdAt.set(j.id, j.qboCreatedAt);
   }
-  return { byQboId, byParent };
+  return { byQboId, byParent, createdAt };
+}
+
+/**
+ * How long before a job was created in QuickBooks a transaction tagged to its
+ * parent customer (or class) can still be the job's: a deposit taken or
+ * materials bought before the project was set up.
+ */
+export const PARENT_FALLBACK_GRACE_DAYS = 60;
+/**
+ * The same for estimates, which come before the project they turn into,
+ * often by months: a bid made on the customer in spring for a job set up in
+ * autumn is that job's contract. An estimate older than this is from an
+ * earlier job, and would add to the new project's contract value.
+ */
+export const ESTIMATE_PARENT_FALLBACK_GRACE_DAYS = 365;
+
+/**
+ * Whether a transaction dated `txnDate`, tagged to a parent, can belong to its
+ * only job, created in QuickBooks at `jobCreatedAt`. Anything older is the
+ * customer's history from before this job: a repeat client's first project
+ * otherwise took on every invoice and bill the client ever had. A job with no
+ * known creation date takes them all, as before.
+ */
+export function parentFallbackCovers(
+  jobCreatedAt: Date | null | undefined,
+  txnDate: Date,
+  graceDays: number = PARENT_FALLBACK_GRACE_DAYS
+): boolean {
+  if (!jobCreatedAt) return true;
+  const createdDay = Date.UTC(jobCreatedAt.getUTCFullYear(), jobCreatedAt.getUTCMonth(), jobCreatedAt.getUTCDate());
+  return txnDate.getTime() >= createdDay - graceDays * 86_400_000;
 }
 
 /**
  * The job a customer reference belongs to. A direct match first; failing
  * that, the customer's only job when the transaction was tagged to the
- * parent customer. Two or more jobs under that parent is ambiguous and
- * returns null rather than guessing which job a real dollar belongs to.
+ * parent customer and isn't from more than `graceDays` before that job
+ * existed (see parentFallbackCovers; with no `txnDate` the date isn't
+ * checked). Costs, revenue and time use the default; estimates use
+ * ESTIMATE_PARENT_FALLBACK_GRACE_DAYS. Two or more jobs under that parent is
+ * ambiguous and returns null rather than guessing which job a real dollar
+ * belongs to.
  */
-export function resolveJob(index: JobIndex, customerQboId: string): { jobId: string; method: "direct" | "parent_customer_fallback" } | null {
+export function resolveJob(
+  index: JobIndex,
+  customerQboId: string,
+  txnDate?: Date | null,
+  graceDays: number = PARENT_FALLBACK_GRACE_DAYS
+): { jobId: string; method: "direct" | "parent_customer_fallback" } | null {
   const direct = index.byQboId.get(customerQboId);
   if (direct) return { jobId: direct, method: "direct" };
   const children = index.byParent.get(customerQboId);
-  if (children && children.length === 1) return { jobId: children[0], method: "parent_customer_fallback" };
+  if (children && children.length === 1) {
+    if (txnDate && !parentFallbackCovers(index.createdAt?.get(children[0]), txnDate, graceDays)) return null;
+    return { jobId: children[0], method: "parent_customer_fallback" };
+  }
   return null;
 }
 
@@ -1016,30 +1121,46 @@ export function resolveJob(index: JobIndex, customerQboId: string): { jobId: str
  * full sync to move them. No job to two at once changes nothing: the costs
  * matched nothing and still don't.
  *
+ * A stored job moved to another parent counts the same way for both
+ * parents: the old one's costs were on it if it was that parent's only job,
+ * and the new one's come to it if it is now that parent's only job.
+ *
  * `existing` is the stored jobs still in QuickBooks, `added` the jobs this
- * sync read (ones already stored are skipped). `newParents` are parents
- * created since the last sync: every transaction naming one is in this
- * sync's list of changes and is matched against the new jobs anyway.
+ * sync read (ones already stored count only if their parent changed).
+ * `newParents` are parents created since the last sync: every transaction
+ * naming one is in this sync's list of changes and is matched against the
+ * new jobs anyway.
  */
 export function parentsNeedingFullSync(
   existing: { qboId: string; parentQboId: string | null }[],
   added: { qboId: string; parentQboId: string | null }[],
   newParents: ReadonlySet<string> = new Set()
 ): string[] {
-  const before = new Map<string, number>();
-  for (const j of existing) if (j.parentQboId) before.set(j.parentQboId, (before.get(j.parentQboId) ?? 0) + 1);
-  const known = new Set(existing.map((j) => j.qboId));
-  const gained = new Map<string, Set<string>>();
+  const before = new Map<string, Set<string>>();
+  for (const j of existing) if (j.parentQboId) before.set(j.parentQboId, (before.get(j.parentQboId) ?? new Set()).add(j.qboId));
+  const parentOf = new Map(existing.map((j) => [j.qboId, j.parentQboId ?? null]));
+  const after = new Map<string, Set<string>>([...before].map(([p, jobs]) => [p, new Set(jobs)]));
+  const touched = new Set<string>();
   for (const j of added) {
-    if (!j.parentQboId || known.has(j.qboId)) continue;
-    gained.set(j.parentQboId, (gained.get(j.parentQboId) ?? new Set()).add(j.qboId));
+    const was = parentOf.has(j.qboId) ? parentOf.get(j.qboId)! : undefined;
+    const now = j.parentQboId ?? null;
+    if (was !== undefined && was === now) continue; // stored, same parent
+    if (was) {
+      after.get(was)?.delete(j.qboId);
+      touched.add(was);
+    }
+    if (now) {
+      after.set(now, (after.get(now) ?? new Set()).add(j.qboId));
+      touched.add(now);
+    }
   }
+  // A parent's costs land on a job only while it has exactly one, so they
+  // move when which job that is (or whether there is one) changes.
+  const only = (jobs: Set<string> | undefined) => (jobs && jobs.size === 1 ? [...jobs][0] : null);
   const out: string[] = [];
-  for (const [parent, jobs] of gained) {
+  for (const parent of touched) {
     if (newParents.has(parent)) continue;
-    const had = before.get(parent) ?? 0;
-    const has = had + jobs.size;
-    if ((had === 1 && has >= 2) || (had === 0 && has === 1)) out.push(parent);
+    if (only(before.get(parent)) !== only(after.get(parent))) out.push(parent);
   }
   return out;
 }

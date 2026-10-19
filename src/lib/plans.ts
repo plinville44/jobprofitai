@@ -99,7 +99,7 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
       // TimeActivity CostRate - src/lib/qboNormalize.ts timeActivityCost; burdenedAmount.
       // The cost rate is whatever the employee's QuickBooks cost rate holds,
       // which can already include taxes and benefits, so the burden is "any".
-      "Labor at the cost rate on each QuickBooks time entry, plus any labor burden it doesn't already include",
+      "Labor at the cost rate on each QuickBooks time entry, plus the labor burden you set in Settings when that rate doesn't already include it",
       "Cost breakdown by category (labor, materials, subs, equipment)",
       "Estimate vs. actual comparison",
       // src/lib/qboCheck.ts + /api/jobs/[jobId]/quickbooks-check

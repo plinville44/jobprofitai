@@ -27,7 +27,7 @@ describe("weekly brief headline", () => {
     const h = computeBriefHeadline(now, prior, "Acme");
     // a grew by 2,000; b shrank, which doesn't offset it.
     expect(h.newRisk).toBe(2_000);
-    expect(h.subject).toBe("Acme: $2,000 of new margin risk this week");
+    expect(h.subject).toBe("Acme: $2,000 of new margin risk since your last brief");
     expect(h.headline).toContain("$2,000 of new margin risk");
   });
 
@@ -117,7 +117,7 @@ describe("weekly brief headline", () => {
       recipient: "a@example.com",
       ownerEmail: "a@example.com",
     });
-    expect(email.subject).toBe("Acme: $5,000 of new margin risk this week");
+    expect(email.subject).toBe("Acme: $5,000 of new margin risk since your last brief");
     expect(email.html).toContain("Remodel &lt;jobs&gt; are priced low");
     expect(email.html.indexOf("new margin risk")).toBeLessThan(email.html.indexOf("What changed"));
     expect(email.text).toContain("What to change, and what it's worth:");
@@ -153,7 +153,7 @@ describe("the headline after a change of basis", () => {
       syncVersion: 6,
     });
     expect(h.newRisk).toBe(17_250);
-    expect(h.subject).toBe("Acme: $17,250 of new margin risk this week");
+    expect(h.subject).toBe("Acme: $17,250 of new margin risk since your last brief");
   });
 });
 

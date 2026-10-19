@@ -704,12 +704,20 @@ describe("computeForecastAtCompletion", () => {
       NOW
     );
     expect(billing.confidence).toBe("low");
+    // Half billed counts as medium only with a cost estimate behind it.
     const billingHalf = computeForecastAtCompletion(
       openJob(),
-      makeFinancials({ estimatedRevenue: 10000, costs: 4000, revenue: 5000, lastFinancialActivity: recent }),
+      makeFinancials({ estimatedRevenue: 10000, estimatedCost: 7000, costs: 4000, revenue: 5000, lastFinancialActivity: recent }),
       NOW
     );
     expect(billingHalf.confidence).toBe("medium");
+    // Without one a deposit can be the half billed, so it stays low (audit 2026-10-19).
+    const billingHalfNoEstimate = computeForecastAtCompletion(
+      openJob(),
+      makeFinancials({ estimatedRevenue: 10000, estimatedCost: null, costs: 4000, revenue: 5000, lastFinancialActivity: recent }),
+      NOW
+    );
+    expect(billingHalfNoEstimate.confidence).toBe("low");
     const manual = computeForecastAtCompletion(
       openJob({ percentCompleteOverride: 30 }),
       makeFinancials({ estimatedRevenue: 10000, costs: 2000, revenue: 3000, lastFinancialActivity: recent }),
@@ -975,11 +983,15 @@ describe("computeDataHealth", () => {
     const jobs = [
       makeFinancials({ jobId: "old", status: "closed", revenue: 5000, costs: 0, lastFinancialActivity: subDays(NOW, 800) }),
       makeFinancials({ jobId: "recent", status: "closed", revenue: 5000, costs: 0, lastFinancialActivity: subDays(NOW, 100) }),
+      makeFinancials({ jobId: "open-recent", status: "open", revenue: 5000, costs: 0, lastFinancialActivity: subDays(NOW, 20) }),
       makeFinancials({ jobId: "open-old", status: "open", revenue: 5000, costs: 0, lastFinancialActivity: subDays(NOW, 800) }),
     ];
     const health = computeDataHealth(jobs, NOW, null);
-    expect(health.jobsMissingCosts.map((j) => j.jobId)).toEqual(["recent", "open-old"]);
+    // An open job idle for 90+ days is out of the per-job lists and the
+    // count, like an old finished one, and counted once as idle instead.
+    expect(health.jobsMissingCosts.map((j) => j.jobId)).toEqual(["recent", "open-recent"]);
     expect(health.totalJobs).toBe(2);
+    expect(health.idleOpenJobs.map((j) => j.jobId)).toEqual(["open-old"]);
   });
 
   it("offers open jobs idle for 90+ days as probably finished", () => {
@@ -1301,7 +1313,10 @@ describe("computeDashboardTotals", () => {
     );
     expect(noneCostable.jobGrossProfit).toBeNull();
     expect(noneCostable.revenue).toBe(9000);
-    expect(totals.avgJobMarginPct).toBeCloseTo((0.4 + 0.1 + 0.375) / 3);
+    // Job Gross Profit over the same jobs' revenue, not an average of the
+    // three margins ((0.4 + 0.1 + 0.375) / 3 = 29.2%).
+    expect(totals.avgJobMarginPct).toBeCloseTo(7500 / 23000);
+    expect(withUncostedJob.avgJobMarginPct).toBeCloseTo(7500 / 23000);
     expect(totals.jobsBelowTarget).toBe(1);
     expect(totals.profitAtRisk).toBe(750); // only the below_target_margin item counts, not the over_budget one
   });
@@ -1325,8 +1340,9 @@ describe("computeDashboardTotals", () => {
     expect(totals.profitAtRisk).toBe(800);
   });
 
-  it("returns a null average margin when no job has a computable margin", () => {
-    const jobs = [makeFinancials({ grossMarginPct: null }), makeFinancials({ grossMarginPct: null })];
+  it("returns a null margin when no job has a computable margin", () => {
+    const unavailable = { grossProfit: null, grossMarginPct: null, profitabilityAvailable: false } as const;
+    const jobs = [makeFinancials({ ...unavailable, costs: 0 }), makeFinancials({ ...unavailable, revenue: 0 })];
     expect(computeDashboardTotals(jobs, [], dataHealth, null).avgJobMarginPct).toBeNull();
   });
 
@@ -1514,18 +1530,34 @@ describe("diagnoseOpportunityGap", () => {
 
 describe("findDoubleLabor", () => {
   const now = new Date("2026-09-01T00:00:00Z");
-  const row = (qboSourceType: string, category: string, date = "2026-08-01") => ({
+  const row = (qboSourceType: string, category: string, date = "2026-08-01", accountName: string | null = null) => ({
     qboSourceType,
     category,
     txnDate: new Date(`${date}T00:00:00Z`),
+    accountName,
   });
-  it("lists jobs with labor from both timesheets and journal entries", () => {
+  it("lists jobs with timesheets plus payroll journal entries, or checks or bills to a payroll or wages account", () => {
     const jobs = [
       { id: "a", name: "A", costEntries: [row("TimeActivity", "labor"), row("JournalEntry", "labor")] },
-      { id: "b", name: "B", costEntries: [row("TimeActivity", "labor"), row("Bill", "labor")] },
+      // Wages paid by bill or check, to an account named for them.
+      { id: "b", name: "B", costEntries: [row("TimeActivity", "labor"), row("Bill", "labor", "2026-08-01", "Payroll Expenses")] },
       { id: "c", name: "C", costEntries: [row("TimeActivity", "labor"), row("JournalEntry", "materials")] },
       { id: "d", name: "D", costEntries: [row("TimeActivity", "labor", "2024-01-01"), row("JournalEntry", "labor")] },
+      { id: "e", name: "E", costEntries: [row("TimeActivity", "labor"), row("Purchase", "labor", "2026-08-01", "Salaries & Wages")] },
+      // A subcontractor's bill is not the crew's wages.
+      { id: "f", name: "F", costEntries: [row("TimeActivity", "labor"), row("Bill", "subcontractor", "2026-08-01", "Payroll Expenses")] },
+      // Labor by check with no timesheets is counted once.
+      { id: "g", name: "G", costEntries: [row("Purchase", "labor", "2026-08-01", "Payroll Expenses"), row("Bill", "labor")] },
+      // A temp agency or a sub billed to a plain labor account is cost on top of the crew's hours.
+      { id: "h", name: "H", costEntries: [row("TimeActivity", "labor"), row("Bill", "labor", "2026-08-01", "Cost of Labor")] },
+      { id: "i", name: "I", costEntries: [row("TimeActivity", "labor"), row("Purchase", "labor", "2026-08-01", "Temp labor")] },
+      { id: "j", name: "J", costEntries: [row("TimeActivity", "labor"), row("Bill", "labor")] },
     ];
-    expect(findDoubleLabor(jobs, now)).toEqual([{ jobId: "a", jobName: "A" }]);
+    expect(findDoubleLabor(jobs, now)).toEqual([
+      { jobId: "a", jobName: "A" },
+      { jobId: "b", jobName: "B" },
+      { jobId: "e", jobName: "E" },
+    ]);
   });
 });
+

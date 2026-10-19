@@ -32,7 +32,11 @@ vi.mock("@/lib/quickbooks", () => ({
     if (qbo.fail.has(entity)) throw new Error("QuickBooks returned 500");
     return qbo.data[entity] ?? [];
   },
-  qboQuery: async () => ({}),
+  // SELECT COUNT(*): QuickBooks' own count, which a full sync checks its read against before removing anything.
+  qboQuery: async (_realm: string, _token: string, query: string) => {
+    const entity = /FROM\s+(\w+)/i.exec(query)?.[1] ?? "";
+    return { QueryResponse: { totalCount: (qbo.data[entity] ?? []).length } };
+  },
   qboCompanyInfo: async () => ({}),
   qboCdc: async () => {
     if (qbo.cdcFails) throw new Error("Change Data Capture returned 1000 records, at or over its cap");

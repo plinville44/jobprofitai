@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import type { QuickBooksConnection } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { authorizeCron } from "@/lib/cronAuth";
-import { FULL_SYNC_TOO_LONG_MESSAGE, FullSyncNotAllowedError, fullSyncDue, runSyncForConnection } from "@/lib/quickbooksSync";
+import {
+  FULL_SYNC_TOO_LONG_MESSAGE,
+  FullSyncNotAllowedError,
+  fullSyncDue,
+  holdFullSyncForSkippedCompany,
+  runSyncForConnection,
+} from "@/lib/quickbooksSync";
 import { getEntitlements } from "@/lib/entitlements";
 import { overLimitConnectionIds } from "@/lib/planLimits";
 import { evaluateAlerts, markAlertsSent } from "@/lib/alerts";
@@ -245,16 +251,14 @@ async function syncAndAlert(
   /** Called once the company's sync has finished cleanly (not partway, not deferred). */
   onSynced: (connection: QuickBooksConnection) => void
 ) {
-  // To the back of the queue, and a full sync that's owed waits until
-  // tomorrow.
+  // To the back of the queue. A full read partway waits until tomorrow; one
+  // owed and not begun stays owed, as an ordinary full sync, so it neither
+  // reads as partway nor sits first in line run after run (see
+  // holdFullSyncForSkippedCompany). A skip is quick, so one first in this
+  // run's queue doesn't hold up the companies behind it.
   const skip = async (detail: string) => {
-    await prisma.quickBooksConnection.update({
-      where: { id: connection.id },
-      data: {
-        lastSyncAttemptAt: new Date(),
-        ...(connection.fullSyncContinueAt ? { fullSyncContinueAt: new Date(Date.now() + SKIPPED_FULL_SYNC_WAIT_MS) } : {}),
-      },
-    });
+    await prisma.quickBooksConnection.update({ where: { id: connection.id }, data: { lastSyncAttemptAt: new Date() } });
+    await holdFullSyncForSkippedCompany(connection, SKIPPED_FULL_SYNC_WAIT_MS);
     return { connectionId: connection.id, status: "skipped", detail };
   };
   let syncFailed = false;
@@ -297,7 +301,9 @@ async function syncAndAlert(
       return { connectionId: connection.id, status: "synced" };
     }
     const owner = await prisma.user.findUnique({ where: { id: connection.userId }, select: { email: true, emailVerifiedAt: true } });
-    const { pending: newAlerts, baseline } = await evaluateAlerts(connection.id);
+    const { pending: newAlerts, baseline, partway } = await evaluateAlerts(connection.id);
+    // Read fresh after the sync: a full sync still partway holds the alerts.
+    if (partway) return { connectionId: connection.id, status: "synced", detail: "alerts wait for the full sync to finish" };
     if (baseline) return { connectionId: connection.id, status: "synced", detail: "alerts baselined" };
     // Unsent alerts stay pending and go out once the owner has verified.
     if (newAlerts.length === 0 || !owner?.emailVerifiedAt) return { connectionId: connection.id, status: "synced" };

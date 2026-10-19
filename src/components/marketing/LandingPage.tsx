@@ -13,6 +13,8 @@ import QuickBooksComparison from "./QuickBooksComparison";
 import FitCheck from "./FitCheck";
 import PricingCards from "./PricingCards";
 import { LANDING_PAGES, type LandingSection, type LandingSlug } from "@/lib/landingPages";
+import { OG_IMAGE } from "@/lib/siteMeta";
+import { PLANS } from "@/lib/plans";
 
 /**
  * One ad landing page (src/app/lp/<slug>). A shorter homepage with one job:
@@ -31,6 +33,17 @@ export function landingMetadata(slug: LandingSlug): Metadata {
     description: page.metaDescription,
     // Ads only: the homepage is the page that should rank.
     robots: { index: false, follow: true },
+    // Its own share card. Without one, the page inherits the homepage's
+    // og:title and og:url, so a shared ad link previews as the homepage. A
+    // page's openGraph replaces the root's, so the image is listed again.
+    openGraph: {
+      type: "website",
+      siteName: "JobProfitAI",
+      title: `${page.metaTitle} | JobProfitAI`,
+      description: page.metaDescription,
+      url: `/lp/${slug}`,
+      images: [OG_IMAGE],
+    },
   };
 }
 
@@ -52,7 +65,7 @@ const SECTIONS: Record<
   breakdown: {
     eyebrow: "Pricing by part of the job",
     title: "Which part of which price, and by how much",
-    body: "A report tells you kitchens came in at 22%. JobProfitAI tells you it's the labor: customers paid for it and it cost nearly as much again. Then it tells you how much to raise the labor line on your next kitchen estimate.",
+    body: "A report tells you kitchens came in at 21%. JobProfitAI tells you it's the labor: it cost nearly everything customers paid for it. Then it tells you how much to raise the labor line on your next kitchen estimate.",
     bullets: [
       "Labor, materials, subs and equipment, compared separately when your estimates list them on separate lines",
       "Uses your own finished jobs, not an industry average",
@@ -87,7 +100,7 @@ const SECTIONS: Record<
     title: "The WIP schedule your bank and bonding company ask for",
     body: "Contract, estimated total cost, cost to date, percent complete, earned revenue, billed to date, and over and under billing for every open job, with totals and the contracts you finished in the last 12 months. A job that can't be scheduled honestly, like one whose costs have passed its estimate, is listed with what it needs instead of being guessed at.",
     bullets: [
-      "Built from QuickBooks on every sync, nothing to re-enter",
+      "Contract values from your QuickBooks estimates. Add each open job's cost budget once, by hand or from a spreadsheet, and the rest updates on every sync",
       "Print it, save it as a PDF, or download the CSV",
       "Labor at the cost rate on each QuickBooks time entry",
     ],
@@ -96,7 +109,7 @@ const SECTIONS: Record<
 };
 
 const NUMBERS_YOU_CAN_CHECK = [
-  "Labor at the cost rate on each QuickBooks time entry, plus a labor burden only if that rate doesn't already include it",
+  "Labor at the cost rate on each QuickBooks time entry, plus the labor burden you set in Settings when that rate doesn't already include it",
   "Refunds, supplier credits and sales tax taken out, so revenue and cost mean what they should",
   "Check against QuickBooks on every job: our totals beside QuickBooks' own profit and loss for that job",
   "A list of every cost from the last 12 months that isn't on a job, biggest first, with a link to open it in QuickBooks",
@@ -109,7 +122,7 @@ function alsoIncluded(slug: LandingSlug): string[] {
     ...(slug === "wip" ? [] : ["The bank-ready WIP report, to print or save as a PDF"]),
     "Email alerts after the nightly sync when an open job goes more than 10% over its estimate or gets well ahead of its billing",
     "The Weekly Profit Brief: new margin risk and estimates to fix, first, on the day and time you choose",
-    "3 team logins, for your office manager, project manager or bookkeeper",
+    `Team logins for your office manager, project manager or bookkeeper: ${PLANS.profit_intelligence.limits.maxTeamMembers} on ${PLANS.profit_intelligence.name}, ${PLANS.profit_intelligence_pro.limits.maxTeamMembers} on Pro`,
   ];
 }
 
@@ -129,10 +142,9 @@ const FAQ_ITEMS: { q: string; a: ReactNode }[] = [
     q: "Why not upgrade QuickBooks instead?",
     a: (
       <>
-        A higher QuickBooks plan costs more every month and adds construction reports. It doesn&rsquo;t rank
-        what to change on your pricing by what it&rsquo;s worth, check each estimate against your own past
-        jobs, or show whether a price change worked. JobProfitAI adds those to the QuickBooks Online you
-        already have.
+        JobProfitAI works with the QuickBooks Online plan you already have and adds three things: what to
+        change on your pricing, ranked by what it&rsquo;s worth; each pending estimate checked against your own
+        past jobs; and whether a price change worked.
       </>
     ),
   },
@@ -232,7 +244,7 @@ export default function LandingPage({ slug }: { slug: LandingSlug }) {
         <SectionHeading
           eyebrow="Works with QuickBooks"
           title="QuickBooks shows how your jobs did. JobProfitAI shows what to change, and what it's worth."
-          intro="Nothing to re-enter and nothing to switch. JobProfitAI only reads QuickBooks, and you keep working there exactly as you do now."
+          intro="Works with QuickBooks Online Plus or Advanced, with no upgrade and nothing new to switch to. JobProfitAI only reads QuickBooks, and you keep working there exactly as you do now."
           align="center"
         />
         <QuickBooksComparison />

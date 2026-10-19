@@ -20,6 +20,7 @@ import {
   parentsNeedingFullSync,
   qboDate,
   resolveJob,
+  ESTIMATE_PARENT_FALLBACK_GRACE_DAYS,
   revenueByClass,
   revenueFromTxn,
   revenueId,
@@ -40,6 +41,7 @@ import {
 import { syncMayPickJobSource } from "@/lib/jobSetup";
 import { isUntaggedJobCost, UntaggedCostCollector } from "@/lib/untaggedCosts";
 import { replaceUntaggedCosts, replaceUntaggedCostsForTxns } from "@/lib/untaggedCostStore";
+import { FULL_SYNC_OWED_AT, FULL_SYNC_PARTWAY_FIRST_AT, fullSyncOwed } from "@/lib/syncProblem";
 
 /**
  * The QuickBooks sync engine: reads a connection's job-costing data from
@@ -84,8 +86,14 @@ import { replaceUntaggedCosts, replaceUntaggedCostsForTxns } from "@/lib/untagge
  *    as revenue; supplier refunds deposited to a cost account reduce the
  *    job's cost; a discount with its own class comes off that class only;
  *    time entries with start and end times always have the break taken off.
+ * 7: a transaction tagged to a parent customer or class goes on its only
+ *    job only if it isn't dated more than 60 days before that job was
+ *    created in QuickBooks (a repeat client's first project took on the
+ *    client's whole history); amounts in another currency are converted to
+ *    home currency; an invoice's balance in class mode is owed only by the
+ *    classes billed on it.
  */
-export const SYNC_VERSION = 6;
+export const SYNC_VERSION = 7;
 
 /**
  * The last version that changed how COSTS and REVENUE are stored. The weekly
@@ -96,8 +104,10 @@ export const SYNC_VERSION = 6;
  * going out with some jobs upgraded and others not. Version 5 stops counting
  * balance-sheet postings as cost, so it waits for that too. Version 6 changes
  * journal entry costs, refunds and deposits, so it waits for that as well.
+ * Version 7 moves a repeat client's old costs and revenue off their new job
+ * and converts foreign-currency amounts, so it waits for that too.
  */
-export const COST_SYNC_VERSION = 6;
+export const COST_SYNC_VERSION = 7;
 
 const FULL_SYNC_INTERVAL_DAYS = 30;
 /** Data Health tallies look at the last 12 months, not the company's whole history. */
@@ -337,6 +347,11 @@ function addTallies(a: Tallies, b: Tallies): Tallies {
     unresolvedExpenseAmount: a.unresolvedExpenseAmount + b.unresolvedExpenseAmount,
     costsMatchedViaParentCount: a.costsMatchedViaParentCount + b.costsMatchedViaParentCount,
     costsMatchedViaParentAmount: a.costsMatchedViaParentAmount + b.costsMatchedViaParentAmount,
+    // Progress saved before these were counted has none.
+    unresolvedRevenueCount: (a.unresolvedRevenueCount ?? 0) + (b.unresolvedRevenueCount ?? 0),
+    unresolvedRevenueAmount: (a.unresolvedRevenueAmount ?? 0) + (b.unresolvedRevenueAmount ?? 0),
+    unclassedRevenueCount: (a.unclassedRevenueCount ?? 0) + (b.unclassedRevenueCount ?? 0),
+    unclassedRevenueAmount: (a.unclassedRevenueAmount ?? 0) + (b.unclassedRevenueAmount ?? 0),
     timeEntriesWithoutPayRate: a.timeEntriesWithoutPayRate + b.timeEntriesWithoutPayRate,
     vendorTimeEntriesSkipped: a.vendorTimeEntriesSkipped + b.vendorTimeEntriesSkipped,
     unresolvedSamples: [...a.unresolvedSamples, ...b.unresolvedSamples].slice(0, 5),
@@ -460,17 +475,23 @@ export async function runSyncForConnection(
       : null;
   // Too little time left in the caller's window for even the first step:
   // nothing is started (no run is recorded, so it isn't a try), and the
-  // company is first in line for the next window (fullSyncContinueAt at the
-  // epoch sorts first), where it starts at the beginning. Early in a window
+  // company is first in line for the next window (fullSyncContinueAt at or
+  // just after the epoch sorts first), where it starts at the beginning. The
+  // two values keep a read that has saved progress (partway) apart from one
+  // that hasn't begun (owed): see FULL_SYNC_OWED_AT. Early in a window
   // it goes ahead regardless: no later run would have more time, and a step
   // that fits in no run at all ends up flagged (fullSyncStuck).
   if (plan != null && options.deadline != null) {
     const first = FULL_SYNC_STEPS.find((step) => !plan!.resume?.done.includes(step)) ?? FULL_SYNC_STEPS[0];
     const lateInWindow = Date.now() - (options.windowStart ?? calledAt) > WINDOW_START_SLACK_MS;
     if (lateInWindow && !fullSyncFirstStepFits(first, options.deadline, plan.stepMs)) {
-      await handBack({ fullSyncContinueAt: new Date(0) });
+      // Partway is the company's state, not this run's: a read with saved
+      // progress stays partway even when that progress can't be carried on
+      // (its rows are half rewritten all the same).
+      const partway = plan.resume != null || (connection.fullSyncContinueAt != null && !fullSyncOwed(connection));
+      await handBack({ fullSyncContinueAt: partway ? FULL_SYNC_PARTWAY_FIRST_AT : FULL_SYNC_OWED_AT });
       const remaining = FULL_SYNC_STEPS.filter((step) => !plan!.resume?.done.includes(step));
-      return { ok: true, mode, unfinished: true, deferred: true, remaining };
+      return { ok: true, mode, unfinished: true, deferred: true, remaining, steps: FULL_SYNC_STEPS.length };
     }
   }
   // Running out of time again and again: tried once a day from now on,
@@ -494,6 +515,8 @@ export async function runSyncForConnection(
   // over several runs started when its first run did.
   const syncStartedAt = plan?.resume ? new Date(plan.resume.startedAt) : new Date();
   let handedBack = false;
+  // Whether this run saved a finished step of a full read (onStep).
+  let savedProgress = false;
   try {
     const accessToken = await getValidAccessToken(connection);
     const realmId = decryptToken(connection.realmId);
@@ -517,6 +540,7 @@ export async function runSyncForConnection(
         where: { id: syncRun.id },
         data: { entitiesUpdated: { ...soFar, fullSyncProgress: progress } as unknown as Prisma.InputJsonValue },
       });
+      savedProgress = true;
     };
     if (mode === "full") {
       const part = await runFullSync(ctx, { deadline: options.deadline, resume: plan?.resume ?? null, history: plan?.stepMs ?? {}, onStep });
@@ -534,12 +558,13 @@ export async function runSyncForConnection(
         if (options.incrementalOnly) throw new FullSyncNotAllowedError("change_feed_failed");
         if (options.deferFullSync) {
           // Nothing was written. The next nightly run does the full read in
-          // its full-sync slot; until then the company shows as it was.
+          // its full-sync slot, first in line; until then the company shows
+          // as it was, and nothing reads it as partway (FULL_SYNC_OWED_AT).
           await prisma.syncRun.update({
             where: { id: syncRun.id },
             data: { status: "error", finishedAt: new Date(), errorMessage: "Left for a full sync: QuickBooks' list of recent changes couldn't be read in full." },
           });
-          await handBack({ fullSyncContinueAt: new Date() });
+          await handBack({ fullSyncContinueAt: FULL_SYNC_OWED_AT });
           handedBack = true;
           throw new FullSyncNotAllowedError("change_feed_failed");
         }
@@ -590,7 +615,9 @@ export async function runSyncForConnection(
           : { lastSyncStatus: "success", lastSyncError: null, lastSyncAttemptAt: stoppedAt, fullSyncContinueAt: stoppedAt },
       });
       const remaining = FULL_SYNC_STEPS.filter((step) => !unfinished!.done.includes(step));
-      return { ok: true, mode, unfinished: true, remaining, ...counts };
+      // `steps` and `stuck` are for the first-run screen, which carries on
+      // with the read while it can and stops once it's down to once a day.
+      return { ok: true, mode, unfinished: true, remaining, steps: FULL_SYNC_STEPS.length, ...(stuck ? { stuck: true } : {}), ...counts };
     }
 
     const now = new Date();
@@ -670,6 +697,17 @@ export async function runSyncForConnection(
       // any failed sync, not on the very next run (a day later if it's
       // already down to once a day).
       const retryAt = new Date(Date.now() + RETRY_FAILED_FULL_SYNC_MS);
+      if (!savedProgress && !plan?.resume && fullSyncOwed(connection)) {
+        // An owed read that failed before saving anything is still owed, not
+        // partway: it's made the next full sync and retried like any failed
+        // sync, a couple of hours on, with the figures left as they were. A
+        // read that was partway when this run began stays partway.
+        const owed = await prisma.quickBooksConnection.updateMany({
+          where: { id: connection.id, fullSyncContinueAt: FULL_SYNC_OWED_AT },
+          data: { fullSyncContinueAt: null },
+        });
+        if (owed.count > 0) await requestFullSync(connection.id);
+      }
       await prisma.quickBooksConnection.updateMany({
         where: { id: connection.id, fullSyncContinueAt: { not: null, lt: retryAt } },
         data: { fullSyncContinueAt: retryAt },
@@ -830,6 +868,11 @@ interface SyncCtx {
    * parentsNeedingFullSync).
    */
   fullSyncNeeded?: boolean;
+  /**
+   * Set by the first sync when it switched the company to one customer per
+   * job on its own (see syncJobs), so the first-run screen can say so.
+   */
+  jobSourceAutoSwitched?: boolean;
 }
 
 interface ExistingCost {
@@ -869,6 +912,16 @@ interface Tallies {
   unresolvedExpenseAmount: number;
   costsMatchedViaParentCount: number;
   costsMatchedViaParentAmount: number;
+  /**
+   * Sales and other income tagged to a customer or class that isn't one of
+   * the jobs (a parent with two or more jobs, or dated well before its only
+   * job was created), counted like unresolved costs. Last 12 months.
+   */
+  unresolvedRevenueCount: number;
+  unresolvedRevenueAmount: number;
+  /** Jobs by class only: sales with no class, so on no job. Last 12 months. */
+  unclassedRevenueCount: number;
+  unclassedRevenueAmount: number;
   timeEntriesWithoutPayRate: number;
   vendorTimeEntriesSkipped: number;
   unresolvedSamples: { source: string; txnId: string; customerId: string; customerName: string | null; amount: number }[];
@@ -883,6 +936,10 @@ const newTallies = (): Tallies => ({
   unresolvedExpenseAmount: 0,
   costsMatchedViaParentCount: 0,
   costsMatchedViaParentAmount: 0,
+  unresolvedRevenueCount: 0,
+  unresolvedRevenueAmount: 0,
+  unclassedRevenueCount: 0,
+  unclassedRevenueAmount: 0,
   timeEntriesWithoutPayRate: 0,
   vendorTimeEntriesSkipped: 0,
   unresolvedSamples: [],
@@ -1361,9 +1418,11 @@ async function upsertJobs(
 async function loadJobIndex(connectionId: string): Promise<JobIndex> {
   // A job that has gone missing from QuickBooks gets no transactions: they
   // belong to whatever the customer is now (a project under it, say).
+  // qboCreatedAt: a transaction tagged to a parent goes on its only job only
+  // if it isn't from well before that job (see resolveJob).
   const jobs = await prisma.job.findMany({
     where: { connectionId, missingSince: null },
-    select: { id: true, qboId: true, parentQboId: true },
+    select: { id: true, qboId: true, parentQboId: true, qboCreatedAt: true },
   });
   return buildJobIndex(jobs);
 }
@@ -1406,6 +1465,23 @@ function noteUnresolved(p: Processor, source: string, txnId: string, customerId:
   }
 }
 
+/**
+ * Revenue that goes on no job, counted the way costs are (noteUnresolved), so
+ * Data Health can name it: "unresolved" is tagged to a customer or class that
+ * isn't a job, "unclassed" (jobs by class) has no class at all. Without this
+ * a sale tagged to a parent with two projects vanished with no trace.
+ */
+function noteUnmatchedRevenue(p: Processor, kind: "unresolved" | "unclassed", amount: number, date: Date | null) {
+  if (!inWindow(p, date) || Math.abs(amount) < 0.005) return;
+  if (kind === "unresolved") {
+    p.tallies.unresolvedRevenueCount++;
+    p.tallies.unresolvedRevenueAmount += amount;
+  } else {
+    p.tallies.unclassedRevenueCount++;
+    p.tallies.unclassedRevenueAmount += amount;
+  }
+}
+
 async function processExpenseTxn(p: Processor, txn: any, sourceType: ExpenseSourceType) {
   if (txn?.Id == null) return;
   const txnId = String(txn.Id);
@@ -1428,7 +1504,7 @@ async function processExpenseTxn(p: Processor, txn: any, sourceType: ExpenseSour
       }
       continue;
     }
-    const resolved = resolveJob(p.index, key);
+    const resolved = resolveJob(p.index, key, txnDate);
     if (!resolved) {
       noteUnresolved(p, sourceType, txnId, key, line.customerName, line.amount, txnDate);
       continue;
@@ -1467,7 +1543,7 @@ async function processTimeActivity(p: Processor, ta: any) {
   const classId = ta.ClassRef?.value != null ? String(ta.ClassRef.value) : null;
   const key = jobKey(p, customerId, classId);
   if (!key) return;
-  const resolved = resolveJob(p.index, key);
+  const resolved = resolveJob(p.index, key, txnDate);
   if (!resolved) {
     noteUnresolved(p, "TimeActivity", txnId, key, ta.CustomerRef?.name ?? null, result.amount, txnDate);
     return;
@@ -1500,9 +1576,15 @@ async function processRevenueTxn(p: Processor, txn: any, sourceType: RevenueSour
   if (p.ctx.jobSource === "classes") {
     // One row per class on the sale: a single invoice can bill two jobs.
     for (const part of revenueByClass(txn, sourceType)) {
-      if (!part.classQboId) continue;
-      const resolved = resolveJob(p.index, classJobKey(part.classQboId));
-      if (!resolved) continue;
+      if (!part.classQboId) {
+        noteUnmatchedRevenue(p, "unclassed", part.amount, r.txnDate);
+        continue;
+      }
+      const resolved = resolveJob(p.index, classJobKey(part.classQboId), r.txnDate);
+      if (!resolved) {
+        noteUnmatchedRevenue(p, "unresolved", part.amount, r.txnDate);
+        continue;
+      }
       await p.writer.revenue({
         id: `${revenueId(p.ctx.connectionId, sourceType, String(txn.Id))}:${classJobKey(part.classQboId)}`,
         jobId: resolved.jobId,
@@ -1520,8 +1602,11 @@ async function processRevenueTxn(p: Processor, txn: any, sourceType: RevenueSour
     return;
   }
   if (!r.customerQboId) return;
-  const resolved = resolveJob(p.index, r.customerQboId);
-  if (!resolved) return;
+  const resolved = resolveJob(p.index, r.customerQboId, r.txnDate);
+  if (!resolved) {
+    noteUnmatchedRevenue(p, "unresolved", r.amount, r.txnDate);
+    return;
+  }
   await p.writer.revenue({
     id: revenueId(p.ctx.connectionId, sourceType, String(txn.Id)),
     jobId: resolved.jobId,
@@ -1546,18 +1631,26 @@ async function processLineRevenue(p: Processor, txn: any, sourceType: LineRevenu
   if (txn?.Id == null) return;
   const txnId = String(txn.Id);
   const byClass = p.ctx.jobSource === "classes";
+  // Jobs by class: income lines with no class come back too, only to be
+  // counted as sales on no job, as an invoice line with no class is.
   const lines =
     sourceType === "Deposit"
-      ? depositRevenueLines(txn, p.lookups, byClass)
+      ? depositRevenueLines(txn, p.lookups, byClass, byClass)
       : sourceType === "JournalEntry"
-        ? journalRevenueLines(txn, p.lookups, byClass)
-        : expenseRevenueLines(txn, sourceType, p.lookups, byClass);
+        ? journalRevenueLines(txn, p.lookups, byClass, byClass)
+        : expenseRevenueLines(txn, sourceType, p.lookups, byClass, byClass);
   for (const l of lines) {
     if (!l.txnDate) continue;
     const key = jobKey(p, l.customerQboId, l.classQboId);
-    if (!key) continue;
-    const resolved = resolveJob(p.index, key);
-    if (!resolved) continue;
+    if (!key) {
+      if (byClass) noteUnmatchedRevenue(p, "unclassed", l.amount, l.txnDate);
+      continue;
+    }
+    const resolved = resolveJob(p.index, key, l.txnDate);
+    if (!resolved) {
+      noteUnmatchedRevenue(p, "unresolved", l.amount, l.txnDate);
+      continue;
+    }
     await p.writer.revenue({
       id: lineRevenueId(p.ctx.connectionId, sourceType, txnId, l.lineId),
       jobId: resolved.jobId,
@@ -1585,7 +1678,7 @@ async function processDepositCosts(p: Processor, txn: any) {
   for (const line of depositCostLines(txn, p.lookups)) {
     const key = jobKey(p, line.customerQboId, line.classQboId);
     if (!key) continue;
-    const resolved = resolveJob(p.index, key);
+    const resolved = resolveJob(p.index, key, txnDate);
     if (!resolved) {
       noteUnresolved(p, "Deposit", txnId, key, line.customerName, line.amount, txnDate);
       continue;
@@ -1628,7 +1721,14 @@ function sameLines(stored: unknown, next: { n: string | null; c: string; a: numb
   );
 }
 
-async function applyEstimates(ctx: SyncCtx, estimates: any[], full: boolean, lookups: Lookups): Promise<void> {
+async function applyEstimates(
+  ctx: SyncCtx,
+  estimates: any[],
+  full: boolean,
+  lookups: Lookups,
+  /** A full read that matched QuickBooks' count: stored estimates it didn't return are deleted. */
+  removeMissing: boolean = full
+): Promise<void> {
   const touchedCustomers = new Set<string>();
   const existing = await prisma.jobEstimate.findMany({ where: { connectionId: ctx.connectionId } });
   const existingById = new Map(existing.map((e) => [e.id, e]));
@@ -1685,7 +1785,7 @@ async function applyEstimates(ctx: SyncCtx, estimates: any[], full: boolean, loo
     await prisma.jobEstimate.upsert({ where: { id }, create: { id, ...data }, update: data });
   }
 
-  if (full) {
+  if (full && removeMissing) {
     const gone = existing.filter((e) => !seen.has(e.id));
     for (const e of gone) touchedCustomers.add(e.customerQboId);
     if (gone.length) await prisma.jobEstimate.deleteMany({ where: { id: { in: gone.map((e) => e.id) } } });
@@ -1697,7 +1797,10 @@ async function applyEstimates(ctx: SyncCtx, estimates: any[], full: boolean, loo
   const all = await prisma.jobEstimate.findMany({ where: { connectionId: ctx.connectionId } });
   const byJob = new Map<string, { amount: number; status: string; txnDate: Date }[]>();
   for (const e of all) {
-    const resolved = resolveJob(index, e.customerQboId);
+    // Dated with a longer grace than costs and revenue: an estimate on the
+    // customer normally comes before the project it turns into, often by
+    // months, but one from a year or more before is an earlier job's.
+    const resolved = resolveJob(index, e.customerQboId, e.txnDate, ESTIMATE_PARENT_FALLBACK_GRACE_DAYS);
     if (!resolved) continue;
     byJob.set(resolved.jobId, [...(byJob.get(resolved.jobId) ?? []), { amount: Number(e.amount), status: e.status, txnDate: e.txnDate }]);
   }
@@ -1847,8 +1950,20 @@ async function runFullSync(
   };
   if (done.has("Jobs")) p.index = await loadJobIndex(ctx.connectionId);
 
-  /** Reads one type's stored rows, then keeps them exactly in step with what QuickBooks sent. */
-  const syncType = async (type: string, rows: any[], process: (txn: any) => Promise<void>, sweep: { cost: boolean; revenue: boolean }) => {
+  /**
+   * Reads one type's stored rows, then keeps them exactly in step with what
+   * QuickBooks sent. `complete` is false when the read came back shorter than
+   * QuickBooks' own count (see readIsComplete): then only the transactions it
+   * did return are brought in step, and stored rows of any it didn't are kept,
+   * since a page that shifted mid-read can't be told from a deletion.
+   */
+  const syncType = async (
+    type: string,
+    rows: any[],
+    process: (txn: any) => Promise<void>,
+    sweep: { cost: boolean; revenue: boolean },
+    complete = true
+  ) => {
     const { existingCost, existingRevenue } = await loadExisting(ctx.connectionId, undefined, [type]);
     const writer = new Writer(existingCost, existingRevenue);
     p.writer = writer;
@@ -1864,26 +1979,40 @@ async function runFullSync(
     await writer.flush();
     // Everything stored for this type that QuickBooks no longer returns:
     // deleted transactions, voided ones, lines moved to a job-less customer,
-    // and rows stored under the previous id scheme.
+    // and rows stored under the previous id scheme. After a short read, only
+    // lines no longer on the transactions it returned.
     const only = new Set([type]);
-    if (sweep.cost) totals.costRowsRemoved += await deleteCostRows(writer.unseenCost(only));
-    if (sweep.revenue) totals.revenueRowsRemoved += await deleteRevenueRows(writer.unseenRevenue(only));
+    const readIds = new Set(rows.filter((t) => t?.Id != null).map((t) => String(t.Id)));
+    if (sweep.cost) {
+      const gone = complete ? writer.unseenCost(only) : writer.unseenCost(only, (r) => readIds.has(r.qboSourceId));
+      totals.costRowsRemoved += await deleteCostRows(gone);
+    }
+    if (sweep.revenue) {
+      const gone = complete ? writer.unseenRevenue(only) : writer.unseenRevenue(only, (r) => readIds.has(r.qboInvoiceId));
+      totals.revenueRowsRemoved += await deleteRevenueRows(gone);
+    }
     totals.costRowsWritten += writer.seenCost.size;
     totals.costRowsUpdated += writer.costUpdates;
     totals.revenueRowsUpdated += writer.revenueUpdates;
     totals.figureRowsChanged += writer.figureChanges;
     // Data Health's list of job costs not on any job: this type's rows
-    // become what this read found. Other types keep theirs until read.
+    // become what this read found. Other types keep theirs until read. After
+    // a short read, only the transactions it returned are replaced.
     if ((EXPENSE_TYPES as string[]).includes(type)) {
-      await replaceUntaggedCosts(
-        ctx.connectionId,
-        p.untagged.rows().filter((r) => r.qboSourceType === type),
-        FULL_SYNC_STEPS.filter((s) => s !== type)
-      );
+      const found = p.untagged.rows().filter((r) => r.qboSourceType === type);
+      if (complete) await replaceUntaggedCosts(ctx.connectionId, found, FULL_SYNC_STEPS.filter((s) => s !== type));
+      else await replaceUntaggedCostsForTxns(ctx.connectionId, found, new Map([[type, readIds]]));
     }
   };
   const read = (type: string) => qboQueryAll(ctx.realmId, ctx.accessToken, `SELECT * FROM ${type}`, type);
   const readOrNote = (type: string) => runStep(type, errors, () => read(type), null as any[] | null);
+  // The same query as `read`, counted. Rows are distinct by Id (qboQueryAll).
+  // A short read is logged by its type's name only, never the company's data.
+  const complete = async (type: string, rows: any[]) => {
+    const whole = await readIsComplete(ctx, `SELECT COUNT(*) FROM ${type}`, rows.filter((t) => t?.Id != null).length);
+    if (!whole) console.warn(`quickbooks sync: ${type} read came back short, so stored rows it didn't return were kept`);
+    return whole;
+  };
 
   const steps: Record<string, () => Promise<void>> = {
     Jobs: async () => {
@@ -1899,7 +2028,7 @@ async function runFullSync(
       const rows = await readOrNote("TimeActivity");
       if (rows == null) return;
       fetched.TimeActivity = rows.length;
-      await syncType("TimeActivity", rows, (ta) => processTimeActivity(p, ta), { cost: true, revenue: false });
+      await syncType("TimeActivity", rows, (ta) => processTimeActivity(p, ta), { cost: true, revenue: false }, await complete("TimeActivity", rows));
     },
     Deposit: async () => {
       const rows = await readOrNote("Deposit");
@@ -1912,14 +2041,15 @@ async function runFullSync(
           await processLineRevenue(p, txn, "Deposit");
           await processDepositCosts(p, txn);
         },
-        { cost: true, revenue: true }
+        { cost: true, revenue: true },
+        await complete("Deposit", rows)
       );
     },
     Estimate: async () => {
       const rows = await readOrNote("Estimate");
       if (rows == null) return;
       fetched.Estimate = rows.length;
-      await applyEstimates(ctx, rows, true, lookups);
+      await applyEstimates(ctx, rows, true, lookups, await complete("Estimate", rows));
     },
   };
   // Purchase is the backbone of job costing, and Invoice of revenue: if
@@ -1938,7 +2068,8 @@ async function runFullSync(
           // refund check to a customer.
           await processLineRevenue(p, txn, type);
         },
-        { cost: true, revenue: true }
+        { cost: true, revenue: true },
+        await complete(type, rows)
       );
     };
   }
@@ -1947,7 +2078,7 @@ async function runFullSync(
       const rows = type === "Invoice" ? await read(type) : await readOrNote(type);
       if (rows == null) return;
       fetched[type] = rows.length;
-      await syncType(type, rows, (txn) => processRevenueTxn(p, txn, type), { cost: false, revenue: true });
+      await syncType(type, rows, (txn) => processRevenueTxn(p, txn, type), { cost: false, revenue: true }, await complete(type, rows));
     };
   }
 
@@ -1975,6 +2106,8 @@ async function runFullSync(
       stepMs: { ...stepMs },
       ...(parts > 1 ? { fullSyncRuns: parts } : {}),
       ...(Object.keys(errors).length > 0 ? { partialErrors: { ...errors } } : {}),
+      // The first-run screen tells the person once (FirstRunSetup).
+      ...(ctx.jobSourceAutoSwitched ? { jobSourceAutoSwitched: true } : {}),
     };
   };
   const progress = (): FullSyncProgress => ({
@@ -2009,25 +2142,34 @@ async function runFullSync(
   return { counts: counts(), progress: finished ? null : progress() };
 }
 
+/**
+ * Whether a paged read got every row QuickBooks says there are, by its own
+ * count for the same query. Paging has no guaranteed order, so a record added
+ * or changed mid-read can shift a page and drop one, and a row missing from
+ * the read can't be told from one deleted in QuickBooks. A count that can't
+ * be read counts as short: nothing is removed on a guess.
+ */
+async function readIsComplete(ctx: SyncCtx, countQuery: string, got: number): Promise<boolean> {
+  try {
+    const counted = await qboQuery(ctx.realmId, ctx.accessToken, countQuery);
+    const total = Number(counted?.QueryResponse?.totalCount);
+    return Number.isFinite(total) && got >= total;
+  } catch (err) {
+    if (isReconnectError(err)) throw err;
+    return false;
+  }
+}
+
 /** A full sync's first step: every job, from the customer list or the class list. Returns how many there are. */
 async function syncJobs(ctx: SyncCtx): Promise<number> {
   // SELECT * (composite fields such as ParentRef and Line come back empty
   // when named in a column list) and inactive records too: QuickBooks'
   // query endpoint returns only active records unless asked, and making a
   // customer inactive is how many contractors mark a job finished.
-  // Paging has no guaranteed order, so a record added or changed mid-read
-  // can shift a page and drop one. Only a list at least as long as
-  // QuickBooks' own count is trusted to remove jobs.
-  const listIsComplete = async (entity: string, got: number) => {
-    try {
-      const counted = await qboQuery(ctx.realmId, ctx.accessToken, `SELECT COUNT(*) FROM ${entity} WHERE Active IN (true, false)`);
-      const total = Number(counted?.QueryResponse?.totalCount);
-      return Number.isFinite(total) && got >= total;
-    } catch (err) {
-      if (isReconnectError(err)) throw err;
-      return false;
-    }
-  };
+  // Only a list at least as long as QuickBooks' own count is trusted to
+  // remove jobs (see readIsComplete).
+  const listIsComplete = (entity: string, got: number) =>
+    readIsComplete(ctx, `SELECT COUNT(*) FROM ${entity} WHERE Active IN (true, false)`, got);
 
   if (ctx.jobSource === "classes") {
     // Each QuickBooks Class is a job (sub-classes, when a class has them).
@@ -2055,7 +2197,10 @@ async function syncJobs(ctx: SyncCtx): Promise<number> {
       where: { id: ctx.connectionId, jobSource: "projects", jobSourceConfirmedAt: null },
       data: { jobSource: "customers" },
     });
-    if (switched.count === 1) ctx.jobSource = "customers";
+    if (switched.count === 1) {
+      ctx.jobSource = "customers";
+      ctx.jobSourceAutoSwitched = true;
+    }
   }
   return upsertJobs(ctx, allCustomers, true, customerListComplete);
 }
@@ -2067,6 +2212,8 @@ function roundTallies(t: Tallies) {
     untaggedOverheadAmount: round2(t.untaggedOverheadAmount),
     unresolvedExpenseAmount: round2(t.unresolvedExpenseAmount),
     costsMatchedViaParentAmount: round2(t.costsMatchedViaParentAmount),
+    unresolvedRevenueAmount: round2(t.unresolvedRevenueAmount),
+    unclassedRevenueAmount: round2(t.unclassedRevenueAmount),
   };
 }
 
@@ -2097,6 +2244,40 @@ async function requestFullSync(connectionId: string): Promise<void> {
     // Unless Settings asked for a rebuild in the meantime, which does the same.
     where: { id: connectionId, rebuildRequestedAt: c.rebuildRequestedAt },
     data: { lastFullSyncAt: null, rebuildRequestedAt: null },
+  });
+}
+
+/**
+ * What a full read owed or partway does when the nightly job skips the
+ * company (a lapsed account, or one past its plan's company limit).
+ *
+ * Partway: it waits `waitMs` (the nightly job's own choice), still partway,
+ * since its rows are half rewritten.
+ *
+ * Owed, nothing read yet: still owed, never relabelled partway (that held
+ * the brief and refused Generate for most of a day after the owner paid).
+ * It's owed as an ordinary full sync instead (requestFullSync) and leaves
+ * fullSyncContinueAt: left at FULL_SYNC_OWED_AT it would stay first in
+ * line, and every run's short list of reads to carry on would fill with
+ * skipped lapsed companies ahead of real partway reads. As an ordinary
+ * company it's tried, and skipped, like any other lapsed one.
+ */
+export async function holdFullSyncForSkippedCompany(
+  connection: { id: string; fullSyncContinueAt: Date | null },
+  waitMs: number
+): Promise<void> {
+  if (connection.fullSyncContinueAt == null) return;
+  if (fullSyncOwed(connection)) {
+    const left = await prisma.quickBooksConnection.updateMany({
+      where: { id: connection.id, fullSyncContinueAt: FULL_SYNC_OWED_AT },
+      data: { fullSyncContinueAt: null },
+    });
+    if (left.count > 0) await requestFullSync(connection.id);
+    return;
+  }
+  await prisma.quickBooksConnection.update({
+    where: { id: connection.id },
+    data: { fullSyncContinueAt: new Date(Date.now() + waitMs) },
   });
 }
 

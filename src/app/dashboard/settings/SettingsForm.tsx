@@ -75,6 +75,14 @@ export default function SettingsForm({ connectionId, jobTypes, initial }: Props)
   const zones = TIMEZONES.includes(initial.emailTimezone) ? TIMEZONES : [initial.emailTimezone, ...TIMEZONES];
   const [status, setStatus] = useState<{ ok: boolean; message: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  // What the page showed for the recipients and the switches, sent with each
+  // save: a recipient may unsubscribe while the page is open, and the server
+  // refuses a save that would put them back (api/settings/profile).
+  const [loaded, setLoaded] = useState({
+    emailEnabled: initial.emailEnabled,
+    emailRecipients: initial.emailRecipients,
+    alertsEnabled: initial.alertsEnabled,
+  });
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -100,6 +108,7 @@ export default function SettingsForm({ connectionId, jobTypes, initial }: Props)
           laborBurdenPct: laborBurdenPct === "" ? null : laborBurdenPct,
           alertsEnabled,
           marginTargets,
+          loaded,
         }),
       });
       let data: any = null;
@@ -109,6 +118,7 @@ export default function SettingsForm({ connectionId, jobTypes, initial }: Props)
         data = null;
       }
       if (res.ok) {
+        if (data?.saved) setLoaded(data.saved);
         setStatus({
           ok: true,
           message: data?.rebuild

@@ -1,4 +1,4 @@
-import type { JobFinancials } from "./profitability";
+import { datedOnOrBefore, type JobFinancials } from "./profitability";
 import { buildWipSchedule, type NotScheduledNeed } from "./wipSchedule";
 
 /**
@@ -129,12 +129,20 @@ export function computeMoneyOwed(input: {
   jobs: JobFinancials[];
   /** Jobs whose cost estimate was filled in from the target margin, which isn't a real estimate to be over. */
   targetFilledEstimates?: Set<string>;
+  /**
+   * The calendar day the page is as of (wipReportDay: today in the
+   * company's time zone, as UTC midnight). Invoices dated after it are left
+   * out, as the jobs passed in should already leave out costs and invoices
+   * dated after it (getConnectionProfitData's asOf), so this page matches
+   * the WIP page and the bank-ready report. Omitted, nothing is left out.
+   */
+  asOf?: Date;
 }): MoneyOwed {
-  const { now } = input;
+  const { now, asOf } = input;
 
   // Unpaid invoices, by job. Aged from the due date only when every invoice
   // has one, so the buckets never mix two meanings.
-  const open = input.openInvoices.filter((inv) => inv.openBalance > 0);
+  const open = input.openInvoices.filter((inv) => inv.openBalance > 0 && (!asOf || datedOnOrBefore(inv.txnDate, asOf)));
   const agedFrom: MoneyOwed["unpaid"]["agedFrom"] = open.length > 0 && open.every((inv) => inv.dueDate != null) ? "due_date" : "invoice_date";
   const byJob = new Map<string, UnpaidByJob>();
   const invoiceIds = new Set<string>();

@@ -7,7 +7,8 @@ import { briefTileJobs, type BriefHeadline, type BriefTileJobs } from "@/lib/bri
 import { companyOpenPath } from "@/lib/companyLinks";
 import { JOB_SOURCE_QUESTION } from "@/lib/jobSetup";
 import { SUPPORT_EMAIL } from "./client";
-import { appUrl } from "./templates";
+import { appUrl, EMAIL_TRADEMARK_LINE } from "./templates";
+import { linkSigningKey } from "./signing";
 
 /**
  * A link to a dashboard page that opens it for this email's company, not
@@ -43,7 +44,7 @@ const esc = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 
 function unsubscribeSig(connectionId: string, email: string): string {
   return crypto
-    .createHmac("sha256", process.env.AUTH_SECRET ?? "dev-only")
+    .createHmac("sha256", linkSigningKey())
     .update(`brief-unsub:${connectionId}:${email.trim().toLowerCase()}`)
     .digest("base64url")
     .slice(0, 32);
@@ -70,7 +71,13 @@ export function verifyUnsubscribe(connectionId: string, encodedEmail: string, si
   } catch {
     return null;
   }
-  const expected = unsubscribeSig(connectionId, email);
+  let expected: string;
+  try {
+    expected = unsubscribeSig(connectionId, email);
+  } catch {
+    // No signing key in production: no link can be trusted.
+    return null;
+  }
   if (expected.length !== sig.length) return null;
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig)) ? email : null;
 }
@@ -172,11 +179,12 @@ export function renderBriefEmail(input: BriefEmailInput): { subject: string; htm
   const tiles: { label: string; value: string; alert?: boolean }[] = [
     { label: "Open jobs", value: String(metrics.totals.activeJobs) },
     {
-      label: wow.noComparisonReason ? "Billed to date" : "Billed since last brief",
+      // To date covers the brief's jobs only (open, or active in the last 90 days), so it says so.
+      label: wow.noComparisonReason ? "Billed to date on open and recent jobs" : "Billed since last brief",
       value: formatCurrency(wow.noComparisonReason ? metrics.totals.totalActualRevenue : wow.revenueAdded),
     },
     {
-      label: wow.noComparisonReason ? "Costs to date" : "New costs since last brief",
+      label: wow.noComparisonReason ? "Costs to date on open and recent jobs" : "New costs since last brief",
       value: formatCurrency(wow.noComparisonReason ? metrics.totals.totalActualCost : wow.costAdded),
     },
     { label: "Jobs 10%+ over estimate", value: String(overBudget), alert: overBudget > 0 },
@@ -309,7 +317,7 @@ export function renderBriefEmail(input: BriefEmailInput): { subject: string; htm
       ${input.hasOtherCompanies ? `<a href="${esc(unsubAll)}" style="color:${MUTED};">Stop it for every company on this account</a> &middot;` : ""}
       <a href="${esc(link("/dashboard/settings"))}" style="color:${MUTED};">Change the day and time</a><br>
       Questions? Reply, or write to <a href="mailto:${SUPPORT_EMAIL}" style="color:${MUTED};">${SUPPORT_EMAIL}</a>.<br>
-      ${esc(COMPANY_LEGAL_NAME)}, ${esc(COMPANY_MAILING_ADDRESS)}. QuickBooks is a trademark of Intuit Inc.
+      ${esc(COMPANY_LEGAL_NAME)}, ${esc(COMPANY_MAILING_ADDRESS)}. ${esc(EMAIL_TRADEMARK_LINE)}
     </div>
   </td></tr>
 </table></td></tr></table></body></html>`;
@@ -348,6 +356,7 @@ export function renderBriefEmail(input: BriefEmailInput): { subject: string; htm
     `Stop getting this email: ${unsub}`,
     ...(input.hasOtherCompanies ? [`Stop it for every company on this account: ${unsubAll}`] : []),
     `${COMPANY_LEGAL_NAME}, ${COMPANY_MAILING_ADDRESS}.`,
+    EMAIL_TRADEMARK_LINE,
   ].join("\n");
 
   return {
@@ -409,7 +418,7 @@ export function renderAlertEmail(input: {
     Each alert is sent once per job. ${isOwner ? "" : `${esc(input.ownerEmail ?? "The account owner")} added you as a recipient. `}<a href="${esc(link("/dashboard/settings"))}" style="color:${MUTED};">Turn alerts off in Settings</a> &middot; <a href="${esc(unsub)}" style="color:${MUTED};">Stop all emails about this company</a>${
       input.hasOtherCompanies ? ` &middot; <a href="${esc(unsubAll)}" style="color:${MUTED};">Stop them for every company on this account</a>` : ""
     }<br>
-    ${esc(COMPANY_LEGAL_NAME)}, ${esc(COMPANY_MAILING_ADDRESS)}.
+    ${esc(COMPANY_LEGAL_NAME)}, ${esc(COMPANY_MAILING_ADDRESS)}. ${esc(EMAIL_TRADEMARK_LINE)}
   </div></td></tr>
 </table></td></tr></table></body></html>`;
   const text = [
@@ -421,6 +430,10 @@ export function renderAlertEmail(input: {
     `Turn alerts off in Settings: ${link("/dashboard/settings")}`,
     `Stop all emails about this company: ${unsub}`,
     ...(input.hasOtherCompanies ? [`Stop them for every company on this account: ${unsubAll}`] : []),
+    "",
+    // The postal address the HTML part has; CAN-SPAM wants it in every version of the message.
+    `${COMPANY_LEGAL_NAME}, ${COMPANY_MAILING_ADDRESS}.`,
+    EMAIL_TRADEMARK_LINE,
   ].join("\n");
   return {
     subject,

@@ -18,7 +18,7 @@ export default function ResetPasswordForm() {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [done, setDone] = useState(false);
+  const [done, setDone] = useState<false | "signed_in" | "log_in">(false);
 
   // Check the link before showing the form. Letting someone compose a
   // password, submit it, and only then learn the link expired an hour ago is
@@ -67,8 +67,12 @@ export default function ResetPasswordForm() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? "Something went wrong.");
-      setDone(true);
-      setTimeout(() => router.push("/login"), 2500);
+      // The reset signs this browser in (so a stranger locking the address
+      // with wrong passwords can't keep the customer out); older sessions
+      // stay ended.
+      const signedIn = data.signedIn === true;
+      setDone(signedIn ? "signed_in" : "log_in");
+      setTimeout(() => router.push(signedIn ? "/dashboard" : "/login"), 2500);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
@@ -107,13 +111,15 @@ export default function ResetPasswordForm() {
       <div className="rounded-xl border border-jp-line bg-white p-7 sm:p-8">
         <h1 className="text-xl font-bold text-jp-ink">Password changed</h1>
         <p className="mt-3 text-sm leading-relaxed text-jp-slate">
-          Log in with your new password. Taking you there now.
+          {done === "signed_in"
+            ? "You're signed in. Taking you to your dashboard now."
+            : "Log in with your new password. Taking you there now."}
         </p>
         <Link
-          href="/login"
+          href={done === "signed_in" ? "/dashboard" : "/login"}
           className="mt-6 inline-block text-sm font-medium text-jp-blue hover:underline"
         >
-          Log in
+          {done === "signed_in" ? "Go to your dashboard" : "Log in"}
         </Link>
       </div>
     );

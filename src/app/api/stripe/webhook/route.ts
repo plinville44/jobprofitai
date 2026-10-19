@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import type Stripe from "stripe";
 import { getStripe } from "@/lib/stripe/client";
-import { processStripeEvent } from "@/lib/stripe/webhookHandlers";
+import { EventInProgressError, processStripeEvent } from "@/lib/stripe/webhookHandlers";
 
 /**
  * POST /api/stripe/webhook
@@ -53,6 +53,12 @@ export async function POST(req: NextRequest) {
     // Always 200 for a verified, successfully-processed (or duplicate) event.
     return NextResponse.json({ received: true, ...result });
   } catch (err) {
+    // The first delivery of this event is still running. Not an error: a
+    // non-2xx makes Stripe come back later, by when it has finished (or its
+    // claim has gone stale and the retry takes it over).
+    if (err instanceof EventInProgressError) {
+      return NextResponse.json({ error: "Still processing this event" }, { status: 409 });
+    }
     // 500 makes Stripe retry with backoff. processStripeEvent has already
     // released its event claim, so the retry genuinely re-runs the work.
     console.error(

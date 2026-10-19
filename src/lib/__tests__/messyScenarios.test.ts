@@ -214,7 +214,7 @@ import {
 } from "../profitability";
 import { buildWipSchedule, NOT_SCHEDULED_NEED_TEXT, type WipSchedule } from "../wipSchedule";
 import { computeMoneyOwed, type MoneyOwed } from "../moneyOwed";
-import { loadUntaggedCosts } from "../untaggedCostStore";
+import { loadUnmatchedRevenue, loadUntaggedCosts } from "../untaggedCostStore";
 import { getOpportunityData, type CheckedEstimate } from "../opportunityData";
 import { resolveDateRange } from "../dateRange";
 import { formatCurrency, formatPct } from "../format";
@@ -402,6 +402,8 @@ interface Snapshot {
   owed: MoneyOwed;
   health: ConnectionProfitData["dataHealth"];
   untagged: Awaited<ReturnType<typeof loadUntaggedCosts>>;
+  /** Data Health's sales on no job, beside the unresolved costs. */
+  revenueOffJobs: Awaited<ReturnType<typeof loadUnmatchedRevenue>>;
 }
 
 async function snapshot(): Promise<Snapshot> {
@@ -424,7 +426,8 @@ async function snapshot(): Promise<Snapshot> {
   const owed = computeMoneyOwed({ now, openInvoices, jobs: all.lifetimeJobs, targetFilledEstimates: filled });
   // Data Health page.
   const untagged = await loadUntaggedCosts("c1", now, 50);
-  return { dashboard, wipData, wip, owed, health: all.dataHealth, untagged };
+  const revenueOffJobs = await loadUnmatchedRevenue("c1");
+  return { dashboard, wipData, wip, owed, health: all.dataHealth, untagged, revenueOffJobs };
 }
 
 const JOB_NAMES = [
@@ -638,8 +641,13 @@ describe("messy real-world data, seeded and synced", () => {
       expect(h("timeEntriesWithoutPayRate")).toBe(1);
       expect(h("untaggedOverheadCount")).toBe(1);
       expect(h("untaggedOverheadAmount")).toBe(230);
-      expect(h("totalJobs")).toBe(17);
-      expect(h("jobsWithEnoughData")).toBe(17);
+      // Sales on no job are counted beside the costs: the seeder puts none
+      // there, and the count is measured (zero, not "not yet measured").
+      expect(after.revenueOffJobs).toEqual({ unresolvedCount: 0, unresolvedAmount: 0, unclassedCount: 0, unclassedAmount: 0 });
+      // MX06 Idle Job is idle (no activity in 90 days): counted once in
+      // idleOpenJobs and left out of the jobs the other checks look at.
+      expect(h("totalJobs")).toBe(16);
+      expect(h("jobsWithEnoughData")).toBe(16);
       expect(h("jobsMissingData")).toBe(0);
     });
 
@@ -650,7 +658,7 @@ describe("messy real-world data, seeded and synced", () => {
       };
       expect(added((s) => s.health.possibleDuplicates)).toEqual([expect.objectContaining({ jobName: "MX16 Duplicate Expenses", amount: 640, date: dayStr(7) })]);
       expect(added((s) => s.health.idleOpenJobs)).toEqual([expect.objectContaining({ jobName: "MX06 Idle Job", daysSinceActivity: 160 })]);
-      expect(added((s) => s.health.staleJobs)).toEqual([expect.objectContaining({ jobName: "MX06 Idle Job", daysSinceActivity: 160 })]);
+      expect(added((s) => s.health.staleJobs)).toEqual([]);
       expect(added((s) => s.health.jobsMissingEstimates).map((j) => j.jobName).sort()).toEqual(
         JOB_NAMES.filter((n) => !(n in TYPED_ESTIMATES) && n !== "MX01 Early Materials").sort()
       );
@@ -872,5 +880,55 @@ describe("messy real-world data, seeded and synced", () => {
         .sort();
       expect(mx).toEqual(["MX01 Early Materials: underbilled", "MX02 Past Estimate: over_budget", "MX04 Expected Loss: forecast_below_target"]);
     });
+  });
+});
+
+// A repeat client: years of work kept on the customer itself, then a first
+// QuickBooks Project for the new job. The project used to take on the
+// client's whole history through the parent-customer match.
+describe("a repeat client's first project, seeded and synced", () => {
+  let bath: JobProfitData;
+  let r: any;
+
+  beforeAll(async () => {
+    const acct = (name: string) => qb.rows("Account").find((a) => a.Name === name).Id;
+    const materials = acct("Job materials");
+    const service = qb.rows("Item").find((i) => i.Name === "Construction services").Id;
+    const supply = qb.rows("Vendor").find((v) => v.DisplayName === "Coastal Supply Co").Id;
+    const sale = (amount: number) => [{ Amount: amount, DetailType: "SalesItemLineDetail", SalesItemLineDetail: { ItemRef: { value: service }, Qty: 1, UnitPrice: amount } }];
+    const cost = (amount: number, customer: string) => [
+      { Amount: amount, DetailType: "AccountBasedExpenseLineDetail", AccountBasedExpenseLineDetail: { AccountRef: { value: materials }, CustomerRef: { value: customer } } },
+    ];
+    const lena = qb.create("Customer", { DisplayName: "Lena Park (test)" }).Id;
+    // Two years ago, before QuickBooks Projects: the old job on the customer.
+    const old = qb.create("Invoice", { CustomerRef: { value: lena }, TxnDate: dayStr(730), Line: sale(40_000) });
+    old.Balance = 0;
+    qb.create("Bill", { VendorRef: { value: supply }, TxnDate: dayStr(730), Line: cost(28_000, lena) });
+    qb.create("Estimate", { CustomerRef: { value: lena }, TxnDate: dayStr(760), TxnStatus: "Closed", Line: sale(40_000) });
+    // The new job's estimate, bid on the customer three months ago, before
+    // there was a project to put it on.
+    qb.create("Estimate", { CustomerRef: { value: lena }, TxnDate: dayStr(90), TxnStatus: "Accepted", Line: sale(15_000) });
+    // The new project, created today, with its own cost and invoice.
+    const project = qb.create("Customer", { DisplayName: "Bathroom 2026 (test)", ParentRef: { value: lena }, Job: true }).Id;
+    qb.create("Purchase", { PaymentType: "Cash", AccountRef: { value: acct("Checking") }, EntityRef: { value: supply, type: "Vendor" }, TxnDate: dayStr(2), Line: cost(2_000, project) });
+    qb.create("Invoice", { CustomerRef: { value: project }, TxnDate: dayStr(1), Line: sale(5_000) });
+    // Materials bought on the customer a week before the project was set up: this job's.
+    qb.create("Purchase", { PaymentType: "Cash", AccountRef: { value: acct("Checking") }, EntityRef: { value: supply, type: "Vendor" }, TxnDate: dayStr(7), Line: cost(400, lena) });
+
+    r = await syncNow();
+    bath = (await getJobProfitData(jobByName("Bathroom 2026 (test)").id, new Date()))!;
+  });
+
+  it("shows the project its own revenue and cost only, and the contract from the estimate made before it", () => {
+    expect([bath.financials.revenue, Math.round(bath.financials.costs * 100) / 100]).toEqual([5_000, 2_400]);
+    expect(jobByName("Bathroom 2026 (test)").estimatedRevenue).toBe(15_000);
+    const stored = (fake.client as any).costEntry.rows.filter((c: any) => c.jobId === jobByName("Bathroom 2026 (test)").id);
+    expect(stored.map((c: any) => [Number(c.amount), c.attributionMethod]).sort()).toEqual([[2_000, "direct"], [400, "parent_customer_fallback"]]);
+  });
+
+  it("leaves the client's older history on no job, and past Data Health's 12 months", () => {
+    const rows = [...(fake.client as any).costEntry.rows, ...(fake.client as any).invoiceSummary.rows].filter((x: any) => Number(x.amount) === 40_000 || Number(x.amount) === 28_000);
+    expect(rows).toEqual([]);
+    expect(r.costsMatchedViaParentCount).toBe(2); // MX07's $800, and the $400 of materials above
   });
 });

@@ -131,7 +131,8 @@ export function computeBriefHeadline(
       snapshot,
       newRisk,
       headline: `JobProfitAI found ${formatCurrency(newRisk)} of new margin risk on your open jobs since the last brief.`,
-      subject: `${companyName}: ${formatCurrency(newRisk)} of new margin risk this week`,
+      // Measured against the last brief, which isn't always a week ago.
+      subject: `${companyName}: ${formatCurrency(newRisk)} of new margin risk since your last brief`,
     };
   }
   // A pending estimate can still be fixed before it goes out, so it leads,

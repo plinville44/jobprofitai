@@ -57,11 +57,20 @@ export function deletionDueAt(disconnectedAt: Date, rulesStart: Date = EARLIEST_
  * tested; the caller has already ruled out complimentary access.
  */
 export function accessEndedAt(
-  sub: Pick<Subscription, "status" | "trialEndsAt" | "currentPeriodEnd" | "canceledAt" | "updatedAt"> | null,
+  sub:
+    | (Pick<Subscription, "status" | "trialEndsAt" | "currentPeriodEnd" | "canceledAt" | "updatedAt"> & {
+        stripeSubscriptionId?: string | null;
+      })
+    | null,
   fallback: Date,
   now: Date
 ): Date | null {
   if (!sub) return fallback;
+  // A paid Stripe subscription in a trial set in Stripe. Older rows stored it
+  // as "trialing", and the trial expiry may have made that "trial_expired";
+  // our own trial never has a Stripe subscription. Live, as getEntitlements
+  // reads it, so its companies are never disconnected as lapsed.
+  if (sub.stripeSubscriptionId && (sub.status === "trialing" || sub.status === "trial_expired")) return null;
   switch (sub.status) {
     case "active":
     case "past_due":
@@ -78,6 +87,27 @@ export function accessEndedAt(
       // since the row last changed.
       return sub.updatedAt;
   }
+}
+
+/**
+ * True once QuickBooks has refused us for REVOKED_GRANT_GRACE_DAYS: counted
+ * from the refusal, never from before the rules began. The refusal's time is
+ * the last sync attempt, as a company waiting for a reconnect isn't tried
+ * again; without one, the last successful sync, then the connection. It used
+ * to count from the last successful sync alone, so a customer back after
+ * months away whose app had been removed in QuickBooks lost the company
+ * within the hour of the first failed sync, against the 7 days the Terms
+ * promise.
+ */
+export function revokedGraceOver(
+  c: { lastSyncAttemptAt: Date | null; lastSyncedAt: Date | null; connectedAt: Date },
+  now: Date,
+  rulesStart: Date = EARLIEST_RULES_START
+): boolean {
+  const refusedAt = [c.lastSyncAttemptAt, c.lastSyncedAt, c.connectedAt]
+    .filter((d): d is Date => d != null)
+    .reduce((latest, d) => (d.getTime() > latest.getTime() ? d : latest));
+  return now.getTime() - notBefore(refusedAt, rulesStart).getTime() >= REVOKED_GRANT_GRACE_DAYS * DAY_MS;
 }
 
 /** True once an account has gone LAPSED_DISCONNECT_DAYS without a trial or plan. */

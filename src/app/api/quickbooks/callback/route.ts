@@ -49,7 +49,9 @@ export async function GET(req: NextRequest) {
     if (flow === "connect") return await handleConnect(payload, code, realmId);
     // Sign in with Intuit and the QuickBooks App Store flow live in their
     // own module; see src/lib/intuitSignIn.ts.
-    return await handleIntuitFlow(flow, payload, code, realmId);
+    // The request's own headers: the ad source and opt-out cookies and the
+    // country header are read from them for a signup (see intuitSignIn.ts).
+    return await handleIntuitFlow(flow, payload, code, realmId, req.headers);
   } catch (err) {
     console.error("quickbooks/callback failed:", err instanceof Error ? err.message : "Unknown error");
     return NextResponse.redirect(appUrl("/dashboard?qbo_error=connection_failed"));

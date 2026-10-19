@@ -99,6 +99,10 @@ export async function countPayingClients(partnerId: string): Promise<number> {
     where: {
       userId: { in: referredUserIds },
       status: { in: ["active", "past_due"] },
+      // Paying means a payment has actually been recorded. A subscription in
+      // a trial set in Stripe is stored as "active" (storedStatusFor in
+      // src/lib/stripe/webhookHandlers.ts) before it has paid anything.
+      firstPaidAt: { not: null },
       // Firm accounts earn no commission (see recordCommissionForInvoice), so
       // they don't raise the rate on the partner's other clients either.
       // Otherwise a Firm account opened through a partner's own link would

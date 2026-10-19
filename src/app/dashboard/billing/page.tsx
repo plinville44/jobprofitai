@@ -2,9 +2,10 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getAccount } from "@/lib/account";
 import { prisma } from "@/lib/prisma";
-import { canConnectAnotherCompany, getEntitlements, getUsageAgainstLimits } from "@/lib/entitlements";
+import { canConnectAnotherCompany, getEntitlements, getUsageAgainstLimits, PAUSED_LOGIN_MESSAGE } from "@/lib/entitlements";
 import { NO_PLAN_STATUS, getTrialState } from "@/lib/trial";
-import { pausedCompaniesMessage, pausedCompanySummary, planFit } from "@/lib/planLimits";
+import { joinNames, pausedCompaniesMessage, pausedCompanySummary, planFit } from "@/lib/planLimits";
+import { listTeam, teamLoginsInUse } from "@/lib/team";
 import { getReferralSummary } from "@/lib/referrals";
 import {
   PLANS,
@@ -117,11 +118,17 @@ export default async function BillingPage(props: {
   // for a trial that ended at 7pm Pacific on Sep 15.
   const timeZone = connection?.emailTimezone ?? DEFAULT_TIME_ZONE;
 
-  const [usage, referrals, pausedSummary] = await Promise.all([
+  const [usage, referrals, pausedSummary, teamLogins, team] = await Promise.all([
     getUsageAgainstLimits(account.ownerId, entitlements),
     getReferralSummary(account.ownerId),
     pausedCompanySummary(account.ownerId),
+    teamLoginsInUse(account.ownerId),
+    listTeam(account.ownerId),
   ]);
+  // Team logins past the plan's limit, by the same ranking accountFor uses
+  // to take their access away (listTeam marks them).
+  const joinedLogins = team.filter((r) => r.role !== "client" && r.status === "active");
+  const pausedLogins = joinedLogins.filter((r) => r.paused);
 
   const stripeReady = isStripeConfigured();
   const currentPlan: PlanId | null =
@@ -159,14 +166,28 @@ export default async function BillingPage(props: {
 
   // What the account already uses, shown on the plan chooser so a plan that
   // can't cover it is ruled out before checkout rather than refused after.
-  const usageLine = `You have ${usage.connections} QuickBooks ${usage.connections === 1 ? "company" : "companies"} and ${usage.activeJobs} open ${usage.activeJobs === 1 ? "job" : "jobs"}.`;
-  const firmFit = planFit(PLANS.firm, usage);
+  const companiesAndJobs = `${usage.connections} QuickBooks ${usage.connections === 1 ? "company" : "companies"}${teamLogins > 0 ? "," : " and"} ${usage.activeJobs} open ${usage.activeJobs === 1 ? "job" : "jobs"}`;
+  const usageLine =
+    teamLogins > 0
+      ? `You have ${companiesAndJobs} and ${teamLogins} team ${teamLogins === 1 ? "login" : "logins"} (in use or invited).`
+      : `You have ${companiesAndJobs}.`;
+  // Team logins count too: checkout refuses a plan with fewer than the
+  // account has (in use or invited), so the card says so first.
+  const fitUsage = { ...usage, teamLogins };
+  // A paused team login is shown an empty account of its own and can't
+  // start a plan there (api/billing/checkout says the same).
+  const blockedReason = account.paused ? PAUSED_LOGIN_MESSAGE : null;
+  const firmFit = planFit(PLANS.firm, fitUsage);
   // A paying Pro customer can move to the 1-company plan in Stripe's portal;
-  // say before they do what that would pause.
-  const downgradePauses =
-    isPaid && currentPlan === "profit_intelligence_pro"
-      ? Math.max(0, usage.connections - PLANS.profit_intelligence.limits.maxConnections)
-      : 0;
+  // say before they do what that would pause: companies past its limit, and
+  // the team logins that joined last past its logins.
+  const downgrading = isPaid && currentPlan === "profit_intelligence_pro";
+  const downgradePauses = downgrading
+    ? Math.max(0, usage.connections - PLANS.profit_intelligence.limits.maxConnections)
+    : 0;
+  const downgradeLoginPauses = downgrading
+    ? Math.max(0, joinedLogins.length - PLANS.profit_intelligence.limits.maxTeamMembers)
+    : 0;
 
   return (
     <div className="space-y-6">
@@ -218,6 +239,23 @@ export default async function BillingPage(props: {
               Disconnect companies you no longer need in Settings.
             </Link>{" "}
             {pausedPlanHint}
+          </p>
+        </Panel>
+      ) : null}
+
+      {pausedLogins.length > 0 ? (
+        <Panel tone="warning" title="Some team logins are paused">
+          <p className="text-sm text-amber-900">
+            Your plan includes {entitlements.limits.maxTeamMembers} team{" "}
+            {entitlements.limits.maxTeamMembers === 1 ? "login" : "logins"} and {joinedLogins.length} people have joined.{" "}
+            {joinNames(pausedLogins.map((r) => r.name ?? r.email))} {pausedLogins.length === 1 ? "has" : "have"} no access
+            until you make room: the people who joined first keep theirs.
+          </p>
+          <p className="mt-2 text-sm text-amber-900">
+            <Link href="/dashboard/settings" className="font-semibold underline">
+              Remove logins you no longer need in Settings
+            </Link>
+            , or move to a plan with more logins.
           </p>
         </Panel>
       ) : null}
@@ -449,12 +487,15 @@ export default async function BillingPage(props: {
               )}
             </p>
           ) : null}
-          {stripeReady && isPaid && downgradePauses > 0 ? (
+          {stripeReady && isPaid && (downgradePauses > 0 || downgradeLoginPauses > 0) ? (
             <p className="mt-3 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              {usageLine} {PLANS.profit_intelligence.name} covers{" "}
-              {PLANS.profit_intelligence.limits.maxConnections} company, so switching to it would pause{" "}
-              {downgradePauses} of them: they&rsquo;d keep their figures but stop syncing until you disconnect some or
-              move back.
+              {usageLine}{" "}
+              {downgradePauses > 0
+                ? `${PLANS.profit_intelligence.name} covers ${PLANS.profit_intelligence.limits.maxConnections} company, so switching to it would pause ${downgradePauses} of your companies: they'd keep their figures but stop syncing until you disconnect some or move back. `
+                : ""}
+              {downgradeLoginPauses > 0
+                ? `${PLANS.profit_intelligence.name} includes ${PLANS.profit_intelligence.limits.maxTeamMembers} team logins, so switching to it would pause ${downgradeLoginPauses} of your ${joinedLogins.length} team logins: the people who joined last would lose access until you remove some or move back.`
+                : ""}
             </p>
           ) : null}
           {!stripeReady || isPaid ? null : (
@@ -465,7 +506,7 @@ export default async function BillingPage(props: {
                   // Disabled with the reason when the plan can't cover the
                   // companies already connected (checkout would refuse it);
                   // a warning only for the open-job limit, which isn't enforced.
-                  const fit = planFit(plan, usage);
+                  const fit = planFit(plan, fitUsage);
                   return (
                     <div
                       key={plan.id}
@@ -499,7 +540,7 @@ export default async function BillingPage(props: {
                         label={`Choose ${plan.name}`}
                         variant={plan.mostPopular && fit.fits ? "primary" : "secondary"}
                         className="mt-5"
-                        disabledReason={fit.reason}
+                        disabledReason={blockedReason ?? fit.reason}
                       />
                     </div>
                   );
@@ -518,7 +559,7 @@ export default async function BillingPage(props: {
                       disconnect companies.
                     </p>
                   </div>
-                  <CheckoutButton plan="firm" label="Choose Firm" variant="secondary" disabledReason={firmFit.reason} />
+                  <CheckoutButton plan="firm" label="Choose Firm" variant="secondary" disabledReason={blockedReason ?? firmFit.reason} />
                 </div>
               ) : null}
               <p className="mt-4 text-xs text-gray-500">

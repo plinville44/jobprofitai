@@ -208,7 +208,10 @@ export function computeTrialState(sub: Subscription, now: Date = new Date()): Tr
   //   2. The extension grace window is explicitly meant to stay claimable
   //      for a few days AFTER the trial ends. That's impossible if an
   //      expired trial is treated as "not a trial at all".
-  const isTrialStatus = sub.status === "trialing" || sub.status === "trial_expired";
+  // A row with a Stripe subscription is never our trial, whatever its status
+  // says (older rows stored a trial set in Stripe as "trialing"), so it gets
+  // no trial banner, no trial emails and no extension offer.
+  const isTrialStatus = (sub.status === "trialing" || sub.status === "trial_expired") && !sub.stripeSubscriptionId;
   const expired = isTrialStatus && trialEndsAt != null && trialEndsAt.getTime() <= now.getTime();
   const onTrial = isTrialStatus && !expired;
 
@@ -366,10 +369,14 @@ export async function extendTrialWithFeedback(
  * regardless (see getEntitlements), so this is bookkeeping that keeps admin
  * views and email targeting honest, not the thing enforcing access.
  * Safe to run repeatedly - it only ever touches rows still marked trialing.
+ *
+ * Never a row with a Stripe subscription: that "trialing" is a trial set in
+ * Stripe on a paid subscription (older rows stored Stripe's status as is),
+ * and only Stripe ends it.
  */
 export async function expireFinishedTrials(now: Date = new Date()): Promise<number> {
   const result = await prisma.subscription.updateMany({
-    where: { status: "trialing", trialEndsAt: { lt: now } },
+    where: { status: "trialing", trialEndsAt: { lt: now }, stripeSubscriptionId: null },
     data: { status: "trial_expired" },
   });
   return result.count;

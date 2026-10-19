@@ -170,7 +170,7 @@ export default function HowItWorksPage() {
           >
             <p>
               Your Profit Dashboard shows revenue, cost, gross profit and margin for every job, plus
-              company-wide totals: average job margin, how many jobs are below your target, and the
+              company-wide totals: margin across all those jobs, how many are below your target, and the
               dollar value of profit currently at risk.
             </p>
             <p>
@@ -192,9 +192,10 @@ export default function HowItWorksPage() {
             <p>
               &ldquo;Needs Your Attention&rdquo; is a deterministic rule set that runs across every
               job: costs running over estimate, finished jobs below your target margin, work done
-              but not yet billed, margin declining across recent weekly snapshots, and cost
-              categories that look like outliers compared to similar completed jobs. On Pro,
-              in-progress jobs are also judged on where they&rsquo;re forecast to finish.
+              but not yet billed, and margin declining across recent weekly snapshots. On Pro,
+              in-progress jobs are also judged on where they&rsquo;re forecast to finish, and each
+              job&rsquo;s cost categories are compared with similar completed jobs to catch
+              outliers.
             </p>
             <p>
               JobProfitAI syncs every night. When that sync finds an open job whose costs are more
@@ -230,9 +231,9 @@ export default function HowItWorksPage() {
             <p>
               The dollar figure is worked out in the open: the price that would have hit your target
               margin on the same costs, minus what the jobs actually sold for. When your estimates
-              split the price, it goes further and names the thin part: for example, that customers
-              paid for labor on your kitchens and it cost nearly as much again, and how much to add
-              to the labor on the next one.
+              split the price, it goes further and names the thin part. On kitchens, for example,
+              it&rsquo;s the labor: it cost nearly everything customers paid for it. Then it says how
+              much to add to the labor on the next one.
             </p>
             <p>
               A month-by-month view of margin by job type shows whether a change is coming through in
