@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createPasswordReset, RESET_TOKEN_TTL_MINUTES } from "@/lib/passwordReset";
 import { sendPasswordReset } from "@/lib/email/lifecycle";
+import { findLoginByEmail } from "@/lib/loginThrottle";
 
 export const runtime = "nodejs";
 
@@ -42,7 +43,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Enter a valid email address." }, { status: 400 });
     }
 
-    const reset = await createPasswordReset(parsed.data.email);
+    // Only the login whose address is exactly the one typed, ignoring case
+    // (findLoginByEmail). Its stored address is then what the reset looks up,
+    // so a wildcard in what was typed can't pick a different account.
+    const login = await findLoginByEmail(parsed.data.email);
+    const reset = login ? await createPasswordReset(login.email) : null;
 
     // Null means no such account, or too many recent requests. Both end here,
     // silently and successfully, from the caller's point of view.

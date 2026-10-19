@@ -263,6 +263,67 @@ export async function createBillingPortalSession(
 export const CANCEL_FAILED_MESSAGE =
   "We couldn't cancel your subscription with our payment processor, so your account hasn't been deleted and nothing has changed. Please try again in a few minutes, or email support@jobprofitai.com and we'll handle it.";
 
+/** Stripe statuses after which a subscription never charges again. */
+const ENDED_STATUSES = ["canceled", "incomplete_expired"];
+
+/**
+ * Stops everything that could still bill an account that's being deleted
+ * (api/account/delete): every Stripe subscription on its customer that hasn't
+ * ended, not only the one on file (a checkout paid moments ago whose webhook
+ * hasn't arrived, or a duplicate), plus the one on file if it sits elsewhere,
+ * and every checkout still open, so none can be paid afterwards. Checkouts
+ * are closed first, then the subscriptions are listed, so one paid in
+ * between is still caught.
+ *
+ * Returns false if anything couldn't be stopped, and the caller then deletes
+ * nothing. A cancel that fails is fine only when Stripe then says that
+ * subscription has ended or doesn't exist. Stripe calls follow API
+ * 2024-06-20 (checked against stripe-node 16.12.0's types); not verified
+ * against live Stripe.
+ */
+export async function stopAllBilling(row: {
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+}): Promise<{ ok: true } | { ok: false; error: unknown }> {
+  const stripe = getStripe();
+  try {
+    const toCancel = new Set<string>();
+    if (row.stripeCustomerId) {
+      const open = await stripe.checkout.sessions.list({ customer: row.stripeCustomerId, status: "open", limit: 100 });
+      for (const session of open.data) {
+        try {
+          await stripe.checkout.sessions.expire(session.id);
+        } catch (err) {
+          // Closed by someone else is fine. Paid in the meantime is too: its
+          // subscription shows up in the list below.
+          const again: { status?: string | null } = await stripe.checkout.sessions.retrieve(session.id);
+          if (again.status === "open") return { ok: false, error: err };
+        }
+      }
+      const listed = await stripe.subscriptions.list({ customer: row.stripeCustomerId, status: "all", limit: 100 });
+      for (const s of listed.data as ListedSubscription[]) {
+        if (!ENDED_STATUSES.includes(s.status)) toCancel.add(s.id);
+      }
+      const onFileListed = (listed.data as ListedSubscription[]).some((s) => s.id === row.stripeSubscriptionId);
+      if (row.stripeSubscriptionId && !onFileListed) toCancel.add(row.stripeSubscriptionId);
+    } else if (row.stripeSubscriptionId) {
+      toCancel.add(row.stripeSubscriptionId);
+    }
+
+    for (const id of toCancel) {
+      try {
+        await stripe.subscriptions.cancel(id);
+      } catch (err) {
+        if (!(await stripeSubscriptionEnded(id))) return { ok: false, error: err };
+      }
+    }
+    return { ok: true };
+  } catch (err) {
+    // A list or retrieve that failed: nothing can be said for certain.
+    return { ok: false, error: err };
+  }
+}
+
 /**
  * Asks Stripe whether a subscription has ended (canceled or
  * incomplete_expired) or doesn't exist. Account deletion asks this after any
@@ -275,7 +336,7 @@ export const CANCEL_FAILED_MESSAGE =
 export async function stripeSubscriptionEnded(subscriptionId: string): Promise<boolean> {
   try {
     const subscription = await getStripe().subscriptions.retrieve(subscriptionId);
-    return subscription.status === "canceled" || subscription.status === "incomplete_expired";
+    return ENDED_STATUSES.includes(subscription.status);
   } catch (err) {
     return (err as { code?: string } | null)?.code === "resource_missing";
   }

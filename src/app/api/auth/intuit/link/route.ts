@@ -5,7 +5,7 @@ import { refuseCrossSite } from "@/lib/sameOrigin";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { createSession, verifyPassword } from "@/lib/auth";
-import { clientIp, finishLoginAttempt, startLoginAttempt, WINDOW_MINUTES } from "@/lib/loginThrottle";
+import { clientIp, findLoginByEmail, finishLoginAttempt, startLoginAttempt, WINDOW_MINUTES } from "@/lib/loginThrottle";
 import { carryAdOptOutToBrowser, noteBrowserOptOut } from "@/lib/adOptOut";
 import { clearPendingIntuitIdentity, readPendingIntuitIdentity } from "@/lib/intuitSignIn";
 
@@ -45,7 +45,8 @@ export async function POST(req: NextRequest) {
       { status: 429 }
     );
   }
-  const user = await prisma.user.findFirst({ where: { email: { equals: email, mode: "insensitive" } } });
+  // Exactly the address typed, ignoring case (findLoginByEmail), never a wildcard match.
+  const user = await findLoginByEmail(email);
   const valid = user ? await verifyPassword(parsed.data.password, user.passwordHash) : false;
   await finishLoginAttempt(attempt.attemptId, valid);
   if (!user || !valid) return NextResponse.json({ error: "Incorrect email or password." }, { status: 401 });

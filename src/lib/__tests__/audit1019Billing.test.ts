@@ -48,6 +48,7 @@ class FakeStripe {
       if (stripeState.cancelError) throw stripeState.cancelError;
       const s = stripeState.subscriptions.get(id);
       if (!s) throw missing("subscription", id);
+      if (s.cancelFails) throw new Error("Stripe couldn't cancel this one");
       s.status = "canceled";
       return copy(s);
     },
@@ -166,11 +167,20 @@ vi.mock("next/server", () => {
   };
 });
 
-const auth = { session: null as null | { userId: string }, created: [] as string[], revoked: [] as string[], passwordChecks: 0 };
+const auth = {
+  session: null as null | { userId: string },
+  created: [] as string[],
+  // The session version each session was issued under (createSession reads it).
+  versions: [] as number[],
+  revoked: [] as string[],
+  passwordChecks: 0,
+};
 vi.mock("@/lib/auth", () => ({
   createSession: async (userId: string) => {
     auth.created.push(userId);
     auth.session = { userId };
+    const user = await fake.client.user.findUnique({ where: { id: userId } });
+    auth.versions.push(Number(user?.sessionVersion ?? 0));
     return "token";
   },
   getSession: async () => auth.session,
@@ -259,6 +269,7 @@ vi.mock("@/lib/email/lifecycle", () => {
     sendPasswordChanged: record("password_changed"),
     sendTrialWelcome: record("trial_welcome"),
     sendEmailVerification: record("email_verification"),
+    sendPasswordReset: record("password_reset"),
   };
 });
 vi.mock("@/lib/email/client", () => ({
@@ -284,7 +295,7 @@ import { acceptInvite, createInvite, listTeam, OWN_PLAN_JOIN_MESSAGE, teamLogins
 import { planFit, teamLoginsMisfit } from "../planLimits";
 import { canConnectAnotherCompany, getEntitlements, PAUSED_LOGIN_MESSAGE, pausedTeamLoginIds } from "../entitlements";
 import { computeTrialState, expireFinishedTrials } from "../trial";
-import { clearFailedLogins, emailKey, isLockedOut, SIGNUPS_PER_IP_PER_HOUR, signupKey } from "../loginThrottle";
+import { clearFailedLogins, emailKey, findLoginByEmail, isLockedOut, SIGNUPS_PER_IP_PER_HOUR, signupKey } from "../loginThrottle";
 import { hashToken } from "../passwordReset";
 import { handleIntuitFlow, INTUIT_PENDING_COOKIE, OIDC_NONCE_COOKIE, startIntuitFlow } from "../intuitSignIn";
 import { europeanTimeZone } from "../tracking";
@@ -296,6 +307,7 @@ import { POST as login } from "../../app/api/auth/login/route";
 import { POST as linkIntuit } from "../../app/api/auth/intuit/link/route";
 import { POST as resetPassword } from "../../app/api/auth/reset-password/route";
 import { POST as signup } from "../../app/api/auth/signup/route";
+import { POST as forgotPassword } from "../../app/api/auth/forgot-password/route";
 
 const SRC = join(__dirname, "..", "..");
 const flat = (rel: string) => readFileSync(join(SRC, rel), "utf8").replace(/\s+/g, " ");
@@ -395,6 +407,7 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
     auth.session = null;
     auth.created = [];
     auth.revoked = [];
+    auth.versions = [];
     auth.passwordChecks = 0;
     sent.length = 0;
     timeline.length = 0;
@@ -711,6 +724,61 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
       }
     );
 
+    describe("review 2, item 3: everything on the Stripe customer", () => {
+      function seedMore() {
+        // Paid moments ago; the webhook hasn't put it on file yet.
+        stripeState.subscriptions.set("sub_new", stripeSubscription("sub_new"));
+        stripeState.subscriptions.set("sub_old", stripeSubscription("sub_old", { status: "canceled" }));
+        stripeState.subscriptions.set("sub_elsewhere", stripeSubscription("sub_elsewhere", { customer: "cus_other" }));
+        stripeState.sessions.set("cs_o", { id: "cs_o", customer: "cus_1", status: "open", created: nowSeconds() - 60 });
+      }
+
+      it("cancels every live subscription on the customer, not only the one on file, and closes open checkouts", async () => {
+        await seedDeletable();
+        seedMore();
+        const res: any = await deleteAccount(confirm());
+        expect(res.status).toBe(200);
+        expect(stripeState.subscriptions.get("sub_live")!.status).toBe("canceled");
+        expect(stripeState.subscriptions.get("sub_new")!.status).toBe("canceled");
+        expect(stripeState.subscriptions.get("sub_elsewhere")!.status).toBe("active");
+        expect(stripeState.expired).toEqual(["cs_o"]);
+        expect(await fake.client.user.count()).toBe(0);
+      });
+
+      it("deletes nothing when any one of them can't be stopped", async () => {
+        await seedDeletable();
+        seedMore();
+        stripeState.subscriptions.get("sub_new")!.cancelFails = true;
+        const res: any = await deleteAccount(confirm());
+        expect(res.status).toBe(502);
+        expect(await fake.client.user.count()).toBe(1);
+        expect(intuit.revoked).toBe(0);
+        expect(reported).toHaveLength(1);
+      });
+
+      it("deletes nothing when Stripe can't list them", async () => {
+        await seedDeletable();
+        const stripe: any = getStripe();
+        const real = stripe.subscriptions.list;
+        stripe.subscriptions.list = async () => {
+          throw new Error("Stripe is down");
+        };
+        try {
+          expect(((await deleteAccount(confirm())) as any).status).toBe(502);
+          expect(await fake.client.user.count()).toBe(1);
+        } finally {
+          stripe.subscriptions.list = real;
+        }
+      });
+
+      it("still cancels the one on file when the account has no Stripe customer on its row", async () => {
+        await seedDeletable();
+        await fake.client.subscription.update({ where: { userId: "u1" }, data: { stripeCustomerId: null } });
+        expect(((await deleteAccount(confirm())) as any).status).toBe(200);
+        expect(stripeState.subscriptions.get("sub_live")!.status).toBe("canceled");
+      });
+    });
+
     it("refuses when Stripe can't be reached to check", async () => {
       await seedDeletable();
       stripeState.cancelError = new Error("timeout");
@@ -1001,10 +1069,44 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
         data: { userId: "u1", tokenHash: hashToken("reset-token-123"), expiresAt: new Date(Date.now() + 3_600_000) },
       });
       const res: any = await resetPassword(post({ token: "reset-token-123", password: "new-password-1" }));
-      expect(res.body).toEqual({ ok: true });
+      expect(res.body).toEqual({ ok: true, signedIn: true });
       expect(await isLockedOut("owner@example.com", "1.1.1.1")).toBe(false);
       expect((await attempt("new-password-1", "1.1.1.1")).status).toBe(200);
       await clearFailedLogins("nobody@example.com"); // harmless for an address with none
+    });
+
+    describe("review 2, item 1: the reset email is always a way in", () => {
+      async function resetLink(token: string) {
+        await fake.client.passwordResetToken.create({
+          data: { userId: "u1", tokenHash: hashToken(token), expiresAt: new Date(Date.now() + 3_600_000) },
+        });
+      }
+
+      it("signs the customer in, under the new session version, while a stranger keeps the form locked", async () => {
+        await seedPayer({}, { sessionVersion: 0 });
+        await resetLink("reset-token-456");
+        for (let i = 0; i < 8; i++) await attempt("wrong", "9.8.7.6");
+        // The stranger locks the address again straight after the reset.
+        const res: any = await resetPassword(post({ token: "reset-token-456", password: "new-password-2" }));
+        for (let i = 0; i < 8; i++) await attempt("wrong", "9.8.7.6");
+        expect(res.body).toEqual({ ok: true, signedIn: true });
+        expect((await attempt("new-password-2", "9.9.9.1")).status).toBe(429);
+        // Still in: the reset gave this browser a session, issued after the
+        // version moved on, so every older session has ended.
+        expect(auth.session).toEqual({ userId: "u1" });
+        expect(auth.versions).toEqual([1]);
+        expect((await fake.client.user.findUnique({ where: { id: "u1" } })).sessionVersion).toBe(1);
+      });
+
+      it("refuses a reset sent from another site, since it now starts a session", async () => {
+        await seedPayer();
+        await resetLink("reset-token-789");
+        const res: any = await resetPassword(
+          post({ token: "reset-token-789", password: "new-password-3" }, { "sec-fetch-site": "cross-site" })
+        );
+        expect(res.status).toBe(403);
+        expect(auth.created).toEqual([]);
+      });
     });
 
     it("lock the Intuit link form the same way", async () => {
@@ -1013,6 +1115,82 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
       expect(link).toContain("await finishLoginAttempt(attempt.attemptId, valid);");
       expect(link).not.toContain("correct_only");
       expect(flat("app/api/auth/login/route.ts")).not.toContain("correct_only");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("review 2, item 2: looking a login up by its address", () => {
+    /** Makes the fake answer case-insensitive `equals` the way ILIKE can: `_` and `%` as wildcards. */
+    function likePostgresIlike() {
+      const findMany = fake.client.user.findMany.bind(fake.client.user);
+      const ilike = (pattern: string) =>
+        new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/_/g, ".").replace(/%/g, ".*")}$`, "i");
+      fake.client.user.findMany = async (args: Obj = {}) => {
+        const cond = args.where?.email;
+        if (cond && typeof cond === "object" && cond.mode === "insensitive") {
+          const re = ilike(String(cond.equals));
+          const all = await findMany({});
+          return all.filter((u: Obj) => re.test(u.email)).slice(0, args.take ?? Infinity);
+        }
+        return findMany(args);
+      };
+      fake.client.user.findFirst = async (args: Obj = {}) => (await fake.client.user.findMany(args))[0] ?? null;
+    }
+
+    it("never finds another login through a wildcard in what was typed", async () => {
+      likePostgresIlike();
+      await seedPayer({}, { email: "john@example.com" });
+      expect(await findLoginByEmail("j_hn@example.com")).toBeNull();
+      expect(await findLoginByEmail("%@example.com")).toBeNull();
+      expect((await findLoginByEmail(" John@Example.com "))?.id).toBe("u1");
+    });
+
+    it("still finds an older mixed-case address, exactly", async () => {
+      likePostgresIlike();
+      await fake.client.user.create({ data: { id: "old", email: "Mary.O_Neil@Example.com", passwordHash: "hashed:pw-12345" } });
+      await fake.client.user.create({ data: { id: "other", email: "maryxo1neil@example.com", passwordHash: "hashed:pw-other" } });
+      expect((await findLoginByEmail("mary.o_neil@example.com"))?.id).toBe("old");
+    });
+
+    it("can't spend another address's guesses on john's password", async () => {
+      likePostgresIlike();
+      await seedPayer({}, { email: "john@example.com" });
+      const res: any = await login(post({ email: "j_hn@example.com", password: "right-password" }, { "x-forwarded-for": "1.2.3.4" }));
+      expect(res.status).toBe(401);
+      expect(auth.passwordChecks).toBe(0);
+      expect(auth.created).toEqual([]);
+      // Counted against exactly what was typed, lowercased.
+      expect(await fake.client.loginAttempt.count({ where: { emailHash: emailKey("j_hn@example.com"), success: false } })).toBe(1);
+      expect(await fake.client.loginAttempt.count({ where: { emailHash: emailKey("john@example.com") } })).toBe(0);
+    });
+
+    it("doesn't call a different address taken at signup, or send its owner a reset", async () => {
+      likePostgresIlike();
+      await seedPayer({}, { email: "john@example.com" });
+      const res: any = await signup(post({ email: "j_hn@example.com", password: "long-enough-1", acceptTerms: true }, { "x-forwarded-for": "5.4.3.2" }));
+      expect(res.status).toBe(200);
+      await forgotPassword(post({ email: "jo%@example.com" }));
+      expect(await fake.client.passwordResetToken.count({ where: { userId: "u1" } })).toBe(0);
+      await forgotPassword(post({ email: "JOHN@example.com" }));
+      expect(await fake.client.passwordResetToken.count({ where: { userId: "u1" } })).toBe(1);
+    });
+
+    it("is the one lookup every sign-in and signup path uses", () => {
+      for (const file of [
+        "app/api/auth/login/route.ts",
+        "app/api/auth/intuit/link/route.ts",
+        "app/api/auth/intuit/create/route.ts",
+        "app/api/auth/signup/route.ts",
+        "app/api/auth/forgot-password/route.ts",
+        "app/api/team/accept/route.ts",
+        "app/login/intuit/page.tsx",
+        "app/invite/[token]/page.tsx",
+        "lib/intuitSignIn.ts",
+      ]) {
+        const src = flat(file);
+        expect(src).toContain("findLoginByEmail(");
+        expect(src).not.toContain('mode: "insensitive"');
+      }
     });
   });
 

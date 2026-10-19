@@ -1056,6 +1056,13 @@ export function buildJobIndex(jobs: { id: string; qboId: string; parentQboId: st
  * materials bought before the project was set up.
  */
 export const PARENT_FALLBACK_GRACE_DAYS = 60;
+/**
+ * The same for estimates, which come before the project they turn into,
+ * often by months: a bid made on the customer in spring for a job set up in
+ * autumn is that job's contract. An estimate older than this is from an
+ * earlier job, and would add to the new project's contract value.
+ */
+export const ESTIMATE_PARENT_FALLBACK_GRACE_DAYS = 365;
 
 /**
  * Whether a transaction dated `txnDate`, tagged to a parent, can belong to its
@@ -1064,30 +1071,37 @@ export const PARENT_FALLBACK_GRACE_DAYS = 60;
  * otherwise took on every invoice and bill the client ever had. A job with no
  * known creation date takes them all, as before.
  */
-export function parentFallbackCovers(jobCreatedAt: Date | null | undefined, txnDate: Date): boolean {
+export function parentFallbackCovers(
+  jobCreatedAt: Date | null | undefined,
+  txnDate: Date,
+  graceDays: number = PARENT_FALLBACK_GRACE_DAYS
+): boolean {
   if (!jobCreatedAt) return true;
   const createdDay = Date.UTC(jobCreatedAt.getUTCFullYear(), jobCreatedAt.getUTCMonth(), jobCreatedAt.getUTCDate());
-  return txnDate.getTime() >= createdDay - PARENT_FALLBACK_GRACE_DAYS * 86_400_000;
+  return txnDate.getTime() >= createdDay - graceDays * 86_400_000;
 }
 
 /**
  * The job a customer reference belongs to. A direct match first; failing
  * that, the customer's only job when the transaction was tagged to the
- * parent customer and isn't from well before that job existed (see
- * parentFallbackCovers; with no `txnDate` the date isn't checked). Two or
- * more jobs under that parent is ambiguous and returns null rather than
- * guessing which job a real dollar belongs to.
+ * parent customer and isn't from more than `graceDays` before that job
+ * existed (see parentFallbackCovers; with no `txnDate` the date isn't
+ * checked). Costs, revenue and time use the default; estimates use
+ * ESTIMATE_PARENT_FALLBACK_GRACE_DAYS. Two or more jobs under that parent is
+ * ambiguous and returns null rather than guessing which job a real dollar
+ * belongs to.
  */
 export function resolveJob(
   index: JobIndex,
   customerQboId: string,
-  txnDate?: Date | null
+  txnDate?: Date | null,
+  graceDays: number = PARENT_FALLBACK_GRACE_DAYS
 ): { jobId: string; method: "direct" | "parent_customer_fallback" } | null {
   const direct = index.byQboId.get(customerQboId);
   if (direct) return { jobId: direct, method: "direct" };
   const children = index.byParent.get(customerQboId);
   if (children && children.length === 1) {
-    if (txnDate && !parentFallbackCovers(index.createdAt?.get(children[0]), txnDate)) return null;
+    if (txnDate && !parentFallbackCovers(index.createdAt?.get(children[0]), txnDate, graceDays)) return null;
     return { jobId: children[0], method: "parent_customer_fallback" };
   }
   return null;

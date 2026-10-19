@@ -398,9 +398,24 @@ describe("6. a second brief in the same week compares with the one already sent"
     expect(a?.emailedAt).toBe("2026-10-12T12:05:00.000Z");
     expect(a?.metrics.briefSendSummary).toBeUndefined();
     expect((a?.metrics.jobs as any[])[0].actualCost).toBe(30_000);
-    const unsentTry = { ...monday(), metrics: { ...state.metrics, earlierSendThisWeek: a } };
+    // An unsent try at the second brief (built after the row was emailed) carries the sent one.
+    const unsentTry = { ...monday(), metrics: { ...state.metrics, builtAt: "2026-10-18T12:00:00.000Z", earlierSendThisWeek: a } };
     expect(earlierSendThisWeek(unsentTry)).toEqual(a);
     expect(earlierSendThisWeek({ ...monday(), emailedAt: null })).toBeNull();
+  });
+
+  it("compares a third brief in the week with the second, the one sent last", () => {
+    const first = earlierSendThisWeek(monday());
+    // The second brief went out on Thursday; its row carries Monday's.
+    const second = {
+      ...monday(),
+      emailedAt: new Date("2026-10-15T12:05:00Z"),
+      metrics: { ...state.metrics, builtAt: "2026-10-15T12:00:00.000Z", briefSendSummary: "Thursday's words.", earlierSendThisWeek: first },
+    };
+    const kept = earlierSendThisWeek(second);
+    expect(kept?.emailedAt).toBe("2026-10-15T12:05:00.000Z");
+    expect((kept?.metrics.jobs as any[])[0].actualCost).toBe(34_000);
+    expect(kept?.metrics.earlierSendThisWeek).toBeUndefined();
   });
 
   it("says what changed since Monday's brief, and keeps Monday's in what it stores", async () => {

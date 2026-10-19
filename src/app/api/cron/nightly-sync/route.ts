@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import type { QuickBooksConnection } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { authorizeCron } from "@/lib/cronAuth";
-import { FULL_SYNC_TOO_LONG_MESSAGE, FullSyncNotAllowedError, fullSyncDue, runSyncForConnection } from "@/lib/quickbooksSync";
+import {
+  FULL_SYNC_TOO_LONG_MESSAGE,
+  FullSyncNotAllowedError,
+  fullSyncDue,
+  holdFullSyncForSkippedCompany,
+  runSyncForConnection,
+} from "@/lib/quickbooksSync";
 import { getEntitlements } from "@/lib/entitlements";
 import { overLimitConnectionIds } from "@/lib/planLimits";
 import { evaluateAlerts, markAlertsSent } from "@/lib/alerts";
@@ -245,16 +251,14 @@ async function syncAndAlert(
   /** Called once the company's sync has finished cleanly (not partway, not deferred). */
   onSynced: (connection: QuickBooksConnection) => void
 ) {
-  // To the back of the queue, and a full sync that's owed waits until
-  // tomorrow.
+  // To the back of the queue. A full read partway waits until tomorrow; one
+  // owed and not begun stays owed, as an ordinary full sync, so it neither
+  // reads as partway nor sits first in line run after run (see
+  // holdFullSyncForSkippedCompany). A skip is quick, so one first in this
+  // run's queue doesn't hold up the companies behind it.
   const skip = async (detail: string) => {
-    await prisma.quickBooksConnection.update({
-      where: { id: connection.id },
-      data: {
-        lastSyncAttemptAt: new Date(),
-        ...(connection.fullSyncContinueAt ? { fullSyncContinueAt: new Date(Date.now() + SKIPPED_FULL_SYNC_WAIT_MS) } : {}),
-      },
-    });
+    await prisma.quickBooksConnection.update({ where: { id: connection.id }, data: { lastSyncAttemptAt: new Date() } });
+    await holdFullSyncForSkippedCompany(connection, SKIPPED_FULL_SYNC_WAIT_MS);
     return { connectionId: connection.id, status: "skipped", detail };
   };
   let syncFailed = false;

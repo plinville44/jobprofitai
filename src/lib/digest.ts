@@ -126,9 +126,12 @@ const EARLIER_SEND_KEY = "earlierSendThisWeek";
  * same week (the send day moved later in the week): its stored figures and
  * when it was emailed. The second brief compares with it, and keeps it in
  * its own stored figures, as the row then holds the second brief's: next
- * week compares with the brief sent last, and the first one isn't lost. A
- * row holding an unsent try at the second brief already carries it. Null
- * when this week's brief hasn't gone out. Pure, for tests.
+ * week compares with the brief sent last, and the first one isn't lost.
+ *
+ * The row is the brief sent last, unless it was built after it was emailed:
+ * then it's an unsent try at the next one, which carries the sent brief in
+ * its stored figures. So a third brief in a week compares with the second,
+ * not the first. Null when this week's brief hasn't gone out. Pure, for tests.
  */
 export function earlierSendThisWeek(
   row: { metrics: unknown; emailedAt: Date | null } | null
@@ -136,7 +139,9 @@ export function earlierSendThisWeek(
   if (!row?.emailedAt || !row.metrics || typeof row.metrics !== "object") return null;
   const stored = row.metrics as Record<string, unknown>;
   const kept = stored[EARLIER_SEND_KEY] as { metrics?: unknown; emailedAt?: unknown } | undefined;
-  if (kept && typeof kept.metrics === "object" && kept.metrics && typeof kept.emailedAt === "string") {
+  const builtAt = typeof stored.builtAt === "string" ? Date.parse(stored.builtAt) : NaN;
+  const unsentTry = builtAt > row.emailedAt.getTime();
+  if (unsentTry && kept && typeof kept.metrics === "object" && kept.metrics && typeof kept.emailedAt === "string") {
     return { metrics: kept.metrics as Record<string, unknown>, emailedAt: kept.emailedAt };
   }
   const { [EARLIER_SEND_KEY]: _earlier, [SEND_SUMMARY_KEY]: _summary, ...figures } = stored;

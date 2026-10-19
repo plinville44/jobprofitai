@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import type { User } from "@prisma/client";
 import { prisma } from "./prisma";
 
 /**
@@ -36,6 +37,39 @@ export const emailKey = (email: string) => hmac(`email:${email.trim().toLowerCas
 export const ipKey = (ip: string | null) => (ip ? hmac(`ip:${ip}`) : null);
 /** The key a signup is counted under: its network address, with its own prefix. */
 export const signupKey = (ip: string) => hmac(`signup-ip:${ip}`);
+
+// ---------------------------------------------------------------------------
+// Finding a login by its address
+// ---------------------------------------------------------------------------
+
+/** How many case-insensitive candidates are read before keeping the exact one. */
+const EMAIL_CANDIDATES = 20;
+
+/**
+ * The login whose stored address is exactly this one, ignoring case and
+ * surrounding spaces, or null. Every sign-in and signup lookup by address
+ * goes through here.
+ *
+ * Prisma's case-insensitive `equals` can run as ILIKE on Postgres, where
+ * `_` and `%` in what was typed are wildcards: "j_hn@x.com" would find
+ * "john@x.com", whose failed attempts are counted under another address's
+ * key, so the 8-guess limit could be got round. So candidates are read and
+ * only one whose address, lowercased, is the typed one lowercased is kept,
+ * whatever SQL runs. New addresses are stored lowercased, so the first
+ * lookup is the usual hit; the second finds older mixed-case rows.
+ */
+export async function findLoginByEmail(email: string): Promise<User | null> {
+  const wanted = email.trim().toLowerCase();
+  if (!wanted) return null;
+  const same = (u: { email: string }) => u.email.trim().toLowerCase() === wanted;
+  const stored = await prisma.user.findUnique({ where: { email: wanted } });
+  if (stored) return stored;
+  const candidates = await prisma.user.findMany({
+    where: { email: { equals: wanted, mode: "insensitive" } },
+    take: EMAIL_CANDIDATES,
+  });
+  return candidates.find(same) ?? null;
+}
 
 /** First address in X-Forwarded-For (set by Vercel), else null. */
 export function clientIp(headers: Headers): string | null {

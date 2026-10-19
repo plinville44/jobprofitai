@@ -311,13 +311,13 @@ async function sendOne(
     // A full read of QuickBooks is partway (src/lib/syncProblem.ts): some
     // data is read and some isn't yet, so the figures don't add up. Not this
     // brief's fault, so no attempt is used; a later run sends it once the
-    // nightly sync has finished the read. Not when that read's last try
-    // failed: a stuck read is put off again every time, and the brief was
-    // held for good with nobody told. Nor for more than a day past the
-    // brief's time. Either way it goes from what's synced, and the run
-    // reports it (sentPartway).
+    // nightly sync has finished the read. Not for more than a day past the
+    // brief's time, though: a read stuck failing is put off again every
+    // time, and the brief was held for good with nobody told. Then it goes
+    // from what's synced, and the run reports it (sentPartway). A single
+    // failed try isn't enough: it's tried again within hours.
     const partway = fullSyncPartway(connection);
-    if (partway && connection.lastSyncStatus !== "error" && Date.now() - scheduledAt.getTime() <= PARTWAY_WAIT_MS) {
+    if (partway && Date.now() - scheduledAt.getTime() <= PARTWAY_WAIT_MS) {
       return { connectionId: connection.id, status: "deferred", detail: "waiting for the full sync to finish" };
     }
 

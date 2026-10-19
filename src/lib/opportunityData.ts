@@ -2,7 +2,7 @@ import { prisma } from "./prisma";
 import { getConnectionProfitData, laborBurdenOf, type ConnectionProfitData, type JobFinancials } from "./profitability";
 import { getJobTypes } from "./jobTypesServer";
 import { labelForJobType, suggestJobType, suggestJobTypeFromEstimateLines, type CompanyJobType } from "./jobTypes";
-import { buildJobIndex, resolveJob, type EstimateLine } from "./qboNormalize";
+import { buildJobIndex, ESTIMATE_PARENT_FALLBACK_GRACE_DAYS, resolveJob, type EstimateLine } from "./qboNormalize";
 import {
   computeActionOutcome,
   computeEstimateCheck,
@@ -83,7 +83,7 @@ export async function getOpportunityData(connectionId: string, now: Date = new D
     }),
     prisma.job.findMany({
       where: { connectionId },
-      select: { id: true, qboId: true, parentQboId: true, name: true, category: true, estimatedCostSource: true, missingSince: true },
+      select: { id: true, qboId: true, parentQboId: true, name: true, category: true, estimatedCostSource: true, missingSince: true, qboCreatedAt: true },
     }),
     prisma.jobEstimate.findMany({ where: { connectionId } }),
     // The company's average cost rate over the last 12 months, from time
@@ -114,12 +114,13 @@ export async function getOpportunityData(connectionId: string, now: Date = new D
   const jobs = profitData.lifetimeJobs;
   const typeLabel = (key: string) => labelForJobType(jobTypes, key);
 
-  // Estimates onto jobs, by the same rule the sync uses for contract value.
-  // No date check: an estimate normally comes before its project exists.
+  // Estimates onto jobs, by the same rule the sync uses for contract value:
+  // one on the parent customer counts for its only job unless it's from more
+  // than a year before that job was created (see resolveJob).
   const index = buildJobIndex(jobRows);
   const estimatesByJob = new Map<string, typeof estimateRows>();
   for (const e of estimateRows) {
-    const r = resolveJob(index, e.customerQboId);
+    const r = resolveJob(index, e.customerQboId, e.txnDate, ESTIMATE_PARENT_FALLBACK_GRACE_DAYS);
     if (r) estimatesByJob.set(r.jobId, [...(estimatesByJob.get(r.jobId) ?? []), e]);
   }
   const mixes = new Map<string, PricedMix>();

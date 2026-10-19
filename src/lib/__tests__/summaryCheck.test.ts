@@ -195,6 +195,16 @@ describe("a phrase in a clause that names no job", () => {
     expect(brief(facts([done(0.3), acme(-0.05)]), s)).toEqual([]);
   });
 
+  it("is about the previous clause's subject when it starts with 'it' or plainly, not a job named later in it", () => {
+    const s = "Smith Kitchen has spent more than Torres Bath so far, and it's forecast to finish at 5%.";
+    expect(brief(facts([smith(null), torres(0.05)]), s)).toEqual([["forecast_without_forecast", "Smith Kitchen", s.slice(0, 40)]]);
+    // The other way round the sentence is true, and stays.
+    expect(brief(facts([smith(0.05), torres(null)]), s)).toEqual([]);
+    const plain = "Smith Kitchen has spent more than Torres Bath so far, and is forecast to finish at 5%.";
+    expect(brief(facts([smith(null), torres(0.05)]), plain).map((p) => p[1])).toEqual(["Smith Kitchen"]);
+    expect(brief(facts([smith(0.05), torres(null)]), plain)).toEqual([]);
+  });
+
   it("is about each job when the last thing named is a pair of them", () => {
     const s = "Ruiz Kitchen Remodel and Harborview closed over estimate, and both lost money.";
     expect(brief(skipped, s)).toEqual([["loss_without_loss", "Ruiz Kitchen Remodel", s.slice(0, 40)]]);
@@ -226,10 +236,10 @@ describe("a sentence that ends in an abbreviation or an initial", () => {
 });
 
 describe("a job code that looks like a year or a month", () => {
-  it("isn't taken for the job", () => {
+  it("isn't taken for the job when it's a bare year, but a numbered code like 2024-07 is", () => {
     const jobs: SummaryJobFacts[] = [
       { jobName: "2025 Warranty Work", status: "completed", marginPct: 0.1 },
-      { jobName: "2024-11 Deck", status: "completed", marginPct: 0.1 },
+      { jobName: "2024-07 Deck", status: "completed", marginPct: 0.1 },
       { jobName: "Torres Bath", status: "open", marginPct: 0.2, forecastMarginPct: null },
     ];
     const s = "Torres Bath, open since 2025, is forecast to lose money.";
@@ -237,7 +247,7 @@ describe("a job code that looks like a year or a month", () => {
       ["forecast_without_forecast", "Torres Bath", s.slice(0, 40)],
       ["loss_without_loss", "Torres Bath", s.slice(0, 40)],
     ]);
-    expect(brief({ jobs, comparison: "changes" }, "Torres Bath has billed nothing since 2024-11, and is forecast at 10%.").map((p) => p[1])).toEqual(["Torres Bath"]);
+    expect(brief({ jobs, comparison: "changes" }, "2024-07 lost money on the railing.")).toEqual([["loss_without_loss", "2024-07 Deck", "2024-07 lost money on the railing."]]);
   });
 });
 

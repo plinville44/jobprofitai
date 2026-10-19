@@ -62,6 +62,7 @@ import {
 } from "../quickbooksSync";
 import {
   buildJobIndex,
+  ESTIMATE_PARENT_FALLBACK_GRACE_DAYS,
   depositCostLines,
   depositRevenueLines,
   emptyLookups,
@@ -80,7 +81,7 @@ import {
 } from "../qboNormalize";
 import { fullSyncContinuable, SYNC_COOLDOWN_SECONDS, syncCooldownSecondsLeft } from "../syncCooldown";
 import { FULL_SYNC_OWED_AT, FULL_SYNC_PARTWAY_FIRST_AT, fullSyncOwed, fullSyncPartway, fullSyncTooLong, syncProblemFor } from "../syncProblem";
-import { fullSyncDue } from "../quickbooksSync";
+import { fullSyncDue, holdFullSyncForSkippedCompany } from "../quickbooksSync";
 import { unmatchedRevenueFrom } from "../untaggedCosts";
 import { loadUnmatchedRevenue } from "../untaggedCostStore";
 import { FIRST_RUN_MAX_SYNC_CALLS, runFirstSync, SWITCHED_TO_CUSTOMERS_NOTICE } from "../../components/dashboard/FirstRunSetup";
@@ -177,9 +178,13 @@ function repeatClient() {
     TimeActivity: [
       { Id: "908", TxnDate: dayStr(730), NameOf: "Employee", EmployeeRef: { value: "e1", name: "Sam" }, CustomerRef: { value: "50" }, Hours: 10, Minutes: 0, CostRate: 30 },
     ],
-    // Bid on the customer three months before the project was set up, as
-    // estimates usually are: it's the project's contract all the same.
-    Estimate: [{ Id: "907", TxnDate: dayStr(90), TotalAmt: 15_000, TxnStatus: "Accepted", CustomerRef: { value: "50" } }],
+    Estimate: [
+      // Bid on the customer three months before the project was set up, as
+      // estimates usually are: it's the project's contract all the same.
+      { Id: "907", TxnDate: dayStr(90), TotalAmt: 15_000, TxnStatus: "Accepted", CustomerRef: { value: "50" } },
+      // An earlier job's, two years back: not this project's contract.
+      { Id: "911", TxnDate: dayStr(760), TotalAmt: 40_000, TxnStatus: "Closed", CustomerRef: { value: "50" } },
+    ],
   };
 }
 
@@ -206,6 +211,20 @@ describe("1. a transaction on a parent customer goes on its only job only if it 
     expect(resolveJob(index, "51", new Date("2020-01-01T00:00:00Z"))).toEqual({ jobId: "j51", method: "direct" });
     // A caller with no date gets the old rule.
     expect(resolveJob(index, "50")).toEqual({ jobId: "j51", method: "parent_customer_fallback" });
+    // Estimates: a year before the job, not 60 days.
+    expect(ESTIMATE_PARENT_FALLBACK_GRACE_DAYS).toBe(365);
+    expect(resolveJob(index, "50", new Date("2025-05-01T00:00:00Z"), ESTIMATE_PARENT_FALLBACK_GRACE_DAYS)).toEqual({ jobId: "j51", method: "parent_customer_fallback" });
+    expect(resolveJob(index, "50", new Date("2025-04-30T00:00:00Z"), ESTIMATE_PARENT_FALLBACK_GRACE_DAYS)).toBeNull();
+  });
+
+  it("matches estimates the same way wherever they're put on jobs", () => {
+    const src = (f: string) => readFileSync(join(__dirname, "..", f), "utf8");
+    for (const f of ["quickbooksSync.ts", "opportunityData.ts", "jobTypeSuggestions.ts"]) {
+      expect({ f, dated: src(f).includes("resolveJob(index, e.customerQboId, e.txnDate, ESTIMATE_PARENT_FALLBACK_GRACE_DAYS)") }).toEqual({ f, dated: true });
+    }
+    // The creation date the grace counts from is read with the jobs.
+    expect(src("opportunityData.ts")).toMatch(/missingSince: true, qboCreatedAt: true/);
+    expect(src("jobTypeSuggestions.ts")).toMatch(/parentQboId: true, qboCreatedAt: true/);
   });
 
   it("shows the new project only its own revenue and cost, not the client's history, and keeps the estimate made before it", async () => {
@@ -218,8 +237,8 @@ describe("1. a transaction on a parent customer goes on its only job only if it 
       ["Purchase", "903", 500, "parent_customer_fallback"],
     ]);
     expect(revenueOn(bath.id).map((i) => [i.qboInvoiceId, Number(i.amount)])).toEqual([["909", 5_000]]);
-    // Estimates aren't dated against the job: one on the customer from
-    // before the project still gives it its contract value.
+    // Estimates get a year's grace, not 60 days: the one bid 90 days before
+    // the project counts, the 760-day-old one doesn't ($55,000 if it did).
     expect(bath.estimatedRevenue).toBe(15_000);
     // A project whose creation time QuickBooks didn't send takes them as before.
     expect(costsOn(jobByQboId("61").id).map((c) => [c.qboSourceId, Number(c.amount)])).toEqual([["910", 999]]);
@@ -402,6 +421,26 @@ describe("2. a full read that's owed isn't partway", () => {
     expect([fullSyncPartway(c), fullSyncDue(c)]).toEqual([false, true]);
   });
 
+  it("keeps a partway read partway when it's put off and its saved progress no longer applies", async () => {
+    // Partway since yesterday, under the previous rules: its progress can't be carried on.
+    await addConnection({ syncVersion: SYNC_VERSION - 1, fullSyncContinueAt: new Date(Date.now() - DAY) });
+    await db().syncRun.create({
+      data: { connectionId: "c1", status: "partial", mode: "full", startedAt: new Date(Date.now() - DAY), finishedAt: new Date(Date.now() - DAY), entitiesUpdated: { fullSyncProgress: { startedAt: new Date(Date.now() - DAY).toISOString(), version: SYNC_VERSION - 1, done: ["Jobs"] } } },
+    });
+    await runSyncForConnection("c1", { deadline: Date.now() - 10_000, windowStart: Date.now() - 60_000 });
+    expect((await connection()).fullSyncContinueAt).toEqual(FULL_SYNC_PARTWAY_FIRST_AT);
+  });
+
+  it("keeps a partway read partway when a retry fails before reading anything", async () => {
+    await addConnection({ syncVersion: SYNC_VERSION - 1, fullSyncContinueAt: FULL_SYNC_PARTWAY_FIRST_AT });
+    qbo.fail.add("Customer");
+    await expect(runSyncForConnection("c1", { deadline: plentyOfTime() })).rejects.toThrow();
+    const c = await connection();
+    expect(c.fullSyncContinueAt.getTime()).toBeGreaterThan(Date.now() + HOUR);
+    expect(fullSyncPartway(c)).toBe(true);
+    expect(c.lastFullSyncAt).not.toBeNull();
+  });
+
   it("but a try that read a step before failing is partway, retried a couple of hours on", async () => {
     await addConnection({ fullSyncContinueAt: FULL_SYNC_OWED_AT });
     qbo.fail.add("Purchase");
@@ -409,6 +448,45 @@ describe("2. a full read that's owed isn't partway", () => {
     const c = await connection();
     expect(c.fullSyncContinueAt.getTime()).toBeGreaterThan(Date.now() + HOUR);
     expect(fullSyncPartway(c)).toBe(true);
+  });
+});
+
+describe("2. a company the nightly job skips (lapsed, or past its plan's limit)", () => {
+  beforeEach(() => {
+    resetDb();
+    qbo.cdc = {};
+    qbo.counts = {};
+  });
+  const WAIT = 20 * HOUR;
+
+  it("stays owed, not partway, and leaves the line of reads to carry on", async () => {
+    await addConnection({ fullSyncContinueAt: FULL_SYNC_OWED_AT });
+    await holdFullSyncForSkippedCompany(await connection(), WAIT);
+    const c = await connection();
+    expect(c.fullSyncContinueAt).toBeNull();
+    // Owed as an ordinary full sync: the next sync after the owner pays reads everything.
+    expect(c.lastFullSyncAt).toBeNull();
+    expect([fullSyncDue(c), fullSyncPartway(c)]).toEqual([true, false]);
+    expect(syncProblemFor(c, { paused: false, role: "owner" })).toBeNull();
+  });
+
+  it("puts a partway read off a day, still partway", async () => {
+    await addConnection({ fullSyncContinueAt: new Date(Date.now() - HOUR) });
+    await holdFullSyncForSkippedCompany(await connection(), WAIT);
+    const c = await connection();
+    expect(c.fullSyncContinueAt.getTime()).toBeGreaterThan(Date.now() + 19 * HOUR);
+    expect(fullSyncPartway(c)).toBe(true);
+  });
+
+  it("leaves a company with no full read owed alone, and is what the nightly job's skip uses", async () => {
+    await addConnection();
+    const before = await connection();
+    await holdFullSyncForSkippedCompany(before, WAIT);
+    const after = await connection();
+    expect([after.fullSyncContinueAt, after.lastFullSyncAt]).toEqual([null, before.lastFullSyncAt]);
+    const route = readFileSync(join(__dirname, "..", "..", "app", "api", "cron", "nightly-sync", "route.ts"), "utf8");
+    expect(route).toContain("await holdFullSyncForSkippedCompany(connection, SKIPPED_FULL_SYNC_WAIT_MS);");
+    expect(route).not.toContain("fullSyncContinueAt: new Date(Date.now() + SKIPPED_FULL_SYNC_WAIT_MS)");
   });
 });
 

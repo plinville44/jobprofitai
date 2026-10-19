@@ -8,6 +8,7 @@ import { createSession, hashPassword } from "./auth";
 import { carryAdOptOutToBrowser, noteBrowserOptOut, signupAdOptOut } from "./adOptOut";
 import { SOURCE_COOKIE } from "./adSource";
 import { reportServerEvent, signupAdSource, signupSessionId } from "./serverEvents";
+import { findLoginByEmail } from "./loginThrottle";
 import { accountFor, ACTIVE_COMPANY_COOKIE } from "./account";
 import { attachCompany, OWNER_ONLY_CONNECT_NOTICE } from "./connectCompany";
 import { hashRealmId, legacyHashRealmId } from "./crypto";
@@ -254,10 +255,8 @@ export async function handleIntuitFlow(
   let newUser = false;
 
   if (!user) {
-    const sameEmail = await prisma.user.findFirst({
-      where: { email: { equals: info.email, mode: "insensitive" } },
-      select: { id: true },
-    });
+    // Exact, ignoring case, never a wildcard match (findLoginByEmail).
+    const sameEmail = await findLoginByEmail(info.email);
     if (sameEmail || !connecting) {
       // Unknown Intuit identity. Either a login with this address already
       // exists (it can only be linked after its password is entered), or

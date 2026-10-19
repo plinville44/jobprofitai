@@ -4,8 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { clearSession, getSession, revokeAllSessions, verifyPassword } from "@/lib/auth";
 import { decryptToken } from "@/lib/crypto";
 import { revokeToken } from "@/lib/quickbooks";
-import { getStripe } from "@/lib/stripe/client";
-import { CANCEL_FAILED_MESSAGE, stripeSubscriptionEnded } from "@/lib/stripe/billing";
+import { CANCEL_FAILED_MESSAGE, stopAllBilling } from "@/lib/stripe/billing";
 import { reportError } from "@/lib/monitoring";
 import { REMOVED_ROLE, removeFromRecipientLists } from "@/lib/teamRemoval";
 
@@ -16,11 +15,11 @@ import { REMOVED_ROLE, removeFromRecipientLists } from "@/lib/teamRemoval";
  *
  * Order matters here, and it's deliberately "external first, database last":
  *
- *   1. Cancel any Stripe subscription, so deleting an account can never
- *      leave someone being billed for a product they no longer have. First,
- *      because if it fails nothing has changed yet: the account stays and
- *      the customer is asked to try again (stripeSubscriptionEnded in
- *      src/lib/stripe/billing.ts).
+ *   1. Cancel every Stripe subscription on the account's customer and close
+ *      its open checkouts, so deleting an account can never leave someone
+ *      being billed for a product they no longer have. First, because if it
+ *      fails nothing has changed yet: the account stays and the customer is
+ *      asked to try again (stopAllBilling in src/lib/stripe/billing.ts).
  *   2. Revoke QuickBooks tokens with Intuit. Done before the delete,
  *      because once the row is gone the encrypted token is gone with it and
  *      we would have no way to revoke it - leaving a live grant against the
@@ -67,24 +66,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "That password isn't correct." }, { status: 401 });
     }
 
-    // 1. Cancel billing so nobody is charged after their account is gone.
-    const stripeSubscriptionId = user.subscription?.stripeSubscriptionId;
-    if (stripeSubscriptionId) {
-      try {
-        await getStripe().subscriptions.cancel(stripeSubscriptionId);
-      } catch (err) {
+    // 1. Stop billing so nobody is charged after their account is gone:
+    //    every live subscription on the Stripe customer and every open
+    //    checkout, not only the subscription on file (stopAllBilling). If
+    //    anything can't be stopped, nothing is deleted: deleting could leave
+    //    it charging an account that no longer exists, with nothing on our
+    //    side to stop it.
+    const billing = user.subscription;
+    if (billing?.stripeCustomerId || billing?.stripeSubscriptionId) {
+      const stopped = await stopAllBilling(billing);
+      if (!stopped.ok) {
         console.error(
-          `account/delete: could not cancel Stripe subscription ${stripeSubscriptionId}:`,
-          err instanceof Error ? err.message : "Unknown error"
+          "account/delete: could not stop Stripe billing:",
+          stopped.error instanceof Error ? stopped.error.message : "Unknown error"
         );
-        // Whatever the stored status says (it can be stale), only Stripe
-        // saying the subscription has ended, or doesn't exist, lets this go
-        // ahead. Deleting otherwise could leave it charging an account that
-        // no longer exists, with nothing on our side to stop it.
-        if (!(await stripeSubscriptionEnded(stripeSubscriptionId))) {
-          await reportError(err, { route: "/api/account/delete", method: "POST" });
-          return NextResponse.json({ error: CANCEL_FAILED_MESSAGE }, { status: 502 });
-        }
+        await reportError(stopped.error, { route: "/api/account/delete", method: "POST" });
+        return NextResponse.json({ error: CANCEL_FAILED_MESSAGE }, { status: 502 });
       }
     }
 

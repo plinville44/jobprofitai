@@ -174,8 +174,8 @@ function namePattern(name: string, flags: string): RegExp {
  * A job's leading code, such as "MX04", "J-102" or "2024-118", which the
  * summary often names it by. A code with letters needs 3 characters; one of
  * numbers alone needs 4, so a count or a short number isn't taken for one,
- * and can't look like a year or a month ("2025 Warranty Work" isn't named
- * by "open since 2025").
+ * and can't be a bare year ("2025 Warranty Work" isn't named by "open since
+ * 2025"). A numbered code such as "2024-07" still is.
  */
 function leadingCode(name: string): string | null {
   const words = name.split(/\s+/);
@@ -183,7 +183,7 @@ function leadingCode(name: string): string | null {
   const code = words[0].replace(/[:,;.]+$/, "");
   if (!/\d/.test(code)) return null;
   if (/[A-Za-z]/.test(code)) return code.length >= 3 ? code : null;
-  if (/^(?:19|20)\d\d(?:[-/.](?:0?[1-9]|1[0-2]))?$/.test(code)) return null;
+  if (/^(?:19|20)\d\d$/.test(code)) return null;
   return code.length >= 4 && /^#?\d[\d./-]*\d$/.test(code) ? code : null;
 }
 
@@ -404,14 +404,17 @@ function clauseJobs(text: string, clause: Clause, names: NameSpan[], phrase?: Cl
 }
 
 /**
- * The jobs a phrase is about: decided in its own clause; when that names
- * no job ("it's forecasting ...", "which is forecast ..."), the job named
- * last before it in the sentence ("Smith Kitchen is ahead of Torres Bath,
- * which is forecast ..." is about Torres Bath), or each job in a subject
- * like "Ruiz Kitchen and Harborview" when that's the last thing named; then
- * the first clause after it that names one ("Forecasting 15%, Torres Bath
- * ..."); then what the paragraph was last about ("MX02 is the one to watch.
- * It's forecast to ...").
+ * The jobs a phrase is about: decided in its own clause. When that names
+ * no job: a clause that opens with "which", "who" or "whose" is about the
+ * job named last before it ("Smith Kitchen is ahead of Torres Bath, which
+ * is forecast ..." is about Torres Bath), or each job in a subject like
+ * "Ruiz Kitchen and Harborview" when that's the last thing named. Any other
+ * ("..., and it's forecast ...") is about the subject of the nearest clause
+ * before it that names a job ("Smith Kitchen has spent more than Torres
+ * Bath, and it's forecast ..." is about Smith Kitchen). Then the first
+ * clause after it that names one ("Forecasting 15%, Torres Bath ..."), then
+ * what the paragraph was last about ("MX02 is the one to watch. It's
+ * forecast to ...").
  */
 function phraseJobs(text: string, clauses: Clause[], names: NameSpan[], phrase: Clause, paragraphSubject: Tie): Tie {
   let i = clauses.findIndex((c) => phrase.start >= c.start && phrase.start < c.end);
@@ -421,13 +424,18 @@ function phraseJobs(text: string, clauses: Clause[], names: NameSpan[], phrase: 
     if (own) return own;
   }
   const before = names.filter((n) => n.end <= phrase.start);
-  if (before.length) {
+  const relative = i >= 0 && /^\s*(?:which|who|whose)\b/i.test(text.slice(clauses[i].start, clauses[i].end));
+  if (relative && before.length) {
     const nearest = before[before.length - 1];
     if (nearest.job == null) return "unclear";
     const home = clauses.find((c) => nearest.start >= c.start && nearest.end <= c.end);
     const tie = home ? clauseJobs(text, home, names) : null;
     if (Array.isArray(tie) && tie.length > 1 && tie.includes(nearest.job)) return tie;
     return [nearest.job];
+  }
+  for (let k = i - 1; k >= 0; k--) {
+    const tie = clauseJobs(text, clauses[k], names);
+    if (tie) return tie;
   }
   for (let k = i + 1; k < clauses.length; k++) {
     const tie = clauseJobs(text, clauses[k], names);

@@ -904,6 +904,7 @@ describe("a repeat client's first project, seeded and synced", () => {
     const old = qb.create("Invoice", { CustomerRef: { value: lena }, TxnDate: dayStr(730), Line: sale(40_000) });
     old.Balance = 0;
     qb.create("Bill", { VendorRef: { value: supply }, TxnDate: dayStr(730), Line: cost(28_000, lena) });
+    qb.create("Estimate", { CustomerRef: { value: lena }, TxnDate: dayStr(760), TxnStatus: "Closed", Line: sale(40_000) });
     // The new job's estimate, bid on the customer three months ago, before
     // there was a project to put it on.
     qb.create("Estimate", { CustomerRef: { value: lena }, TxnDate: dayStr(90), TxnStatus: "Accepted", Line: sale(15_000) });

@@ -376,9 +376,9 @@ describe("13. testimonial requests move on to people not yet asked", () => {
   });
 });
 
-// The sync's review decided estimates aren't dated like costs and revenue (an
-// estimate usually comes before the project it turns into), and the
-// suggestions read them the same way.
+// Estimates on a parent customer are matched as the sync matches them for
+// contract value: an estimate comes before its project, often by months, so
+// it gets a year's grace (ESTIMATE_PARENT_FALLBACK_GRACE_DAYS), not 60 days.
 describe("job type suggestions read an estimate on a parent customer as its only job's", () => {
   beforeEach(() => {
     fake.client.jobEstimate = new FakeModel("jobEstimate");
@@ -401,11 +401,11 @@ describe("job type suggestions read an estimate on a parent customer as its only
     return (await getJobTypeSuggestions("c1", types)).rows[0];
   };
 
-  it("whatever its date", async () => {
-    expect(await setup("2026-05-01T00:00:00Z")).toMatchObject({ suggested: "roofing", source: "estimate" });
+  it("when it's from months before the job was set up", async () => {
+    expect(await setup("2026-01-15T00:00:00Z")).toMatchObject({ suggested: "roofing", source: "estimate" });
   });
 
-  it("including one from well before the job was set up", async () => {
-    expect(await setup("2025-01-01T00:00:00Z")).toMatchObject({ suggested: "roofing", source: "estimate" });
+  it("but not when it's over a year older, from an earlier job", async () => {
+    expect(await setup("2025-01-01T00:00:00Z")).toMatchObject({ suggested: null, source: null });
   });
 });

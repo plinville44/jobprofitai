@@ -20,6 +20,7 @@ import {
   parentsNeedingFullSync,
   qboDate,
   resolveJob,
+  ESTIMATE_PARENT_FALLBACK_GRACE_DAYS,
   revenueByClass,
   revenueFromTxn,
   revenueId,
@@ -40,7 +41,7 @@ import {
 import { syncMayPickJobSource } from "@/lib/jobSetup";
 import { isUntaggedJobCost, UntaggedCostCollector } from "@/lib/untaggedCosts";
 import { replaceUntaggedCosts, replaceUntaggedCostsForTxns } from "@/lib/untaggedCostStore";
-import { FULL_SYNC_OWED_AT, FULL_SYNC_PARTWAY_FIRST_AT } from "@/lib/syncProblem";
+import { FULL_SYNC_OWED_AT, FULL_SYNC_PARTWAY_FIRST_AT, fullSyncOwed } from "@/lib/syncProblem";
 
 /**
  * The QuickBooks sync engine: reads a connection's job-costing data from
@@ -484,7 +485,11 @@ export async function runSyncForConnection(
     const first = FULL_SYNC_STEPS.find((step) => !plan!.resume?.done.includes(step)) ?? FULL_SYNC_STEPS[0];
     const lateInWindow = Date.now() - (options.windowStart ?? calledAt) > WINDOW_START_SLACK_MS;
     if (lateInWindow && !fullSyncFirstStepFits(first, options.deadline, plan.stepMs)) {
-      await handBack({ fullSyncContinueAt: plan.resume ? FULL_SYNC_PARTWAY_FIRST_AT : FULL_SYNC_OWED_AT });
+      // Partway is the company's state, not this run's: a read with saved
+      // progress stays partway even when that progress can't be carried on
+      // (its rows are half rewritten all the same).
+      const partway = plan.resume != null || (connection.fullSyncContinueAt != null && !fullSyncOwed(connection));
+      await handBack({ fullSyncContinueAt: partway ? FULL_SYNC_PARTWAY_FIRST_AT : FULL_SYNC_OWED_AT });
       const remaining = FULL_SYNC_STEPS.filter((step) => !plan!.resume?.done.includes(step));
       return { ok: true, mode, unfinished: true, deferred: true, remaining, steps: FULL_SYNC_STEPS.length };
     }
@@ -692,10 +697,11 @@ export async function runSyncForConnection(
       // any failed sync, not on the very next run (a day later if it's
       // already down to once a day).
       const retryAt = new Date(Date.now() + RETRY_FAILED_FULL_SYNC_MS);
-      if (!savedProgress && !plan?.resume) {
+      if (!savedProgress && !plan?.resume && fullSyncOwed(connection)) {
         // An owed read that failed before saving anything is still owed, not
         // partway: it's made the next full sync and retried like any failed
-        // sync, a couple of hours on, with the figures left as they were.
+        // sync, a couple of hours on, with the figures left as they were. A
+        // read that was partway when this run began stays partway.
         const owed = await prisma.quickBooksConnection.updateMany({
           where: { id: connection.id, fullSyncContinueAt: FULL_SYNC_OWED_AT },
           data: { fullSyncContinueAt: null },
@@ -1791,9 +1797,10 @@ async function applyEstimates(
   const all = await prisma.jobEstimate.findMany({ where: { connectionId: ctx.connectionId } });
   const byJob = new Map<string, { amount: number; status: string; txnDate: Date }[]>();
   for (const e of all) {
-    // Not dated like costs and revenue: an estimate on the customer normally
-    // comes before the project it turns into exists, often by months.
-    const resolved = resolveJob(index, e.customerQboId);
+    // Dated with a longer grace than costs and revenue: an estimate on the
+    // customer normally comes before the project it turns into, often by
+    // months, but one from a year or more before is an earlier job's.
+    const resolved = resolveJob(index, e.customerQboId, e.txnDate, ESTIMATE_PARENT_FALLBACK_GRACE_DAYS);
     if (!resolved) continue;
     byJob.set(resolved.jobId, [...(byJob.get(resolved.jobId) ?? []), { amount: Number(e.amount), status: e.status, txnDate: e.txnDate }]);
   }
@@ -2237,6 +2244,40 @@ async function requestFullSync(connectionId: string): Promise<void> {
     // Unless Settings asked for a rebuild in the meantime, which does the same.
     where: { id: connectionId, rebuildRequestedAt: c.rebuildRequestedAt },
     data: { lastFullSyncAt: null, rebuildRequestedAt: null },
+  });
+}
+
+/**
+ * What a full read owed or partway does when the nightly job skips the
+ * company (a lapsed account, or one past its plan's company limit).
+ *
+ * Partway: it waits `waitMs` (the nightly job's own choice), still partway,
+ * since its rows are half rewritten.
+ *
+ * Owed, nothing read yet: still owed, never relabelled partway (that held
+ * the brief and refused Generate for most of a day after the owner paid).
+ * It's owed as an ordinary full sync instead (requestFullSync) and leaves
+ * fullSyncContinueAt: left at FULL_SYNC_OWED_AT it would stay first in
+ * line, and every run's short list of reads to carry on would fill with
+ * skipped lapsed companies ahead of real partway reads. As an ordinary
+ * company it's tried, and skipped, like any other lapsed one.
+ */
+export async function holdFullSyncForSkippedCompany(
+  connection: { id: string; fullSyncContinueAt: Date | null },
+  waitMs: number
+): Promise<void> {
+  if (connection.fullSyncContinueAt == null) return;
+  if (fullSyncOwed(connection)) {
+    const left = await prisma.quickBooksConnection.updateMany({
+      where: { id: connection.id, fullSyncContinueAt: FULL_SYNC_OWED_AT },
+      data: { fullSyncContinueAt: null },
+    });
+    if (left.count > 0) await requestFullSync(connection.id);
+    return;
+  }
+  await prisma.quickBooksConnection.update({
+    where: { id: connection.id },
+    data: { fullSyncContinueAt: new Date(Date.now() + waitMs) },
   });
 }
 

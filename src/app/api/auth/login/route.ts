@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { refuseCrossSite } from "@/lib/sameOrigin";
 import { z } from "zod";
-import { prisma } from "@/lib/prisma";
 import { verifyPassword, createSession } from "@/lib/auth";
 import { carryAdOptOutToBrowser, noteBrowserOptOut } from "@/lib/adOptOut";
-import { clientIp, finishLoginAttempt, startLoginAttempt, WINDOW_MINUTES } from "@/lib/loginThrottle";
+import { clientIp, findLoginByEmail, finishLoginAttempt, startLoginAttempt, WINDOW_MINUTES } from "@/lib/loginThrottle";
 
 export const runtime = "nodejs";
 
@@ -46,14 +45,10 @@ export async function POST(req: NextRequest) {
     { status: 401 }
   );
 
-  // Exact match first (fast, indexed), then case-insensitive for accounts
-  // created before signup started normalizing email casing.
-  let user = await prisma.user.findUnique({ where: { email } });
-  if (!user) {
-    user = await prisma.user.findFirst({
-      where: { email: { equals: email, mode: "insensitive" } },
-    });
-  }
+  // Only the login whose address is exactly the one typed, ignoring case
+  // (findLoginByEmail): a wildcard match would be checked against another
+  // address's attempts, past the limit.
+  const user = await findLoginByEmail(email);
 
   // Already counted as a failed attempt; nothing more to record.
   if (!user) return genericError;

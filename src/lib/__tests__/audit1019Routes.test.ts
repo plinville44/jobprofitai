@@ -303,10 +303,19 @@ describe("5. a company whose full sync is partway waits, without using an attemp
     expect(reports).toHaveLength(0);
   });
 
-  it("isn't held for good by a read whose last try failed: it goes from what's synced, and is reported", async () => {
-    await company("a", { fullSyncContinueAt: new Date(Date.now() + DAY), lastSyncStatus: "error", lastSyncError: "QuickBooks API query failed" });
-    const r = await run();
-    expect(r.result("a")).toMatchObject({ status: "sent", sentPartway: true });
+  it("still waits when the read's last try failed: it's tried again within hours", async () => {
+    await company("a", { fullSyncContinueAt: new Date(Date.now() + 2 * HOUR), lastSyncStatus: "error", lastSyncError: "QuickBooks API query failed" });
+    expect((await run()).result("a")).toMatchObject({ status: "deferred", detail: "waiting for the full sync to finish" });
+    expect(reports).toHaveLength(0);
+  });
+
+  it("waits a day past the brief's time at most, then goes from what's synced and is reported, failing or not", async () => {
+    const then = new Date(Date.now() - 25 * HOUR);
+    await company("b", {
+      fullSyncContinueAt: new Date(Date.now() + DAY), lastSyncStatus: "error", lastSyncError: "QuickBooks API query failed",
+      emailDay: then.getUTCDay(), emailHour: then.getUTCHours(),
+    });
+    expect((await run()).result("b")).toMatchObject({ status: "sent", sentPartway: true });
     expect(reported()).toEqual(["BriefSentPartway"]);
   });
 

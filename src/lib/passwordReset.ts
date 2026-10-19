@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
 import { prisma } from "./prisma";
+import { findLoginByEmail } from "./loginThrottle";
 import { hashPassword } from "./auth";
 
 // Password reset.
@@ -68,15 +69,10 @@ export async function createPasswordReset(
   const email = emailInput.trim();
   if (!email) return null;
 
-  // Same two-step lookup as the login route: exact match first (indexed),
-  // then case-insensitive, so an account created before signup normalized
-  // casing can still reset.
-  let user = await prisma.user.findUnique({ where: { email } });
-  if (!user) {
-    user = await prisma.user.findFirst({
-      where: { email: { equals: email, mode: "insensitive" } },
-    });
-  }
+  // The same lookup as the login route (findLoginByEmail): an exact match,
+  // or an older mixed-case address, but never a different login whose
+  // address a case-insensitive query would match through "_" or "%".
+  const user = await findLoginByEmail(email);
   if (!user) return null;
 
   const recent = await prisma.passwordResetToken.count({

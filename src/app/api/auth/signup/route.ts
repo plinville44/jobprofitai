@@ -12,7 +12,7 @@ import { acceptanceData } from "@/lib/termsAcceptance";
 import { signupAdOptOut } from "@/lib/adOptOut";
 import { SOURCE_COOKIE } from "@/lib/adSource";
 import { reportServerEvent, signupAdSource, signupSessionId } from "@/lib/serverEvents";
-import { claimSignupSlot, clientIp, releaseSignupSlot } from "@/lib/loginThrottle";
+import { claimSignupSlot, clientIp, findLoginByEmail, releaseSignupSlot } from "@/lib/loginThrottle";
 
 export const runtime = "nodejs";
 
@@ -80,10 +80,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const existing = await prisma.user.findFirst({
-    where: { email: { equals: email, mode: "insensitive" } },
-    select: { id: true },
-  });
+  // Exact, ignoring case: a wildcard match would wrongly say a different
+  // address is taken (findLoginByEmail).
+  const existing = await findLoginByEmail(email);
   if (existing) {
     await releaseSignupSlot(slot.slotId);
     return NextResponse.json(
