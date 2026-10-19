@@ -84,6 +84,10 @@ export interface BriefRunResult {
   status: string;
   /** Sent without its written summary. */
   summaryMissing?: boolean;
+  /** Why the summary is missing (SummaryFailure in src/lib/digest.ts). */
+  summaryFailure?: { kind: string; message: string } | null;
+  /** Sent while a full read of QuickBooks was unfinished: its sync failed, or it waited a day for it. */
+  sentPartway?: boolean;
   /** Every recipient refused for a reason on our side (SendEmailResult.senderSide). */
   senderRefused?: boolean;
   /** This week's brief won't go out: its last attempt failed, or the week's window closes before the next run. */
@@ -94,6 +98,11 @@ export interface BriefRunResult {
 
 export interface BriefRunProblems {
   summariesMissing: number;
+  /** How many of those went without it for each reason. */
+  summaryFailureKinds: Record<string, number>;
+  /** What the first refused AI request said, the likeliest cause to fix. */
+  firstRefusal: string | null;
+  sentPartway: number;
   senderRefused: number;
   /** Companies whose every recipient was refused, for any reason. */
   refusedCompanies: number;
@@ -120,8 +129,17 @@ export function briefRunProblems(results: BriefRunResult[], now: Date): BriefRun
   const waiting = results.map((r) => r.waitingSince?.getTime()).filter((t): t is number => t != null);
   const oldest = waiting.length ? Math.min(...waiting) : null;
   const late = oldest == null ? 0 : now.getTime() - oldest;
+  const missing = results.filter((r) => r.status === "sent" && r.summaryMissing);
+  const summaryFailureKinds: Record<string, number> = {};
+  for (const r of missing) {
+    const kind = r.summaryFailure?.kind ?? "other";
+    summaryFailureKinds[kind] = (summaryFailureKinds[kind] ?? 0) + 1;
+  }
   return {
-    summariesMissing: results.filter((r) => r.status === "sent" && r.summaryMissing).length,
+    summariesMissing: missing.length,
+    summaryFailureKinds,
+    firstRefusal: missing.find((r) => r.summaryFailure?.kind === "refused")?.summaryFailure?.message ?? null,
+    sentPartway: results.filter((r) => r.status === "sent" && r.sentPartway).length,
     senderRefused,
     refusedCompanies,
     endedUnsent: results.filter((r) => r.endsUnsent).length,
@@ -132,7 +150,7 @@ export function briefRunProblems(results: BriefRunResult[], now: Date): BriefRun
 
 /** A weekly brief run's problem, for Sentry. Named, so each kind groups on its own. */
 export class BriefRunProblem extends Error {
-  constructor(name: "BriefSummaryMissing" | "BriefSendRefused" | "BriefNotSent" | "BriefRunBehind", message: string) {
+  constructor(name: "BriefSummaryMissing" | "BriefSendRefused" | "BriefNotSent" | "BriefRunBehind" | "BriefSentPartway", message: string) {
     super(message);
     this.name = name;
   }
@@ -140,11 +158,27 @@ export class BriefRunProblem extends Error {
 
 const briefs = (n: number) => `${n} weekly ${n === 1 ? "brief" : "briefs"}`;
 
+/** Each reason a summary went missing, in words. */
+const FAILURE_WORDS: Record<string, string> = {
+  refused: "refused by Anthropic",
+  transient: "rate limit or server error",
+  timeout: "timed out",
+  connection: "no connection",
+  out_of_time: "out of time in the run",
+  rules: "too little left after the check",
+  other: "other",
+};
+
 /** The reports a run sends: at most one of each kind, with the counts. Pure. */
 export function briefRunReports(p: BriefRunProblems): BriefRunProblem[] {
   const out: BriefRunProblem[] = [];
   if (p.summariesMissing > 0) {
-    out.push(new BriefRunProblem("BriefSummaryMissing", `${briefs(p.summariesMissing)} went out without the written summary in this run.`));
+    const why = Object.entries(p.summaryFailureKinds)
+      .sort((a, b) => b[1] - a[1])
+      .map(([kind, n]) => `${FAILURE_WORDS[kind] ?? kind}: ${n}`)
+      .join(", ");
+    const refusal = p.firstRefusal ? ` The first refusal said: ${p.firstRefusal.slice(0, 200)}` : "";
+    out.push(new BriefRunProblem("BriefSummaryMissing", `${briefs(p.summariesMissing)} went out without the written summary in this run (${why}).${refusal}`));
   }
   if (p.senderRefused > 0) {
     out.push(
@@ -159,6 +193,14 @@ export function briefRunReports(p: BriefRunProblems): BriefRunProblem[] {
       new BriefRunProblem(
         "BriefNotSent",
         `${briefs(p.endedUnsent)} won't go out this week: the last attempt failed, or every recipient was refused as the week's window closed.`
+      )
+    );
+  }
+  if (p.sentPartway > 0) {
+    out.push(
+      new BriefRunProblem(
+        "BriefSentPartway",
+        `${briefs(p.sentPartway)} went out from what was synced while a full read of QuickBooks was unfinished: its sync failed, or it had waited a day past the brief's time.`
       )
     );
   }

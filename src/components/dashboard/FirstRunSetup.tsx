@@ -68,9 +68,23 @@ export type FirstSyncOutcome =
   /** Every step read. */
   | { kind: "finished"; jobs: number; switched: boolean }
   /** Still partway after the last call this screen makes; `jobs` is null if the jobs weren't read yet. */
-  | { kind: "unfinished"; jobs: number | null; switched: boolean };
+  | { kind: "unfinished"; jobs: number | null; switched: boolean }
+  /** The screen went away (opts.signal): nothing more is called or shown. */
+  | { kind: "cancelled"; switched: boolean };
 
-type Post = () => Promise<{ ok: boolean; data: any }>;
+type Post = (signal?: AbortSignal) => Promise<{ ok: boolean; data: any }>;
+
+/** Waits `ms`, or less if `signal` is aborted first. */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+  });
+}
 
 /**
  * Calls Sync now until the read is finished, at most `maxCalls` times. Each
@@ -78,25 +92,37 @@ type Post = () => Promise<{ ok: boolean; data: any }>;
  * `steps`), passed to `onProgress` as the step being read next. A read that
  * is down to once a day (`stuck`) isn't pressed on with.
  *
- * After the first call, a pause (429) or a sync already running (409, the
- * nightly job carrying on with the same read) is waited out and tried again,
- * within the same cap. The first call's 409 is a real "already running" and
- * is shown as such. Pure apart from `post` and `wait`.
+ * A pause (429) or a sync already running (409) is waited out and tried
+ * again, within the same cap. A 409 is nearly always this same read: the
+ * nightly job carrying on with it, or this screen opened again while an
+ * earlier visit's call is still reading. `opts.signal` stops the loop when
+ * the screen goes away, so a second visit doesn't run alongside the first.
+ * Pure apart from `post` and `wait`.
  */
 export async function runFirstSync(
   post: Post,
   onProgress: (p: { step: number; of: number }) => void = () => {},
-  opts: { maxCalls?: number; wait?: (ms: number) => Promise<void> } = {}
+  opts: { maxCalls?: number; wait?: (ms: number) => Promise<void>; signal?: AbortSignal } = {}
 ): Promise<FirstSyncOutcome> {
   const maxCalls = opts.maxCalls ?? FIRST_RUN_MAX_SYNC_CALLS;
-  const wait = opts.wait ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const signal = opts.signal;
+  const wait = opts.wait ?? ((ms: number) => pause(ms, signal));
   let switched = false;
   let jobs: number | null = null;
   for (let call = 1; call <= maxCalls; call++) {
-    const res = await post();
+    if (signal?.aborted) return { kind: "cancelled", switched };
+    let res: { ok: boolean; data: any };
+    try {
+      res = await post(signal);
+    } catch (err) {
+      // An aborted fetch throws; that's the screen going away, not a failure.
+      if (signal?.aborted) return { kind: "cancelled", switched };
+      throw err;
+    }
+    if (signal?.aborted) return { kind: "cancelled", switched };
     if (!res.ok) {
       const code = res.data?.code;
-      const retry = call < maxCalls && (code === "sync_cooldown" || (code === "sync_in_progress" && call > 1));
+      const retry = call < maxCalls && (code === "sync_cooldown" || code === "sync_in_progress");
       if (retry) {
         const asked = Number(res.data?.retryAfterSeconds);
         const seconds = code === "sync_cooldown" && asked > 0 ? Math.min(asked, MAX_WAIT_SECONDS) : BUSY_WAIT_SECONDS;
@@ -119,11 +145,12 @@ export async function runFirstSync(
   return { kind: "unfinished", jobs, switched };
 }
 
-async function postJson(url: string, connectionId: string): Promise<{ ok: boolean; data: any }> {
+async function postJson(url: string, connectionId: string, signal?: AbortSignal): Promise<{ ok: boolean; data: any }> {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ connectionId }),
+    signal,
   });
   let data: any = null;
   try {
@@ -147,19 +174,28 @@ export default function FirstRunSetup({
   const [phase, setPhase] = useState<Phase>(() => (neverSynced ? { kind: "syncing" } : { kind: "idle" }));
   // The first sync chose one customer per job by itself: said once, here.
   const [switched, setSwitched] = useState(false);
-  // Effects run twice in development; this keeps it to one real run.
+  // One run per mount. Effects run twice in development, with an unmount in
+  // between, which aborts the first run and lets the second start.
   const started = useRef(false);
 
   useEffect(() => {
     if (started.current || phase.kind !== "syncing") return;
     started.current = true;
+    // Leaving the page stops the loop: the read carries on server-side, and
+    // a later visit picks it up (its first call waits out the one running).
+    const controller = new AbortController();
+    const { signal } = controller;
 
     (async () => {
       try {
         const sync = await runFirstSync(
-          () => postJson("/api/quickbooks/sync", connectionId),
-          ({ step, of }) => setPhase({ kind: "syncing", step, of })
+          (s) => postJson("/api/quickbooks/sync", connectionId, s),
+          ({ step, of }) => {
+            if (!signal.aborted) setPhase({ kind: "syncing", step, of });
+          },
+          { signal }
         );
+        if (sync.kind === "cancelled" || signal.aborted) return;
         setSwitched(sync.switched);
         if (sync.kind === "failed") {
           setPhase({ kind: "failed", message: sync.message });
@@ -180,7 +216,8 @@ export default function FirstRunSetup({
         }
 
         setPhase({ kind: "analyzing", jobs: sync.jobs });
-        const brief = await postJson("/api/digest/generate", connectionId);
+        const brief = await postJson("/api/digest/generate", connectionId, signal);
+        if (signal.aborted) return;
         if (!brief.ok) {
           // The jobs are in, which is most of the value; the brief can be
           // made from the button later. Refresh so the numbers show.
@@ -197,12 +234,17 @@ export default function FirstRunSetup({
         setPhase({ kind: "done" });
         router.refresh();
       } catch (err) {
+        if (signal.aborted) return;
         setPhase({
           kind: "failed",
           message: err instanceof Error ? err.message : "Network error. Please try again.",
         });
       }
     })();
+    return () => {
+      controller.abort();
+      started.current = false;
+    };
     // Runs once per mount by design; phase changes must not restart it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionId, router]);

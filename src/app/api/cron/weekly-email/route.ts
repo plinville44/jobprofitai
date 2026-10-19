@@ -73,6 +73,8 @@ const SKIP_SYNC_AFTER_MS = 150_000;
 const FULL_SYNC_DUE_MS = 29 * 86_400_000;
 /** How long a brief held back by a failing upgrade sync waits before the owner is told. */
 const HOLD_NOTICE_AFTER_MS = 24 * 3_600_000;
+/** How long past its time a brief waits for a full sync that is partway before it goes from what's synced. */
+const PARTWAY_WAIT_MS = 24 * 3_600_000;
 /** After a send the email provider couldn't take, try again this much later. */
 const RETRY_SEND_AFTER_MS = 60 * 60_000;
 /**
@@ -309,8 +311,13 @@ async function sendOne(
     // A full read of QuickBooks is partway (src/lib/syncProblem.ts): some
     // data is read and some isn't yet, so the figures don't add up. Not this
     // brief's fault, so no attempt is used; a later run sends it once the
-    // nightly sync has finished the read.
-    if (fullSyncPartway(connection)) {
+    // nightly sync has finished the read. Not when that read's last try
+    // failed: a stuck read is put off again every time, and the brief was
+    // held for good with nobody told. Nor for more than a day past the
+    // brief's time. Either way it goes from what's synced, and the run
+    // reports it (sentPartway).
+    const partway = fullSyncPartway(connection);
+    if (partway && connection.lastSyncStatus !== "error" && Date.now() - scheduledAt.getTime() <= PARTWAY_WAIT_MS) {
       return { connectionId: connection.id, status: "deferred", detail: "waiting for the full sync to finish" };
     }
 
@@ -401,6 +408,7 @@ async function sendOne(
         deadline: runStartedAt + AI_DEADLINE_MS,
         storedSummary,
         deferWhenOutOfTime: withinCatchUp(new Date(Date.now() + DEFER_MARGIN_MS), scheduledAt),
+        secondThisWeek: sendAgain,
       });
     } catch (err) {
       if (!(err instanceof SummaryOutOfTimeError)) throw err;
@@ -417,7 +425,7 @@ async function sendOne(
         waitingSince: scheduledAt,
       };
     }
-    const { narrative, kind, metrics, body, weekOverWeek, headline, tiles, summaryMissing } = built;
+    const { narrative, kind, metrics, body, weekOverWeek, headline, tiles, summaryMissing, summaryFailure } = built;
     const toStore = withSummaryForRetry(metrics, { kind, body, summaryMissing });
 
     const digest = await prisma.weeklyDigest.upsert({
@@ -496,13 +504,16 @@ async function sendOne(
     const failed = [...refused, ...refusedOnOurSide];
     if (sent > 0) {
       await prisma.weeklyDigest.update({ where: { id: digest.id }, data: { emailedAt: new Date() } });
-      await release();
+      // Attempts back to none: this one worked, so a second brief this week
+      // (the send day moved later) starts with all of its own.
+      await release({ briefAttempts: 0 });
       claimed = false;
       return {
         connectionId: connection.id,
         status: "sent",
         detail: `${note}${failed.length ? `; failed: ${failed.join("; ")}` : ""}`,
-        ...(summaryMissing ? { summaryMissing } : {}),
+        ...(summaryMissing ? { summaryMissing, summaryFailure } : {}),
+        ...(partway ? { sentPartway: true } : {}),
       };
     }
     const { endsUnsent, releaseData } = failedFor();

@@ -92,6 +92,7 @@ vi.mock("@/lib/digest", () => ({
     if (brief.fail) throw brief.fail;
     return {
       narrative: "n", kind: "narrative", metrics: { jobs: [] }, body: "b", weekOverWeek: {}, headline: null, tiles: {}, summaryMissing: brief.summaryMissing,
+      summaryFailure: brief.summaryMissing ? { kind: "refused", message: "400 inference_geo is not supported for this model" } : null,
     };
   },
 }));
@@ -281,7 +282,12 @@ describe("3. a run reports the briefs that went without their summary", () => {
     brief.summaryMissing = true;
     const r = await run();
     expect(r.result("a")).toMatchObject({ status: "sent", summaryMissing: true });
-    expect(reports.map((x) => [x.err.name, x.err.message])).toEqual([["BriefSummaryMissing", "2 weekly briefs went out without the written summary in this run."]]);
+    expect(reports.map((x) => [x.err.name, x.err.message])).toEqual([
+      [
+        "BriefSummaryMissing",
+        "2 weekly briefs went out without the written summary in this run (refused by Anthropic: 2). The first refusal said: 400 inference_geo is not supported for this model",
+      ],
+    ]);
     expect(r.status).toBe(200);
   });
 });
@@ -294,6 +300,29 @@ describe("5. a company whose full sync is partway waits, without using an attemp
     expect(row("a").briefAttempts).toBe(0);
     expect(row("a").briefClaimedAt).toBeNull();
     expect(brief.calls).toHaveLength(0);
+    expect(reports).toHaveLength(0);
+  });
+
+  it("isn't held for good by a read whose last try failed: it goes from what's synced, and is reported", async () => {
+    await company("a", { fullSyncContinueAt: new Date(Date.now() + DAY), lastSyncStatus: "error", lastSyncError: "QuickBooks API query failed" });
+    const r = await run();
+    expect(r.result("a")).toMatchObject({ status: "sent", sentPartway: true });
+    expect(reported()).toEqual(["BriefSentPartway"]);
+  });
+
+  it("waits a day past the brief's time at most", async () => {
+    const then = new Date(Date.now() - 25 * HOUR);
+    await company("a", { fullSyncContinueAt: new Date(), emailDay: then.getUTCDay(), emailHour: then.getUTCHours() });
+    expect((await run()).result("a")).toMatchObject({ status: "sent", sentPartway: true });
+    expect(reported()).toEqual(["BriefSentPartway"]);
+  });
+});
+
+describe("7. a sent brief gives its attempts back", () => {
+  it("starts the week's count again, so a second brief this week isn't given up on", async () => {
+    await company("a", { briefAttemptWeek: thisWeek(), briefAttempts: 3 });
+    expect((await run()).result("a").status).toBe("sent");
+    expect(row("a").briefAttempts).toBe(0);
   });
 });
 
@@ -308,6 +337,8 @@ describe("7. a send day moved later in the week sends the next brief", () => {
     expect((await run()).result("a").status).toBe("sent");
     expect(sends).toHaveLength(1);
     expect(sends[0].sendDay).toBeInstanceOf(Date);
+    // Compared with the brief already sent this week (point 6 of the review).
+    expect(brief.calls[0].opts.secondThisWeek).toBe(true);
   });
 
   it("doesn't when it went out within the six days", async () => {
@@ -325,6 +356,7 @@ describe("7. a send day moved later in the week sends the next brief", () => {
     await company("a");
     await run();
     expect(sends[0].sendDay).toBeNull();
+    expect(brief.calls[0].opts.secondThisWeek).toBe(false);
   });
 });
 
@@ -395,6 +427,9 @@ describe("14 and 5. the Generate button", () => {
       code: "sync_partway",
     });
     expect(brief.calls).toHaveLength(0);
+    // Not once the read's last try failed: a stuck read would hold it for good.
+    login.connection = { ...login.connection, lastSyncStatus: "error" };
+    expect((await generate(post({ connectionId: "a" }))).status).toBe(200);
   });
 
   it("reports a refused AI request, and not a timeout or a run out of time", async () => {

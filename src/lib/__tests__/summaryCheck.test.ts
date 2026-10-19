@@ -16,7 +16,7 @@ vi.mock("@/lib/ai", () => ({
   // The real one adds inference_geo: "us" (src/lib/ai.ts); its own test covers that.
   inUs: (params: any) => params,
   // The real one reads the SDK's error shape (src/lib/ai.ts); these tests only throw plain errors.
-  aiFailureKind: (err: any) => (/timed out/i.test(err?.message ?? "") ? "timeout" : typeof err?.status === "number" && err.status < 500 ? "refused" : "other"),
+  aiFailureKind: (err: any) => (/timed out/i.test(err?.message ?? "") ? "timeout" : [400, 401, 403, 404, 413, 422].includes(err?.status) ? "refused" : "other"),
   aiClient: () => ({
     messages: {
       create: async (params: any) => {
@@ -170,6 +170,74 @@ describe("job names come first", () => {
     // "The margin number there ..." went with the MX01 sentence before it.
     expect(summarySentences(left, JOBS).map((p) => p.length)).toEqual([1, 1, 2]);
     expect(left.startsWith("MX02 Past Estimate is the one to look at first.\n\nMX04 Expected Loss is on track to close")).toBe(true);
+  });
+});
+
+// From the review of the Oct 19 fixes.
+describe("a phrase in a clause that names no job", () => {
+  const facts = (jobs: SummaryJobFacts[]): SummaryFacts => ({ jobs, comparison: "changes" });
+  const smith = (forecastMarginPct: number | null): SummaryJobFacts => ({ jobName: "Smith Kitchen", status: "open", marginPct: 0.2, forecastMarginPct });
+  const torres = (forecastMarginPct: number | null): SummaryJobFacts => ({ jobName: "Torres Bath", status: "open", marginPct: 0.2, forecastMarginPct });
+
+  it("is about the job named last before it, not the first", () => {
+    for (const s of [
+      "Smith Kitchen is running well ahead of Torres Bath, which is forecast to finish at 2%.",
+      "Smith Kitchen is running well ahead of Torres Bath which is forecast to finish at 2%.",
+    ]) {
+      expect(brief(facts([smith(0.2), torres(null)]), s)).toEqual([["forecast_without_forecast", "Torres Bath", s.slice(0, 40)]]);
+      // The other way round the sentence is true, and stays.
+      expect(brief(facts([smith(null), torres(0.02)]), s)).toEqual([]);
+    }
+    const acme = (marginPct: number): SummaryJobFacts => ({ jobName: "Acme Supply Co.", status: "completed", marginPct });
+    const done = (marginPct: number): SummaryJobFacts => ({ jobName: "Smith Kitchen", status: "completed", marginPct });
+    const s = "Smith Kitchen did better than Acme Supply Co., which lost money.";
+    expect(brief(facts([done(-0.05), acme(0.3)]), s)).toEqual([["loss_without_loss", "Acme Supply Co.", s.slice(0, 40)]]);
+    expect(brief(facts([done(0.3), acme(-0.05)]), s)).toEqual([]);
+  });
+
+  it("is about each job when the last thing named is a pair of them", () => {
+    const s = "Ruiz Kitchen Remodel and Harborview closed over estimate, and both lost money.";
+    expect(brief(skipped, s)).toEqual([["loss_without_loss", "Ruiz Kitchen Remodel", s.slice(0, 40)]]);
+  });
+});
+
+describe("a sentence that ends in an abbreviation or an initial", () => {
+  const jobs: SummaryJobFacts[] = [
+    { jobName: "Harborview Building C", status: "open", marginPct: 0.3, forecastMarginPct: 0.25 },
+    { jobName: "Torres Bath", status: "open", marginPct: 0.2, forecastMarginPct: null },
+  ];
+  const facts: SummaryFacts = { jobs, comparison: "changes" };
+  const claim = "Torres Bath is forecast to finish at 8%.";
+
+  it("ends where a job's name ends at the full stop, or a job's name or an opening word starts the next one", () => {
+    for (const first of ["Costs are highest on Harborview Building C.", "The last of the work wrapped up on Elm St."]) {
+      expect(summarySentences(`${first} ${claim}`, jobs)).toEqual([[first, claim]]);
+      expect(findSummaryProblems(`${first} ${claim}`, facts).map((p) => p.sentence)).toEqual([claim]);
+      expect(withoutSentences(`${first} ${claim}`, [claim], jobs)).toBe(first);
+    }
+    expect(summarySentences("Crews finished on Elm St. The forecast is next.")).toEqual([["Crews finished on Elm St.", "The forecast is next."]]);
+  });
+
+  it("still doesn't end inside a name, after an initial, or before a number", () => {
+    expect(summarySentences("J. Smith Bath has $2,000 spent. 1418 Elm St. Remodel is next. Smith Inc. paid it. No. 5 is last.")).toEqual([
+      ["J. Smith Bath has $2,000 spent.", "1418 Elm St. Remodel is next.", "Smith Inc. paid it.", "No. 5 is last."],
+    ]);
+  });
+});
+
+describe("a job code that looks like a year or a month", () => {
+  it("isn't taken for the job", () => {
+    const jobs: SummaryJobFacts[] = [
+      { jobName: "2025 Warranty Work", status: "completed", marginPct: 0.1 },
+      { jobName: "2024-11 Deck", status: "completed", marginPct: 0.1 },
+      { jobName: "Torres Bath", status: "open", marginPct: 0.2, forecastMarginPct: null },
+    ];
+    const s = "Torres Bath, open since 2025, is forecast to lose money.";
+    expect(brief({ jobs, comparison: "changes" }, s)).toEqual([
+      ["forecast_without_forecast", "Torres Bath", s.slice(0, 40)],
+      ["loss_without_loss", "Torres Bath", s.slice(0, 40)],
+    ]);
+    expect(brief({ jobs, comparison: "changes" }, "Torres Bath has billed nothing since 2024-11, and is forecast at 10%.").map((p) => p[1])).toEqual(["Torres Bath"]);
   });
 });
 

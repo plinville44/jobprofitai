@@ -12,7 +12,7 @@ import { acceptanceData } from "@/lib/termsAcceptance";
 import { signupAdOptOut } from "@/lib/adOptOut";
 import { SOURCE_COOKIE } from "@/lib/adSource";
 import { reportServerEvent, signupAdSource, signupSessionId } from "@/lib/serverEvents";
-import { clientIp, recordSignup, signupLimitReached } from "@/lib/loginThrottle";
+import { claimSignupSlot, clientIp, releaseSignupSlot } from "@/lib/loginThrottle";
 
 export const runtime = "nodejs";
 
@@ -68,9 +68,12 @@ export async function POST(req: NextRequest) {
   const email = parsed.data.email.trim().toLowerCase();
 
   // Every signup mails a verification link to the address typed, so one
-  // network address gets a few an hour, or a script could mail anyone.
-  const ip = clientIp(req.headers);
-  if (await signupLimitReached(ip)) {
+  // network address gets a few an hour, or a script could mail anyone. The
+  // place is taken before anything slow (the hash, the insert), so signups
+  // sent at once can't all get through; one that creates no account gives
+  // it back.
+  const slot = await claimSignupSlot(clientIp(req.headers));
+  if (!slot.ok) {
     return NextResponse.json(
       { error: "Too many accounts have been created from this network in the last hour. Please try again later." },
       { status: 429 }
@@ -82,6 +85,7 @@ export async function POST(req: NextRequest) {
     select: { id: true },
   });
   if (existing) {
+    await releaseSignupSlot(slot.slotId);
     return NextResponse.json(
       { error: "An account with that email already exists." },
       { status: 409 }
@@ -111,6 +115,7 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err) {
+    await releaseSignupSlot(slot.slotId);
     if ((err as { code?: string })?.code === "P2002") {
       return NextResponse.json(
         { error: "An account with that email already exists." },
@@ -121,7 +126,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Couldn't create your account. Please try again." }, { status: 500 });
   }
 
-  await recordSignup(ip);
   await createSession(user.id);
 
   // --- Everything below is best-effort and never fails the signup ---

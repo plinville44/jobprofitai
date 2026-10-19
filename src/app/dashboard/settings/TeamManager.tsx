@@ -18,6 +18,8 @@ interface Row {
   /** Client logins: the company they see, and its name. */
   connectionId?: string | null;
   companyName?: string | null;
+  /** Set for a team login past the plan's limit, which has no access: what to show instead of "Active". */
+  pausedNote?: string | null;
 }
 
 const STATUS_LABEL: Record<Row["status"], string> = {
@@ -107,9 +109,13 @@ export default function TeamManager({
                 <p className="font-medium text-navy">{row.name ?? row.email}</p>
                 {row.name && <p className="text-xs text-gray-500">{row.email}</p>}
                 {clientMode && <p className="text-xs text-gray-500">Sees {row.companyName ?? "a company no longer connected"}</p>}
-                <p className={`text-xs ${row.status === "active" ? "text-green-700" : "text-gray-500"}`}>
-                  {STATUS_LABEL[row.status]}
-                </p>
+                {row.pausedNote ? (
+                  <p className="text-xs font-medium text-amber-700">{row.pausedNote}</p>
+                ) : (
+                  <p className={`text-xs ${row.status === "active" ? "text-green-700" : "text-gray-500"}`}>
+                    {STATUS_LABEL[row.status]}
+                  </p>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 {/* A client invitation is only re-sent to its own company, never

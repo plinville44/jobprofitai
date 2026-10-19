@@ -28,9 +28,12 @@ vi.mock("@/lib/crypto", () => ({
   decryptToken: (s: string) => s,
 }));
 
-const qbo: { data: Record<string, any[]>; cdc: Record<string, any[]>; counts: Record<string, number> } = { data: {}, cdc: {}, counts: {} };
+const qbo: { data: Record<string, any[]>; cdc: Record<string, any[]>; counts: Record<string, number>; fail: Set<string> } = { data: {}, cdc: {}, counts: {}, fail: new Set() };
 vi.mock("@/lib/quickbooks", () => ({
-  qboQueryAll: async (_realm: string, _token: string, _query: string, entity: string) => qbo.data[entity] ?? [],
+  qboQueryAll: async (_realm: string, _token: string, _query: string, entity: string) => {
+    if (qbo.fail.has(entity)) throw new Error("QuickBooks API query failed with status 500");
+    return qbo.data[entity] ?? [];
+  },
   // SELECT COUNT(*): what QuickBooks says there are, which a test can set higher than what the read returns.
   qboQuery: async (_realm: string, _token: string, query: string) => {
     const entity = /FROM\s+(\w+)/i.exec(query)?.[1] ?? "";
@@ -76,7 +79,8 @@ import {
   timeActivityCost,
 } from "../qboNormalize";
 import { fullSyncContinuable, SYNC_COOLDOWN_SECONDS, syncCooldownSecondsLeft } from "../syncCooldown";
-import { fullSyncPartway, fullSyncTooLong, syncProblemFor } from "../syncProblem";
+import { FULL_SYNC_OWED_AT, FULL_SYNC_PARTWAY_FIRST_AT, fullSyncOwed, fullSyncPartway, fullSyncTooLong, syncProblemFor } from "../syncProblem";
+import { fullSyncDue } from "../quickbooksSync";
 import { unmatchedRevenueFrom } from "../untaggedCosts";
 import { loadUnmatchedRevenue } from "../untaggedCostStore";
 import { FIRST_RUN_MAX_SYNC_CALLS, runFirstSync, SWITCHED_TO_CUSTOMERS_NOTICE } from "../../components/dashboard/FirstRunSetup";
@@ -90,6 +94,7 @@ const noTimeLeft = () => Date.now() - 1;
 const plentyOfTime = () => Date.now() + HOUR;
 
 function resetDb() {
+  qbo.fail = new Set();
   fake.client = createFakePrisma();
   const c = fake.client as any;
   c.syncRun = new FakeModel("syncRun", [], () => ({ startedAt: new Date() }));
@@ -172,10 +177,9 @@ function repeatClient() {
     TimeActivity: [
       { Id: "908", TxnDate: dayStr(730), NameOf: "Employee", EmployeeRef: { value: "e1", name: "Sam" }, CustomerRef: { value: "50" }, Hours: 10, Minutes: 0, CostRate: 30 },
     ],
-    Estimate: [
-      { Id: "906", TxnDate: dayStr(10), TotalAmt: 15_000, TxnStatus: "Accepted", CustomerRef: { value: "51" } },
-      { Id: "907", TxnDate: dayStr(730), TotalAmt: 40_000, TxnStatus: "Closed", CustomerRef: { value: "50" } },
-    ],
+    // Bid on the customer three months before the project was set up, as
+    // estimates usually are: it's the project's contract all the same.
+    Estimate: [{ Id: "907", TxnDate: dayStr(90), TotalAmt: 15_000, TxnStatus: "Accepted", CustomerRef: { value: "50" } }],
   };
 }
 
@@ -204,7 +208,7 @@ describe("1. a transaction on a parent customer goes on its only job only if it 
     expect(resolveJob(index, "50")).toEqual({ jobId: "j51", method: "parent_customer_fallback" });
   });
 
-  it("shows the new project only its own revenue, cost and contract, not the client's history", async () => {
+  it("shows the new project only its own revenue and cost, not the client's history, and keeps the estimate made before it", async () => {
     repeatClient();
     await addConnection();
     const r = await runSyncForConnection("c1", { forceFull: true });
@@ -214,6 +218,8 @@ describe("1. a transaction on a parent customer goes on its only job only if it 
       ["Purchase", "903", 500, "parent_customer_fallback"],
     ]);
     expect(revenueOn(bath.id).map((i) => [i.qboInvoiceId, Number(i.amount)])).toEqual([["909", 5_000]]);
+    // Estimates aren't dated against the job: one on the customer from
+    // before the project still gives it its contract value.
     expect(bath.estimatedRevenue).toBe(15_000);
     // A project whose creation time QuickBooks didn't send takes them as before.
     expect(costsOn(jobByQboId("61").id).map((c) => [c.qboSourceId, Number(c.amount)])).toEqual([["910", 999]]);
@@ -346,6 +352,66 @@ describe("2. a first sync that stops partway", () => {
   });
 });
 
+describe("2. a full read that's owed isn't partway", () => {
+  beforeEach(async () => {
+    resetDb();
+    qbo.cdc = {};
+    qbo.counts = {};
+    repeatClient();
+  });
+
+  it("when the change feed fails: owed, first in line, and nothing is held", async () => {
+    await addConnection();
+    qbo.cdc = {};
+    const realCdc = qbo.cdc;
+    // The change feed failing, as the nightly job's other workers meet it.
+    qbo.cdc = new Proxy(realCdc, { get: () => { throw new Error("Change Data Capture failed"); } }) as any;
+    await expect(runSyncForConnection("c1", { deferFullSync: true })).rejects.toThrow();
+    qbo.cdc = realCdc;
+    const c = await connection();
+    expect(c.fullSyncContinueAt).toEqual(FULL_SYNC_OWED_AT);
+    expect([fullSyncOwed(c), fullSyncPartway(c), fullSyncDue(c)]).toEqual([true, false, true]);
+    expect(syncProblemFor(c, { paused: false, role: "owner" })).toBeNull();
+  });
+
+  it("when it's put off late in a window: owed if nothing was read, partway if a step was", async () => {
+    await addConnection({ syncVersion: SYNC_VERSION - 1 });
+    const late = { deadline: Date.now() - 10_000, windowStart: Date.now() - 60_000 };
+    const owed = await runSyncForConnection("c1", late);
+    expect(owed).toMatchObject({ unfinished: true, deferred: true });
+    expect((await connection()).fullSyncContinueAt).toEqual(FULL_SYNC_OWED_AT);
+
+    // One step read, then put off.
+    await runSyncForConnection("c1", { deadline: noTimeLeft() });
+    await tick();
+    await runSyncForConnection("c1", { deadline: Date.now() - 10_000, windowStart: Date.now() - 60_000 });
+    const c = await connection();
+    expect(c.fullSyncContinueAt).toEqual(FULL_SYNC_PARTWAY_FIRST_AT);
+    expect([fullSyncOwed(c), fullSyncPartway(c)]).toEqual([false, true]);
+  });
+
+  it("when its first try fails before reading anything: still owed, retried like any failed sync", async () => {
+    await addConnection({ fullSyncContinueAt: FULL_SYNC_OWED_AT });
+    qbo.fail.add("Customer");
+    await expect(runSyncForConnection("c1", { deadline: plentyOfTime() })).rejects.toThrow();
+    const c = await connection();
+    expect(c.lastSyncStatus).toBe("error");
+    expect(c.fullSyncContinueAt).toBeNull();
+    // Owed all the same: the next sync is a full one.
+    expect(c.lastFullSyncAt).toBeNull();
+    expect([fullSyncPartway(c), fullSyncDue(c)]).toEqual([false, true]);
+  });
+
+  it("but a try that read a step before failing is partway, retried a couple of hours on", async () => {
+    await addConnection({ fullSyncContinueAt: FULL_SYNC_OWED_AT });
+    qbo.fail.add("Purchase");
+    await expect(runSyncForConnection("c1", { deadline: plentyOfTime() })).rejects.toThrow();
+    const c = await connection();
+    expect(c.fullSyncContinueAt.getTime()).toBeGreaterThan(Date.now() + HOUR);
+    expect(fullSyncPartway(c)).toBe(true);
+  });
+});
+
 describe("2. Sync now's pause and a full read partway", () => {
   const NOW = new Date("2026-10-19T12:00:00Z");
   const ago = (s: number) => new Date(NOW.getTime() - s * 1000);
@@ -353,12 +419,14 @@ describe("2. Sync now's pause and a full read partway", () => {
 
   it("lets the next press carry on with a read that stopped partway", () => {
     expect(syncCooldownSecondsLeft({ ...justStopped, fullSyncContinueAt: ago(5) }, NOW)).toBe(0);
-    // Owed but not started (put first in line for the next run): the same.
-    expect(syncCooldownSecondsLeft({ ...justStopped, fullSyncContinueAt: new Date(0) }, NOW)).toBe(0);
+    // Put off partway through, first in line for the next run: the same.
+    expect(syncCooldownSecondsLeft({ ...justStopped, fullSyncContinueAt: FULL_SYNC_PARTWAY_FIRST_AT }, NOW)).toBe(0);
   });
 
   it("pauses as before when nothing is partway, or the read waits for later", () => {
     expect(syncCooldownSecondsLeft({ ...justStopped, fullSyncContinueAt: null }, NOW)).toBe(SYNC_COOLDOWN_SECONDS - 5);
+    // Owed, nothing read yet: nothing to carry on with.
+    expect(syncCooldownSecondsLeft({ ...justStopped, fullSyncContinueAt: FULL_SYNC_OWED_AT }, NOW)).toBe(SYNC_COOLDOWN_SECONDS - 5);
     // A failed part is retried a couple of hours later.
     expect(syncCooldownSecondsLeft({ ...justStopped, fullSyncContinueAt: new Date(NOW.getTime() + 2 * HOUR) }, NOW)).toBe(SYNC_COOLDOWN_SECONDS - 5);
     // Down to once a day, even once its day comes round.
@@ -370,6 +438,8 @@ describe("2. Sync now's pause and a full read partway", () => {
     expect(fullSyncPartway({ fullSyncContinueAt: NOW, lastSyncError: null })).toBe(true);
     expect(fullSyncPartway({ fullSyncContinueAt: NOW, lastSyncError: FULL_SYNC_TOO_LONG_MESSAGE })).toBe(false);
     expect(fullSyncPartway({})).toBe(false);
+    expect(fullSyncPartway({ fullSyncContinueAt: FULL_SYNC_OWED_AT, lastSyncError: null })).toBe(false);
+    expect(fullSyncPartway({ fullSyncContinueAt: FULL_SYNC_PARTWAY_FIRST_AT, lastSyncError: null })).toBe(true);
   });
 });
 
@@ -405,12 +475,42 @@ describe("2. the first-run screen's sync loop", () => {
     expect(outcome).toEqual({ kind: "finished", jobs: 4, switched: false });
   });
 
-  it("shows a sync already running on the first call, and any other failure, as before", async () => {
-    expect(await runFirstSync(async () => ({ ok: false, data: { code: "sync_in_progress", error: "A QuickBooks sync is already running." } }))).toEqual({
-      kind: "failed",
-      message: "A QuickBooks sync is already running.",
-      switched: false,
-    });
+  it("waits out a sync already running on the first call too: the screen opened again while the read goes on", async () => {
+    const replies = [{ ok: false, data: { code: "sync_in_progress", error: "A QuickBooks sync is already running." } }, unfinished(FULL_SYNC_STEPS.slice(5)), { ok: true, data: { ok: true, jobs: 4 } }];
+    const waits: number[] = [];
+    const progress: number[] = [];
+    const outcome = await runFirstSync(async () => replies.shift()!, (p) => progress.push(p.step), { wait: async (ms) => void waits.push(ms) });
+    expect(waits).toEqual([30_000]);
+    expect(progress).toEqual([6]);
+    expect(outcome).toEqual({ kind: "finished", jobs: 4, switched: false });
+  });
+
+  it("stops when the screen goes away, without calling again or reporting a failure", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const outcome = await runFirstSync(
+      async (signal) => {
+        calls++;
+        controller.abort();
+        // An aborted fetch throws.
+        if (signal?.aborted) throw Object.assign(new Error("The operation was aborted."), { name: "AbortError" });
+        return unfinished(FULL_SYNC_STEPS.slice(2));
+      },
+      () => {},
+      { signal: controller.signal }
+    );
+    expect(outcome).toEqual({ kind: "cancelled", switched: false });
+    expect(calls).toBe(1);
+    // A wait in progress ends at once too.
+    const waiting = new AbortController();
+    const started = Date.now();
+    const pending = runFirstSync(async () => ({ ok: false, data: { code: "sync_in_progress" } }), () => {}, { signal: waiting.signal });
+    setTimeout(() => waiting.abort(), 5);
+    expect(await pending).toEqual({ kind: "cancelled", switched: false });
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("shows any other failure as before", async () => {
     expect(await runFirstSync(async () => ({ ok: false, data: null }))).toEqual({
       kind: "failed",
       message: "We couldn't read your QuickBooks data this time.",
@@ -543,16 +643,42 @@ describe("4. revenue on no job is counted for Data Health, like costs", () => {
         { Id: "b", TxnDate: dayStr(15), TotalAmt: 2_500, Balance: 0, CustomerRef: { value: "9" }, Line: [sale(2_500, "P")] },
         { Id: "c", TxnDate: dayStr(15), TotalAmt: 700, Balance: 0, CustomerRef: { value: "9" }, Line: [sale(700)] },
       ],
-      Deposit: [{ Id: "d", TxnDate: dayStr(5), Line: [{ Id: "1", Amount: 400, DepositLineDetail: { AccountRef: { value: "40" }, ClassRef: { value: "P" } } }] }],
+      Deposit: [
+        {
+          Id: "d",
+          TxnDate: dayStr(5),
+          Line: [
+            { Id: "1", Amount: 400, DepositLineDetail: { AccountRef: { value: "40" }, ClassRef: { value: "P" } } },
+            // Income with no class: a sale on no job, like an invoice line with none.
+            { Id: "2", Amount: 150, DepositLineDetail: { AccountRef: { value: "40" } } },
+          ],
+        },
+      ],
+      JournalEntry: [
+        {
+          Id: "j",
+          TxnDate: dayStr(5),
+          Line: [
+            { Id: "0", Amount: 250, JournalEntryLineDetail: { PostingType: "Credit", AccountRef: { value: "40" } } },
+            { Id: "1", Amount: 250, JournalEntryLineDetail: { PostingType: "Debit", AccountRef: { value: "35" } } },
+          ],
+        },
+      ],
+      // A refund check to a customer, posted to income with no class.
+      Purchase: [{ Id: "k", TxnDate: dayStr(5), AccountRef: { value: "35" }, Line: [{ Id: "1", Amount: 100, AccountBasedExpenseLineDetail: { AccountRef: { value: "40" } } }] }],
     };
     await addConnection({ jobSource: "classes" });
     const r = await runSyncForConnection("c1", { forceFull: true });
     expect([r.unresolvedRevenueCount, r.unresolvedRevenueAmount]).toEqual([2, 2_900]);
-    expect([r.unclassedRevenueCount, r.unclassedRevenueAmount]).toEqual([1, 700]);
+    // The invoice line, the deposit line, the journal entry line and the check.
+    expect([r.unclassedRevenueCount, r.unclassedRevenueAmount]).toEqual([4, 1_000]);
+    // None of them is stored on a job (the deposit's other line is on the parent class).
+    expect((db().invoiceSummary.rows as any[]).filter((i) => ["d", "j", "k"].includes(i.qboInvoiceId))).toEqual([]);
     // Item 6 through the sync: the $1,000 still owed is Job A's.
     const owed = (classId: string) => (db().invoiceSummary.rows as any[]).find((i) => i.jobId === jobByQboId(`class:${classId}`).id);
     expect([owed("C1").amount, owed("C1").openBalance]).toEqual([3_000, 1_000]);
-    expect([owed("C2").amount, owed("C2").openBalance]).toEqual([-2_000, null]);
+    // The credit's class owes nothing, and says so: 0, not "not known".
+    expect([owed("C2").amount, owed("C2").openBalance]).toEqual([-2_000, 0]);
   });
 
   it("reads the counts as not measured until a full sync has counted them", () => {
@@ -570,7 +696,7 @@ describe("4. revenue on no job is counted for Data Health, like costs", () => {
     expect(page).toContain("loadUnmatchedRevenue(connection.id)");
     expect(page).toContain('"Sales tagged to an unrecognized customer"');
     expect(page).toContain("Sales with no class (last 12 months)");
-    expect(page).not.toMatch(/[–—]/);
+    expect(page).not.toMatch(/[\u2013\u2014]/);
   });
 });
 
@@ -659,13 +785,13 @@ describe("6. in class mode an invoice's balance is owed by the classes billed on
 
   it("puts nothing owed on a class with only a credit, and never more than the balance in all", () => {
     const parts = revenueByClass({ TotalAmt: 1_000, Balance: 1_000, Line: [sale(3_000, "A"), sale(-2_000, "B")] }, "Invoice");
-    expect(parts.map((p) => [p.classQboId, p.amount, p.openBalance])).toEqual([["A", 3_000, 1_000], ["B", -2_000, null]]);
+    expect(parts.map((p) => [p.classQboId, p.amount, p.openBalance])).toEqual([["A", 3_000, 1_000], ["B", -2_000, 0]]);
   });
 
   it("shares the balance across the billed classes by their lines, adding up to it exactly", () => {
     const parts = revenueByClass({ TotalAmt: 2_000, Balance: 1_000, Line: [sale(1_000, "A"), sale(1_000, "B"), sale(1_000, "C"), sale(-1_000, "D")] }, "Invoice");
     const owed = parts.map((p) => p.openBalance);
-    expect(owed).toEqual([333.33, 333.33, 333.34, null]);
+    expect(owed).toEqual([333.33, 333.33, 333.34, 0]);
     expect(owed.reduce((s: number, v) => s + (v ?? 0), 0)).toBeCloseTo(1_000, 6);
     // Paid in full: nothing owed anywhere.
     expect(revenueByClass({ TotalAmt: 1_000, Balance: 0, Line: [sale(3_000, "A"), sale(-2_000, "B")] }, "Invoice").map((p) => p.openBalance)).toEqual([null, null]);
@@ -736,7 +862,7 @@ describe("8. the first-run screen", () => {
     );
     expect(source).toContain('const SUPPORT_ADDRESS = "support@jobprofitai.com"');
     expect(asShown).toContain("Still reading your QuickBooks history, step {phase.step} of {phase.of}.");
-    expect(source).not.toMatch(/[–—]/);
+    expect(source).not.toMatch(/[\u2013\u2014]/);
   });
 
   it("is told once when the first sync reads each customer as one job", async () => {

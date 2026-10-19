@@ -933,8 +933,9 @@ export function chargeRefundedInFull(charge: Pick<Stripe.Charge, "refunded" | "a
  */
 async function payingClientsIncluding(partnerId: string, userId: string): Promise<number> {
   const counted = await countPayingClients(partnerId);
-  const sub = await prisma.subscription.findUnique({ where: { userId }, select: { status: true } });
-  const alreadyCounted = sub?.status === "active" || sub?.status === "past_due";
+  const sub = await prisma.subscription.findUnique({ where: { userId }, select: { status: true, firstPaidAt: true } });
+  // The same test countPayingClients uses: live, and a payment on record.
+  const alreadyCounted = (sub?.status === "active" || sub?.status === "past_due") && sub.firstPaidAt != null;
   return alreadyCounted ? counted : counted + 1;
 }
 

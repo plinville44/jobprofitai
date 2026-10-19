@@ -1,5 +1,6 @@
 import { prisma } from "./prisma";
 import { OPEN_JOB_WHERE } from "./jobStatus";
+import { REMOVED_ROLE } from "./teamRemoval";
 import {
   PLANS,
   TRIAL_LIMITS,
@@ -424,8 +425,12 @@ export async function getUsageAgainstLimits(
 export async function canConnectAnotherCompany(
   userId: string
 ): Promise<{ allowed: boolean; reason?: string; usage: UsageAgainstLimits }> {
-  const entitlements = await getEntitlements(userId);
+  const [entitlements, pausedLogin] = await Promise.all([getEntitlements(userId), pausedTeamLoginFor(userId)]);
   const usage = await getUsageAgainstLimits(userId, entitlements);
+
+  // A paused team login's "account" is an empty one of its own (accountFor);
+  // it must not start using it while it still belongs to another team.
+  if (pausedLogin) return { allowed: false, reason: PAUSED_LOGIN_MESSAGE, usage };
 
   if (!entitlements.active) {
     return {
@@ -478,6 +483,76 @@ export async function canConnectAnotherCompany(
  */
 function firmPlanOffered(): boolean {
   return Boolean(process.env.STRIPE_SECRET_KEY) && Boolean(process.env[PLANS.firm.stripePriceEnvVar]?.trim());
+}
+
+// --- Team logins past the plan's limit -----------------------------------
+
+/**
+ * What a paused team login is told when it tries something an owner would
+ * do (choose a plan, connect a company, invite people).
+ */
+export const PAUSED_LOGIN_MESSAGE =
+  "Your login is paused because the account you joined is over its plan's login limit. Ask the owner to free a seat or move up a plan.";
+
+export interface TeamLoginForLimit {
+  memberUserId: string | null;
+  acceptedAt: Date | null;
+  id: string;
+}
+
+/**
+ * The team logins past a plan's limit: the plan covers the ones accepted
+ * first, the same rule as companies (planLimits.ts). Pure, for tests.
+ */
+export function pausedTeamLoginIds(members: TeamLoginForLimit[], maxTeamMembers: number): Set<string> {
+  const sorted = members
+    .filter((m) => m.memberUserId && m.acceptedAt)
+    .sort((a, b) => a.acceptedAt!.getTime() - b.acceptedAt!.getTime() || a.id.localeCompare(b.id));
+  return new Set(sorted.slice(Math.max(0, maxTeamMembers)).map((m) => m.memberUserId!));
+}
+
+export interface TeamLoginLimitState {
+  /** Team logins the plan covers. */
+  maxTeamMembers: number;
+  /** Accepted team logins (client logins aside). */
+  accepted: number;
+  /** Login ids of the accepted logins past the limit. */
+  paused: Set<string>;
+}
+
+/**
+ * Where an account stands against its plan's team logins. The one ranking
+ * everything uses (accountFor, the team list, Billing), so they always agree.
+ */
+export async function teamLoginLimitState(ownerId: string): Promise<TeamLoginLimitState> {
+  const [entitlements, members] = await Promise.all([
+    getEntitlements(ownerId),
+    prisma.teamMember.findMany({
+      where: { ownerUserId: ownerId, acceptedAt: { not: null }, role: { notIn: ["client", REMOVED_ROLE] } },
+      select: { id: true, memberUserId: true, acceptedAt: true },
+    }),
+  ]);
+  const maxTeamMembers = entitlements.limits.maxTeamMembers;
+  return { maxTeamMembers, accepted: members.length, paused: pausedTeamLoginIds(members, maxTeamMembers) };
+}
+
+/**
+ * For a team login paused by its account's limit: whose account it is and
+ * how many logins that plan covers. Null for anyone else. accountFor gives
+ * such a login an empty account of its own; this is how its own owner-only
+ * actions know to refuse.
+ */
+export async function pausedTeamLoginFor(
+  userId: string
+): Promise<{ ownerUserId: string; maxTeamMembers: number } | null> {
+  const membership = await prisma.teamMember.findUnique({
+    where: { memberUserId: userId },
+    select: { ownerUserId: true, acceptedAt: true, role: true },
+  });
+  if (!membership?.acceptedAt || membership.role === "client" || membership.role === REMOVED_ROLE) return null;
+  if (membership.ownerUserId === userId) return null;
+  const state = await teamLoginLimitState(membership.ownerUserId);
+  return state.paused.has(userId) ? { ownerUserId: membership.ownerUserId, maxTeamMembers: state.maxTeamMembers } : null;
 }
 
 // --- Admin ---------------------------------------------------------------

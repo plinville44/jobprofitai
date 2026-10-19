@@ -30,7 +30,7 @@ export default function DataHealthSummary({ dataHealth, byClass = false }: { dat
     { label: "employee time entries with no cost rate", count: dataHealth.timeEntriesWithoutPayRate },
     { label: "possible duplicate cost entries", count: dataHealth.possibleDuplicates.length },
     { label: "open jobs with no activity in 90 days (mark them finished)", count: dataHealth.idleOpenJobs.length },
-    { label: "jobs with labor counted twice (timesheets and payroll or wages)", count: dataHealth.jobsWithDoubleLabor.length },
+    { label: "jobs to check for labor counted twice (timesheets plus payroll or wages)", count: dataHealth.jobsWithDoubleLabor.length },
     { label: "open jobs missing a cost estimate (setup)", count: dataHealth.jobsMissingEstimates.length },
   ];
   const flagged = rows.filter((r) => (r.count ?? 0) > 0);

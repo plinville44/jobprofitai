@@ -46,6 +46,9 @@ export default async function TeamSection({
     email: r.email,
     name: r.name,
     status: r.status,
+    // Past the plan's logins: no access until the owner makes room (the
+    // same ranking accountFor uses to take it away).
+    pausedNote: r.paused ? `Paused: over your plan's ${entitlements.limits.maxTeamMembers} logins` : null,
     invitedAt: r.invitedAt.toISOString(),
     connectionId: r.connectionId,
     companyName: r.connectionId ? companyName.get(r.connectionId) ?? null : null,
@@ -59,6 +62,9 @@ export default async function TeamSection({
           Give your office manager, project managers or bookkeeper their own login. They see the same companies and
           reports you do. Billing, this team list and deleting the account stay with you. Your plan includes{" "}
           {entitlements.limits.maxTeamMembers} team logins.
+          {members.some((r) => r.paused)
+            ? " The people who joined first keep access. Anyone marked paused has none until you remove a login or move to a plan with more."
+            : ""}
         </p>
         <TeamManager rows={members.map(view)} canInvite={entitlements.active} />
       </section>

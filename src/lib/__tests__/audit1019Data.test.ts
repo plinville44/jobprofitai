@@ -165,8 +165,10 @@ describe("3 and 4. a weekly run says what went wrong, once per kind", () => {
   it("counts briefs sent without the summary, refusals on our side and briefs that won't go out", () => {
     const p = briefRunProblems(
       [
-        { status: "sent", summaryMissing: true },
-        { status: "sent", summaryMissing: true },
+        { status: "sent", summaryMissing: true, summaryFailure: { kind: "refused", message: "400 inference_geo is not supported for this model" } },
+        { status: "sent", summaryMissing: true, summaryFailure: { kind: "timeout", message: "Request timed out." } },
+        { status: "sent", summaryMissing: true, summaryFailure: { kind: "refused", message: "401 invalid x-api-key" } },
+        { status: "sent", sentPartway: true },
         { status: "sent" },
         { status: "held", senderRefused: true },
         { status: "generated_not_sent", endsUnsent: true },
@@ -174,14 +176,31 @@ describe("3 and 4. a weekly run says what went wrong, once per kind", () => {
       ],
       NOW
     );
-    expect(p).toEqual({ summariesMissing: 2, senderRefused: 1, refusedCompanies: 2, endedUnsent: 2, minutesLate: null, failed: true });
+    expect(p).toEqual({
+      summariesMissing: 3,
+      summaryFailureKinds: { refused: 2, timeout: 1 },
+      firstRefusal: "400 inference_geo is not supported for this model",
+      sentPartway: 1,
+      senderRefused: 1,
+      refusedCompanies: 2,
+      endedUnsent: 2,
+      minutesLate: null,
+      failed: true,
+    });
     expect(briefRunReports(p).map((r) => [r.name, r.message])).toEqual([
-      ["BriefSummaryMissing", "2 weekly briefs went out without the written summary in this run."],
+      [
+        "BriefSummaryMissing",
+        "3 weekly briefs went out without the written summary in this run (refused by Anthropic: 2, timed out: 1). The first refusal said: 400 inference_geo is not supported for this model",
+      ],
       [
         "BriefSendRefused",
         "The email provider refused every recipient of 1 weekly brief for a reason on our side (the sending domain, from address or API key). Each is tried again in an hour without using an attempt.",
       ],
       ["BriefNotSent", "2 weekly briefs won't go out this week: the last attempt failed, or every recipient was refused as the week's window closed."],
+      [
+        "BriefSentPartway",
+        "1 weekly brief went out from what was synced while a full read of QuickBooks was unfinished: its sync failed, or it had waited a day past the brief's time.",
+      ],
     ]);
   });
 
@@ -243,7 +262,7 @@ describe("5. alerts wait while a full sync is partway", () => {
     expect(profit.calls).toBe(0);
   });
 
-  it("goes ahead once it's finished, or when the read is down to once a day", async () => {
+  it("goes ahead once it's finished, when the read is down to once a day, or when its last try failed", async () => {
     await fake.client.quickBooksConnection.create({ data: { id: "c2", userId: "u1", realmIdHash: "h2", alertsBaselinedAt: NOW, fullSyncContinueAt: null } });
     expect((await evaluateAlerts("c2", NOW).catch((e) => e)).message).toBe("figures were read");
     await fake.client.quickBooksConnection.create({
@@ -253,7 +272,12 @@ describe("5. alerts wait while a full sync is partway", () => {
       },
     });
     expect((await evaluateAlerts("c3", NOW).catch((e) => e)).message).toBe("figures were read");
-    expect(profit.calls).toBe(2);
+    // A stuck read is put off again on every failure: alerts can't wait on it for good.
+    await fake.client.quickBooksConnection.create({
+      data: { id: "c4", userId: "u1", realmIdHash: "h4", alertsBaselinedAt: NOW, fullSyncContinueAt: new Date(NOW.getTime() + DAY), lastSyncStatus: "error", lastSyncError: "QuickBooks API query failed" },
+    });
+    expect((await evaluateAlerts("c4", NOW).catch((e) => e)).message).toBe("figures were read");
+    expect(profit.calls).toBe(3);
   });
 });
 
@@ -352,7 +376,10 @@ describe("13. testimonial requests move on to people not yet asked", () => {
   });
 });
 
-describe("job type suggestions read an estimate on a parent customer as the job's only from shortly before the job", () => {
+// The sync's review decided estimates aren't dated like costs and revenue (an
+// estimate usually comes before the project it turns into), and the
+// suggestions read them the same way.
+describe("job type suggestions read an estimate on a parent customer as its only job's", () => {
   beforeEach(() => {
     fake.client.jobEstimate = new FakeModel("jobEstimate");
   });
@@ -374,11 +401,11 @@ describe("job type suggestions read an estimate on a parent customer as the job'
     return (await getJobTypeSuggestions("c1", types)).rows[0];
   };
 
-  it("uses one dated just before the job was set up", async () => {
+  it("whatever its date", async () => {
     expect(await setup("2026-05-01T00:00:00Z")).toMatchObject({ suggested: "roofing", source: "estimate" });
   });
 
-  it("leaves one from the customer's history before this job", async () => {
-    expect(await setup("2025-01-01T00:00:00Z")).toMatchObject({ suggested: null, source: null });
+  it("including one from well before the job was set up", async () => {
+    expect(await setup("2025-01-01T00:00:00Z")).toMatchObject({ suggested: "roofing", source: "estimate" });
   });
 });

@@ -48,7 +48,7 @@ import {
   type JobInput,
 } from "../profitability";
 import { forecastIsActionable } from "../forecastRules";
-import { marginTrendByPeriod } from "../marginTrend";
+import { computeMarginTrend, marginTrendByPeriod } from "../marginTrend";
 import { buildWipSchedule, wipCountsInTotals, wipReportBasis, wipReportDay } from "../wipSchedule";
 import { computeOpportunityFeed } from "../opportunities";
 import { computeMoneyOwed } from "../moneyOwed";
@@ -465,6 +465,26 @@ describe("the dashboard's margin trend (audit item 5)", () => {
     expect(points).toEqual([{ period: "2026-05", revenue: 100_000, costs: 74_000, marginPct: 0.26 }]);
   });
 
+  it("keeps a completed job whose retainage invoice is dated ahead, in this month", () => {
+    const retainage = computeJobFinancials(
+      {
+        ...input({ id: "Retainage", status: "closed" }),
+        costEntries: [{ category: "materials", amount: 8_000, txnDate: new Date("2026-09-15T00:00:00Z") }],
+        invoices: [
+          { amount: 9_000, status: "paid", txnDate: new Date("2026-09-30T00:00:00Z") },
+          { amount: 1_000, status: "open", txnDate: new Date("2026-11-15T00:00:00Z") }, // retainage, billed next month
+        ],
+      },
+      ctx()
+    );
+    expect(retainage.lastFinancialActivity!.getTime()).toBeGreaterThan(NOW.getTime());
+    expect(marginTrendByPeriod([retainage], "monthly", NOW)).toEqual([{ period: "2026-10", revenue: 10_000, costs: 8_000, marginPct: 0.2 }]);
+    // And on the Opportunities trend, in this month's cell.
+    const t = computeMarginTrend([retainage, retainage, retainage], NOW);
+    expect(t.all!.months.find((m) => m.month === "2026-10")).toMatchObject({ jobs: 3, revenue: 30_000, cost: 24_000 });
+    expect(t.all!.jobs).toBe(3);
+  });
+
   it("is what getMarginTrend returns for the dashboard, labor burden included", async () => {
     db.connection.laborBurdenPct = 25;
     db.jobs = [
@@ -628,21 +648,35 @@ describe("the feed's unbilled work item (audit item 7)", () => {
 // 8. Labor counted twice
 // ---------------------------------------------------------------------------
 
-describe("labor counted twice (audit item 8)", () => {
+describe("labor counted twice (audit item 8, narrowed after review)", () => {
   const at = new Date("2026-10-01T00:00:00Z");
-  const labor = (qboSourceType: string, category = "labor") => ({ qboSourceType, category, txnDate: at });
+  const labor = (qboSourceType: string, accountName: string | null = null, category = "labor") => ({ qboSourceType, category, txnDate: at, accountName });
 
-  it("catches timesheets plus wages paid by check or bill, not only payroll journal entries", () => {
+  it("catches timesheets plus wages paid by check or bill to a payroll or wages account, and payroll journal entries", () => {
     const jobs = [
-      { id: "check", name: "Wages by check", costEntries: [labor("TimeActivity"), labor("Purchase")] },
-      { id: "bill", name: "Payroll bill", costEntries: [labor("TimeActivity"), labor("Bill")] },
-      { id: "journal", name: "Payroll journal", costEntries: [labor("TimeActivity"), labor("JournalEntry")] },
-      { id: "sub", name: "Sub on the job", costEntries: [labor("TimeActivity"), labor("Bill", "subcontractor")] },
-      { id: "checks-only", name: "Checks only", costEntries: [labor("Purchase"), labor("Purchase")] },
+      { id: "check", name: "Wages by check", costEntries: [labor("TimeActivity"), labor("Purchase", "Wages")] },
+      { id: "bill", name: "Payroll bill", costEntries: [labor("TimeActivity"), labor("Bill", "Payroll Expenses:Wages")] },
+      { id: "journal", name: "Payroll journal", costEntries: [labor("TimeActivity"), labor("JournalEntry", "Job labor")] },
+      { id: "sub", name: "Sub on the job", costEntries: [labor("TimeActivity"), labor("Bill", "Payroll", "subcontractor")] },
+      { id: "checks-only", name: "Checks only", costEntries: [labor("Purchase", "Wages"), labor("Purchase", "Wages")] },
     ];
     expect(findDoubleLabor(jobs, NOW).map((j) => j.jobId)).toEqual(["check", "bill", "journal"]);
   });
+
+  it("doesn't list a temp-agency or sub bill to a plain labor account on a job with timesheets", () => {
+    const jobs = [
+      { id: "agency", name: "Agency", costEntries: [labor("TimeActivity"), labor("Bill", "Temp Labor")] },
+      { id: "cost-of-labor", name: "Cost of Labor", costEntries: [labor("TimeActivity"), labor("Bill", "Cost of Labor")] },
+      { id: "no-name", name: "No account name", costEntries: [labor("TimeActivity"), labor("Purchase", null)] },
+      // Whole words only: "wagers" or "payrolled" aren't payroll accounts.
+      { id: "word", name: "Wagers", costEntries: [labor("TimeActivity"), labor("Bill", "Wagers and bets")] },
+    ];
+    expect(findDoubleLabor(jobs, NOW)).toEqual([]);
+    const health = computeDashboardTotals([], [], { ...emptyHealth(), jobsWithDoubleLabor: findDoubleLabor(jobs, NOW) }, null);
+    expect(health.dataIssues).toBe(0);
+  });
 });
+
 
 // ---------------------------------------------------------------------------
 // 9. Copy

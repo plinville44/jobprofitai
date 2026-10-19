@@ -65,8 +65,10 @@ export async function POST(req: NextRequest) {
       );
     }
     // A full read of QuickBooks still partway leaves some data read and some
-    // not: a brief now would show costs without their invoices.
-    if (fullSyncPartway(connection)) {
+    // not: a brief now would show costs without their invoices. Not once the
+    // read's last try failed: a stuck read is put off again every time, and
+    // the button would refuse for good. The dashboard says the sync failed.
+    if (fullSyncPartway(connection) && connection.lastSyncStatus !== "error") {
       return NextResponse.json(
         {
           error: "Your QuickBooks history is still being read, so the brief would show costs without their invoices. It's made once the read finishes, usually overnight.",

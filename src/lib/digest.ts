@@ -1,5 +1,4 @@
-import { AI_MODEL, aiClient, aiFailureKind, inUs } from "./ai";
-import { reportError } from "./monitoring";
+import { AI_MODEL, aiClient, aiFailureKind, inUs, type AiFailureKind } from "./ai";
 import type { ConnectionMetrics, DataHealthReport } from "./profitability";
 import { computeConnectionMetrics } from "./profitability";
 import { formatCurrency } from "./format";
@@ -120,6 +119,37 @@ export function summaryToReuse(storedMetrics: unknown, emailedAt?: Date | null):
   return text;
 }
 
+const EARLIER_SEND_KEY = "earlierSendThisWeek";
+
+/**
+ * The brief that already went out this week, for a second one under the
+ * same week (the send day moved later in the week): its stored figures and
+ * when it was emailed. The second brief compares with it, and keeps it in
+ * its own stored figures, as the row then holds the second brief's: next
+ * week compares with the brief sent last, and the first one isn't lost. A
+ * row holding an unsent try at the second brief already carries it. Null
+ * when this week's brief hasn't gone out. Pure, for tests.
+ */
+export function earlierSendThisWeek(
+  row: { metrics: unknown; emailedAt: Date | null } | null
+): { metrics: Record<string, unknown>; emailedAt: string } | null {
+  if (!row?.emailedAt || !row.metrics || typeof row.metrics !== "object") return null;
+  const stored = row.metrics as Record<string, unknown>;
+  const kept = stored[EARLIER_SEND_KEY] as { metrics?: unknown; emailedAt?: unknown } | undefined;
+  if (kept && typeof kept.metrics === "object" && kept.metrics && typeof kept.emailedAt === "string") {
+    return { metrics: kept.metrics as Record<string, unknown>, emailedAt: kept.emailedAt };
+  }
+  const { [EARLIER_SEND_KEY]: _earlier, [SEND_SUMMARY_KEY]: _summary, ...figures } = stored;
+  return { metrics: figures, emailedAt: row.emailedAt.toISOString() };
+}
+
+/**
+ * Why a brief went without its written summary, for the weekly run's report:
+ * how the AI request failed (aiFailureKind), the run out of time, or
+ * "rules" when the check left too little of what came back.
+ */
+export type SummaryFailure = { kind: AiFailureKind | "out_of_time" | "rules"; message: string };
+
 /** In place of the written summary when it couldn't be written. Says so, and claims nothing else. */
 export const SUMMARY_UNAVAILABLE =
   "The written summary couldn't be produced this week, so this brief has the figures only. Every figure above is calculated from your QuickBooks data, and your dashboard has the full picture.";
@@ -210,13 +240,13 @@ ${JSON.stringify(
         messages,
       }));
     } catch (err) {
-      // Given less than a request normally gets to fit the deadline, and it
-      // got no answer in that time: with the usual time it may well have
-      // worked, so the run's timing is the cause, not the AI. A refusal (a
-      // 4xx, such as an ANTHROPIC_MODEL too old for inference_geo) would
-      // have failed with any amount of time, so it's a real failure.
-      const kind = aiFailureKind(err);
-      if (plan.limited && (kind === "timeout" || kind === "connection")) {
+      // Given less than a request normally gets to fit the deadline: with
+      // the usual time and a second try it may well have worked (a timeout,
+      // a dropped connection, a rate limit, an overloaded moment), so the
+      // run's timing is the cause and a later run tries again. Only a
+      // refusal (400, 401, 403, 404, 413, 422; an ANTHROPIC_MODEL too old
+      // for inference_geo, say) would fail with any amount of time.
+      if (plan.limited && aiFailureKind(err) !== "refused") {
         throw new SummaryOutOfTimeError(
           `The summary request was cut short by the time left in this run: ${err instanceof Error ? err.message : "Unknown error"}`
         );
@@ -414,6 +444,13 @@ export async function generateWeeklyDigestForConnection(
     deferWhenOutOfTime?: boolean;
     /** A summary an earlier try at this week's send wrote (summaryToReuse), used instead of writing a new one. */
     storedSummary?: string | null;
+    /**
+     * This week's brief already went out and this is the next one, stored
+     * under the same week (the send day moved later in the week). It's
+     * compared with that brief, not the week before it (see
+     * earlierSendThisWeek).
+     */
+    secondThisWeek?: boolean;
   } = {}
 ): Promise<{
   narrative: string;
@@ -428,6 +465,8 @@ export async function generateWeeklyDigestForConnection(
   tiles: BriefTileJobs;
   /** True when the AI write-up failed and `body` says so instead. */
   summaryMissing: boolean;
+  /** Why, when it's missing. */
+  summaryFailure: SummaryFailure | null;
 }> {
   const deadline = opts.deadline ?? Date.now() + 105_000;
   // When these figures were read, stored with them: next week's brief
@@ -441,18 +480,32 @@ export async function generateWeeklyDigestForConnection(
   // last week rather than against itself. If a week was skipped, this
   // compares against the last one that exists, and the section's heading
   // names that week so the gap is visible rather than implied away.
-  const [prior, connection, targetFilled] = await Promise.all([
-    prisma.weeklyDigest.findFirst({
-      where: { connectionId, weekStarting: { lt: weekStarting } },
-      orderBy: { weekStarting: "desc" },
-      select: { weekStarting: true, metrics: true, createdAt: true },
-    }),
+  //
+  // A second brief in the same week compares with the one already sent this
+  // week instead: compared with the week before, "What changed" and the new
+  // margin risk would say again what that brief said.
+  const thisWeek = opts.secondThisWeek
+    ? await prisma.weeklyDigest.findUnique({
+        where: { connectionId_weekStarting: { connectionId, weekStarting } },
+        select: { weekStarting: true, metrics: true, createdAt: true, emailedAt: true },
+      })
+    : null;
+  const earlier = earlierSendThisWeek(thisWeek);
+  const [earlierWeek, connection, targetFilled] = await Promise.all([
+    earlier
+      ? Promise.resolve(null)
+      : prisma.weeklyDigest.findFirst({
+          where: { connectionId, weekStarting: { lt: weekStarting } },
+          orderBy: { weekStarting: "desc" },
+          select: { weekStarting: true, metrics: true, createdAt: true },
+        }),
     prisma.quickBooksConnection.findUnique({
       where: { id: connectionId },
       select: { laborBurdenSetAt: true, basisChangedAt: true, syncVersion: true, rebuildRequestedAt: true, lastFullSyncAt: true },
     }),
     prisma.job.findMany({ where: { connectionId, estimatedCostSource: "target_margin" }, select: { id: true } }),
   ]);
+  const prior = earlier && thisWeek ? { weekStarting, metrics: earlier.metrics, createdAt: thisWeek.createdAt } : earlierWeek;
   const basis: BasisInfo = {
     laborBurdenSetAt: connection?.laborBurdenSetAt ?? null,
     basisChangedAt: connection?.basisChangedAt ?? null,
@@ -491,6 +544,8 @@ export async function generateWeeklyDigestForConnection(
     // Settings changed how jobs are read and the rebuild hasn't synced yet:
     // these are the old figures, so next week mustn't compare with them.
     ...(connection && rebuildPending(connection) ? { basisPending: true } : {}),
+    // The brief already sent this week, kept: this row now holds this one's.
+    ...(earlier ? { [EARLIER_SEND_KEY]: earlier } : {}),
   };
   const lead = headline ? `${headline.headline}\n\n` : "";
 
@@ -514,34 +569,35 @@ export async function generateWeeklyDigestForConnection(
       headline: null,
       tiles,
       summaryMissing: false,
+      summaryFailure: null,
     };
   }
 
   let body: string;
-  let summaryMissing = false;
+  let summaryFailure: SummaryFailure | null = null;
   try {
     body = opts.storedSummary?.trim()
       ? opts.storedSummary
       : await generateWeeklyDigest(metrics, companyName, weekOverWeek, deadline, new Set(targetFilled.map((j) => j.id)));
   } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
     if (err instanceof SummaryRemovedError) {
       // The check took out too much to leave a summary: the figures go on
       // their own, from the Generate button too, rather than a fragment or
       // an error.
-      console.warn(`digest: ${err.message} (${connectionId})`);
+      console.warn(`digest: ${message} (${connectionId})`);
+      summaryFailure = { kind: "rules", message };
     } else {
       if (!opts.allowMissingSummary) throw err;
       if (opts.deferWhenOutOfTime && err instanceof SummaryOutOfTimeError) throw err;
-      console.error(`digest: summary failed for ${connectionId}, sending without it:`, err instanceof Error ? err.message : "Unknown error");
-      // A refused request (an old ANTHROPIC_MODEL, a revoked key) would
-      // otherwise take the summary out of every brief, week after week, with
-      // nobody told. A plain timeout, or a run out of time, is not a fault.
-      if (!(err instanceof SummaryOutOfTimeError) && aiFailureKind(err) !== "timeout") {
-        await reportError(err, { cron: "weekly-email", feature: "brief-summary" });
-      }
+      console.error(`digest: summary failed for ${connectionId}, sending without it:`, message);
+      // Not reported here: the weekly run reports once, with how many went
+      // without the summary and why (briefRunReports), so an AI outage is
+      // one report a run, not one per company.
+      summaryFailure = { kind: err instanceof SummaryOutOfTimeError ? "out_of_time" : aiFailureKind(err), message };
     }
     body = SUMMARY_UNAVAILABLE;
-    summaryMissing = true;
   }
-  return { narrative: `${lead}${changesSection}\n\n${body}`, kind: "narrative", metrics: stored, body, weekOverWeek, headline, tiles, summaryMissing };
+  const summaryMissing = summaryFailure != null;
+  return { narrative: `${lead}${changesSection}\n\n${body}`, kind: "narrative", metrics: stored, body, weekOverWeek, headline, tiles, summaryMissing, summaryFailure };
 }

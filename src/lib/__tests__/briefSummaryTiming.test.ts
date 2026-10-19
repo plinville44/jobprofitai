@@ -17,7 +17,7 @@ vi.mock("@/lib/ai", () => ({
   // The real one adds inference_geo: "us" (src/lib/ai.ts); its own test covers that.
   inUs: (params: any) => params,
   // The real one reads the SDK's error shape (src/lib/ai.ts); these tests only throw plain errors.
-  aiFailureKind: (err: any) => (/timed out/i.test(err?.message ?? "") ? "timeout" : typeof err?.status === "number" && err.status < 500 ? "refused" : "other"),
+  aiFailureKind: (err: any) => (/timed out/i.test(err?.message ?? "") ? "timeout" : [400, 401, 403, 404, 413, 422].includes(err?.status) ? "refused" : "other"),
   aiClient: (timeoutMs: number, retries: number) => ({
     messages: {
       create: async (params: any) => {

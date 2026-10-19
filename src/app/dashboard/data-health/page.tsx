@@ -230,7 +230,7 @@ export default async function DataHealthPage() {
         {byClass ? (
           <CountAmountSection
             title="Sales with no class (last 12 months)"
-            help="Invoices, sales receipts and other income with no class on the line or the sale, so they aren't counted toward any job's revenue. Pick the job's class on each line in QuickBooks."
+            help="Invoices, sales receipts, deposits, journal entries and other income with no class on the line or the transaction, so they aren't counted toward any job's revenue. Pick the job's class on each line in QuickBooks."
             count={revenueOffJobs.unclassedCount}
             amount={revenueOffJobs.unclassedAmount}
           />
@@ -261,8 +261,8 @@ export default async function DataHealthPage() {
         />
         <DuplicatesSection items={h.possibleDuplicates} />
         <JobListSection
-          title="Labor that may be counted twice"
-          help="These jobs have labor from timesheets and labor from journal entries, checks or bills to a labor account (often a payroll service posting wages to jobs, or wages paid by check). That is usually the same wages twice. If your payroll posts to jobs, turn off labor from time entries in Settings; otherwise check those entries."
+          title="Labor to check for double counting"
+          help="These jobs have labor from timesheets and also wages from payroll journal entries, or from checks or bills to a payroll or wages account. That can be the same hours counted twice, or different people's time, so it's worth a check. If your payroll posts wages to jobs, turn off labor from time entries in Settings; otherwise look at those entries on the job page."
           items={h.jobsWithDoubleLabor}
         />
       </div>

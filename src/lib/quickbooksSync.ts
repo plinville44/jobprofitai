@@ -40,6 +40,7 @@ import {
 import { syncMayPickJobSource } from "@/lib/jobSetup";
 import { isUntaggedJobCost, UntaggedCostCollector } from "@/lib/untaggedCosts";
 import { replaceUntaggedCosts, replaceUntaggedCostsForTxns } from "@/lib/untaggedCostStore";
+import { FULL_SYNC_OWED_AT, FULL_SYNC_PARTWAY_FIRST_AT } from "@/lib/syncProblem";
 
 /**
  * The QuickBooks sync engine: reads a connection's job-costing data from
@@ -473,15 +474,17 @@ export async function runSyncForConnection(
       : null;
   // Too little time left in the caller's window for even the first step:
   // nothing is started (no run is recorded, so it isn't a try), and the
-  // company is first in line for the next window (fullSyncContinueAt at the
-  // epoch sorts first), where it starts at the beginning. Early in a window
+  // company is first in line for the next window (fullSyncContinueAt at or
+  // just after the epoch sorts first), where it starts at the beginning. The
+  // two values keep a read that has saved progress (partway) apart from one
+  // that hasn't begun (owed): see FULL_SYNC_OWED_AT. Early in a window
   // it goes ahead regardless: no later run would have more time, and a step
   // that fits in no run at all ends up flagged (fullSyncStuck).
   if (plan != null && options.deadline != null) {
     const first = FULL_SYNC_STEPS.find((step) => !plan!.resume?.done.includes(step)) ?? FULL_SYNC_STEPS[0];
     const lateInWindow = Date.now() - (options.windowStart ?? calledAt) > WINDOW_START_SLACK_MS;
     if (lateInWindow && !fullSyncFirstStepFits(first, options.deadline, plan.stepMs)) {
-      await handBack({ fullSyncContinueAt: new Date(0) });
+      await handBack({ fullSyncContinueAt: plan.resume ? FULL_SYNC_PARTWAY_FIRST_AT : FULL_SYNC_OWED_AT });
       const remaining = FULL_SYNC_STEPS.filter((step) => !plan!.resume?.done.includes(step));
       return { ok: true, mode, unfinished: true, deferred: true, remaining, steps: FULL_SYNC_STEPS.length };
     }
@@ -507,6 +510,8 @@ export async function runSyncForConnection(
   // over several runs started when its first run did.
   const syncStartedAt = plan?.resume ? new Date(plan.resume.startedAt) : new Date();
   let handedBack = false;
+  // Whether this run saved a finished step of a full read (onStep).
+  let savedProgress = false;
   try {
     const accessToken = await getValidAccessToken(connection);
     const realmId = decryptToken(connection.realmId);
@@ -530,6 +535,7 @@ export async function runSyncForConnection(
         where: { id: syncRun.id },
         data: { entitiesUpdated: { ...soFar, fullSyncProgress: progress } as unknown as Prisma.InputJsonValue },
       });
+      savedProgress = true;
     };
     if (mode === "full") {
       const part = await runFullSync(ctx, { deadline: options.deadline, resume: plan?.resume ?? null, history: plan?.stepMs ?? {}, onStep });
@@ -547,12 +553,13 @@ export async function runSyncForConnection(
         if (options.incrementalOnly) throw new FullSyncNotAllowedError("change_feed_failed");
         if (options.deferFullSync) {
           // Nothing was written. The next nightly run does the full read in
-          // its full-sync slot; until then the company shows as it was.
+          // its full-sync slot, first in line; until then the company shows
+          // as it was, and nothing reads it as partway (FULL_SYNC_OWED_AT).
           await prisma.syncRun.update({
             where: { id: syncRun.id },
             data: { status: "error", finishedAt: new Date(), errorMessage: "Left for a full sync: QuickBooks' list of recent changes couldn't be read in full." },
           });
-          await handBack({ fullSyncContinueAt: new Date() });
+          await handBack({ fullSyncContinueAt: FULL_SYNC_OWED_AT });
           handedBack = true;
           throw new FullSyncNotAllowedError("change_feed_failed");
         }
@@ -685,6 +692,16 @@ export async function runSyncForConnection(
       // any failed sync, not on the very next run (a day later if it's
       // already down to once a day).
       const retryAt = new Date(Date.now() + RETRY_FAILED_FULL_SYNC_MS);
+      if (!savedProgress && !plan?.resume) {
+        // An owed read that failed before saving anything is still owed, not
+        // partway: it's made the next full sync and retried like any failed
+        // sync, a couple of hours on, with the figures left as they were.
+        const owed = await prisma.quickBooksConnection.updateMany({
+          where: { id: connection.id, fullSyncContinueAt: FULL_SYNC_OWED_AT },
+          data: { fullSyncContinueAt: null },
+        });
+        if (owed.count > 0) await requestFullSync(connection.id);
+      }
       await prisma.quickBooksConnection.updateMany({
         where: { id: connection.id, fullSyncContinueAt: { not: null, lt: retryAt } },
         data: { fullSyncContinueAt: retryAt },
@@ -1608,16 +1625,21 @@ async function processLineRevenue(p: Processor, txn: any, sourceType: LineRevenu
   if (txn?.Id == null) return;
   const txnId = String(txn.Id);
   const byClass = p.ctx.jobSource === "classes";
+  // Jobs by class: income lines with no class come back too, only to be
+  // counted as sales on no job, as an invoice line with no class is.
   const lines =
     sourceType === "Deposit"
-      ? depositRevenueLines(txn, p.lookups, byClass)
+      ? depositRevenueLines(txn, p.lookups, byClass, byClass)
       : sourceType === "JournalEntry"
-        ? journalRevenueLines(txn, p.lookups, byClass)
-        : expenseRevenueLines(txn, sourceType, p.lookups, byClass);
+        ? journalRevenueLines(txn, p.lookups, byClass, byClass)
+        : expenseRevenueLines(txn, sourceType, p.lookups, byClass, byClass);
   for (const l of lines) {
     if (!l.txnDate) continue;
     const key = jobKey(p, l.customerQboId, l.classQboId);
-    if (!key) continue;
+    if (!key) {
+      if (byClass) noteUnmatchedRevenue(p, "unclassed", l.amount, l.txnDate);
+      continue;
+    }
     const resolved = resolveJob(p.index, key, l.txnDate);
     if (!resolved) {
       noteUnmatchedRevenue(p, "unresolved", l.amount, l.txnDate);
@@ -1769,9 +1791,9 @@ async function applyEstimates(
   const all = await prisma.jobEstimate.findMany({ where: { connectionId: ctx.connectionId } });
   const byJob = new Map<string, { amount: number; status: string; txnDate: Date }[]>();
   for (const e of all) {
-    // Dated like a transaction: a repeat client's estimate from an earlier
-    // job doesn't add to their new project's contract value.
-    const resolved = resolveJob(index, e.customerQboId, e.txnDate);
+    // Not dated like costs and revenue: an estimate on the customer normally
+    // comes before the project it turns into exists, often by months.
+    const resolved = resolveJob(index, e.customerQboId);
     if (!resolved) continue;
     byJob.set(resolved.jobId, [...(byJob.get(resolved.jobId) ?? []), { amount: Number(e.amount), status: e.status, txnDate: e.txnDate }]);
   }

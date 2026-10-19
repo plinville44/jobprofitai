@@ -5,9 +5,9 @@ import { clearSession, getSession, revokeAllSessions, verifyPassword } from "@/l
 import { decryptToken } from "@/lib/crypto";
 import { revokeToken } from "@/lib/quickbooks";
 import { getStripe } from "@/lib/stripe/client";
-import { CANCEL_FAILED_MESSAGE, cancelFailureBlocksDeletion, stripeSubscriptionEnded } from "@/lib/stripe/billing";
+import { CANCEL_FAILED_MESSAGE, stripeSubscriptionEnded } from "@/lib/stripe/billing";
 import { reportError } from "@/lib/monitoring";
-import { removeFromRecipientLists } from "@/lib/teamRemoval";
+import { REMOVED_ROLE, removeFromRecipientLists } from "@/lib/teamRemoval";
 
 /**
  * POST /api/account/delete  { password, confirm: "DELETE" }
@@ -19,7 +19,7 @@ import { removeFromRecipientLists } from "@/lib/teamRemoval";
  *   1. Cancel any Stripe subscription, so deleting an account can never
  *      leave someone being billed for a product they no longer have. First,
  *      because if it fails nothing has changed yet: the account stays and
- *      the customer is asked to try again (cancelFailureBlocksDeletion in
+ *      the customer is asked to try again (stripeSubscriptionEnded in
  *      src/lib/stripe/billing.ts).
  *   2. Revoke QuickBooks tokens with Intuit. Done before the delete,
  *      because once the row is gone the encrypted token is gone with it and
@@ -77,12 +77,11 @@ export async function POST(req: NextRequest) {
           `account/delete: could not cancel Stripe subscription ${stripeSubscriptionId}:`,
           err instanceof Error ? err.message : "Unknown error"
         );
-        if (
-          cancelFailureBlocksDeletion(user.subscription?.status, err) &&
-          !(await stripeSubscriptionEnded(stripeSubscriptionId))
-        ) {
-          // Deleting now would leave a live subscription charging an account
-          // that no longer exists, with nothing on our side to stop it.
+        // Whatever the stored status says (it can be stale), only Stripe
+        // saying the subscription has ended, or doesn't exist, lets this go
+        // ahead. Deleting otherwise could leave it charging an account that
+        // no longer exists, with nothing on our side to stop it.
+        if (!(await stripeSubscriptionEnded(stripeSubscriptionId))) {
           await reportError(err, { route: "/api/account/delete", method: "POST" });
           return NextResponse.json({ error: CANCEL_FAILED_MESSAGE }, { status: 502 });
         }
@@ -122,7 +121,7 @@ export async function POST(req: NextRequest) {
     // with the login (onDelete: Cascade).
     const membership = await prisma.teamMember.findUnique({
       where: { memberUserId: user.id },
-      select: { ownerUserId: true, email: true },
+      select: { ownerUserId: true, email: true, acceptedAt: true, role: true },
     });
 
     await prisma.$transaction([
@@ -130,7 +129,10 @@ export async function POST(req: NextRequest) {
       prisma.user.delete({ where: { id: user.id } }),
     ]);
 
-    if (membership && membership.ownerUserId !== user.id) {
+    // Only a login that really belonged to that account: not an invitation
+    // it never accepted, and not the marker left when it was removed (its
+    // address came off the lists then).
+    if (membership?.acceptedAt && membership.role !== REMOVED_ROLE && membership.ownerUserId !== user.id) {
       await removeFromRecipientLists(membership.ownerUserId, [membership.email, user.email]).catch((err) => {
         console.error(
           "account/delete: could not take the address off the team's email lists:",

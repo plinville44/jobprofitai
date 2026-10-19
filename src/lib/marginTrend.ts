@@ -3,7 +3,8 @@ import type { JobFinancials, MarginTrendPoint } from "./profitability";
 /**
  * Margin by job type, month by month: are remodels getting more profitable
  * or less? Each finished job counts once, in the month of its last cost or
- * invoice (when it finished, near enough), at its whole-job margin. A month's
+ * invoice (when it finished, near enough; this month if that's dated ahead,
+ * like a retainage invoice), at its whole-job margin. A month's
  * margin is revenue-weighted: (revenue - cost) / revenue across the jobs that
  * finished in it, so one small job can't swing it.
  *
@@ -58,22 +59,28 @@ export function trendMonths(now: Date, count = TREND_MONTHS): string[] {
 
 const marginOf = (revenue: number, cost: number) => (revenue > 0 ? (revenue - cost) / revenue : null);
 
-/** A finished job the trend can count: completed, with revenue and costs, finished by `now`. */
-const countsAsFinished = (f: JobFinancials, now: Date) =>
-  f.status === "closed" &&
-  f.revenue > 0 &&
-  f.costs > 0 &&
-  f.lastFinancialActivity != null &&
-  f.lastFinancialActivity.getTime() <= now.getTime();
+/** A finished job the trend can count: completed, with revenue and costs. */
+const countsAsFinished = (f: JobFinancials) =>
+  f.status === "closed" && f.revenue > 0 && f.costs > 0 && f.lastFinancialActivity != null;
+
+/**
+ * When a finished job counts as finished: its last cost or invoice, or
+ * today if that's later. A completed job's retainage invoice or last bill is
+ * often dated ahead, and requiring the last date to have passed took the
+ * job out of the trend until next month. Only call on a job that
+ * countsAsFinished.
+ */
+const finishedAt = (f: JobFinancials, now: Date): Date =>
+  f.lastFinancialActivity!.getTime() > now.getTime() ? now : f.lastFinancialActivity!;
 
 const quarterKey = (d: Date) => `${d.getUTCFullYear()}-Q${Math.floor(d.getUTCMonth() / 3) + 1}`;
 
 /**
  * The Profit Dashboard's margin trend, over all of a company's history:
  * each finished job counted once, at its whole-job figures, in the month
- * (or quarter) of its last cost or invoice, by the same rule as the
- * Opportunities trend above. A period's margin is revenue-weighted across
- * the jobs that finished in it.
+ * (or quarter) of its last cost or invoice (or this one, if that's dated
+ * ahead: finishedAt), by the same rule as the Opportunities trend above. A
+ * period's margin is revenue-weighted across the jobs that finished in it.
  *
  * It used to put each transaction in its own month, which contradicted the
  * dashboard's own label ("each job from start to finish") and the
@@ -89,8 +96,8 @@ export function marginTrendByPeriod(
   const key = granularity === "monthly" ? monthKey : quarterKey;
   const buckets = new Map<string, { revenue: number; costs: number }>();
   for (const f of jobs) {
-    if (!countsAsFinished(f, now)) continue;
-    const k = key(f.lastFinancialActivity!);
+    if (!countsAsFinished(f)) continue;
+    const k = key(finishedAt(f, now));
     const b = buckets.get(k) ?? { revenue: 0, costs: 0 };
     b.revenue += f.revenue;
     b.costs += f.costs;
@@ -105,10 +112,10 @@ export function marginTrendByPeriod(
     });
 }
 
-function buildRow(type: string | null, jobs: JobFinancials[], months: string[]): TypeTrend {
+function buildRow(type: string | null, jobs: JobFinancials[], months: string[], now: Date): TypeTrend {
   const cells = new Map(months.map((m) => [m, { month: m, jobs: 0, revenue: 0, cost: 0, margin: null as number | null }]));
   for (const f of jobs) {
-    const cell = cells.get(monthKey(f.lastFinancialActivity!));
+    const cell = cells.get(monthKey(finishedAt(f, now)));
     if (!cell) continue;
     cell.jobs += 1;
     cell.revenue += f.revenue;
@@ -140,16 +147,16 @@ function buildRow(type: string | null, jobs: JobFinancials[], months: string[]):
 export function computeMarginTrend(jobs: JobFinancials[], now: Date, count = TREND_MONTHS): MarginTrend {
   const months = trendMonths(now, count);
   const inWindow = new Set(months);
-  const finished = jobs.filter((f) => countsAsFinished(f, now) && inWindow.has(monthKey(f.lastFinancialActivity!)));
+  const finished = jobs.filter((f) => countsAsFinished(f) && inWindow.has(monthKey(finishedAt(f, now))));
   const byType = new Map<string, JobFinancials[]>();
   for (const f of finished) if (f.category) byType.set(f.category, [...(byType.get(f.category) ?? []), f]);
   const rows = [...byType.entries()]
     .filter(([, list]) => list.length >= MIN_JOBS_FOR_ROW)
-    .map(([type, list]) => buildRow(type, list, months))
+    .map(([type, list]) => buildRow(type, list, months, now))
     .sort((a, b) => b.jobs - a.jobs || (a.type ?? "").localeCompare(b.type ?? ""));
   return {
     months,
-    all: finished.length >= MIN_JOBS_FOR_ROW ? buildRow(null, finished, months) : null,
+    all: finished.length >= MIN_JOBS_FOR_ROW ? buildRow(null, finished, months, now) : null,
     byType: rows,
   };
 }

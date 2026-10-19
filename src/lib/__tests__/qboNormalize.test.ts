@@ -509,7 +509,7 @@ describe("what's still owed on an invoice", () => {
   it("in class mode, puts what's owed on the classes billed, never on a class with only a credit", () => {
     const line = (amount: number, classId: string) => ({ Amount: amount, SalesItemLineDetail: { ClassRef: { value: classId } } });
     const parts = revenueByClass({ TxnDate: "2026-09-01", TotalAmt: 1_000, Balance: 1_000, Line: [line(3_000, "A"), line(-2_000, "B")] }, "Invoice");
-    expect(parts.map((p) => [p.classQboId, p.openBalance])).toEqual([["A", 1_000], ["B", null]]);
+    expect(parts.map((p) => [p.classQboId, p.openBalance])).toEqual([["A", 1_000], ["B", 0]]);
   });
 
   it("keeps the invoice number and due date for Money Owed", () => {
@@ -618,6 +618,25 @@ describe("class-mode income without an invoice", () => {
     };
     expect(journalRevenueLines(je, lookups)).toEqual([]);
     expect(journalRevenueLines(je, lookups, true).map((l) => [l.classQboId, l.amount])).toEqual([["3", 400]]);
+  });
+
+  it("returns income with no class too when asked, for the count of sales on no job", () => {
+    const deposit = {
+      Id: "902",
+      TxnDate: "2026-09-12",
+      Line: [
+        { Id: "1", Amount: 900, DepositLineDetail: { AccountRef: { value: "40" }, ClassRef: { value: "3" } } },
+        { Id: "2", Amount: 50, DepositLineDetail: { AccountRef: { value: "40" } } },
+        // Still not a vendor's.
+        { Id: "3", Amount: 70, DepositLineDetail: { Entity: { value: "9", type: "VENDOR" }, AccountRef: { value: "40" } } },
+      ],
+    };
+    expect(depositRevenueLines(deposit, lookups, true, true).map((l) => [l.lineId, l.classQboId])).toEqual([["1", "3"], ["2", null]]);
+    const je = { Id: "612", TxnDate: "2026-09-01", Line: [{ Id: "0", Amount: 400, JournalEntryLineDetail: { PostingType: "Credit", AccountRef: { value: "40" } } }] };
+    expect(journalRevenueLines(je, lookups, true, true).map((l) => [l.classQboId, l.amount])).toEqual([[null, 400]]);
+    // Not asked, or not jobs by class: as before.
+    expect(journalRevenueLines(je, lookups, true)).toEqual([]);
+    expect(journalRevenueLines(je, lookups, false, true)).toEqual([]);
   });
 });
 

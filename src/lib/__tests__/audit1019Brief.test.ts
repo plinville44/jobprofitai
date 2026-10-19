@@ -36,11 +36,17 @@ vi.mock("@/lib/monitoring", () => ({
     return { sent: false, reason: "no_dsn" };
   },
 }));
-const state: { metrics: any } = { metrics: null };
+const state: { metrics: any; thisWeek: any; priorWeekLooked: number } = { metrics: null, thisWeek: null, priorWeekLooked: 0 };
 vi.mock("@/lib/profitability", () => ({ computeConnectionMetrics: async () => state.metrics }));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    weeklyDigest: { findFirst: async () => null },
+    weeklyDigest: {
+      findFirst: async () => {
+        state.priorWeekLooked++;
+        return null;
+      },
+      findUnique: async () => state.thisWeek,
+    },
     quickBooksConnection: { findUnique: async () => null },
     job: { findMany: async () => [] },
   },
@@ -59,6 +65,7 @@ import {
   SUMMARY_UNAVAILABLE,
   SummaryOutOfTimeError,
   SummaryRemovedError,
+  earlierSendThisWeek,
   summaryToReuse,
   withSummaryForRetry,
 } from "../digest";
@@ -249,6 +256,12 @@ class InternalServerError extends Error {
     super("529 Overloaded");
   }
 }
+class RateLimitError extends Error {
+  status = 429;
+  constructor() {
+    super("429 rate_limit_error");
+  }
+}
 
 function metricsWith(jobs: any[]) {
   return {
@@ -272,7 +285,12 @@ describe("3. AI failures reach Sentry", () => {
     expect(aiFailureKind(new APIConnectionError())).toBe("connection");
     expect(aiFailureKind(new BadRequestError())).toBe("refused");
     expect(aiFailureKind(new AuthenticationError())).toBe("refused");
-    expect(aiFailureKind(new InternalServerError())).toBe("other");
+    // A rate limit, overloaded and server errors can work later; only real refusals can't.
+    expect(aiFailureKind(new InternalServerError())).toBe("transient");
+    expect(aiFailureKind(new RateLimitError())).toBe("transient");
+    expect(aiFailureKind(Object.assign(new Error("500"), { status: 500 }))).toBe("transient");
+    for (const status of [400, 401, 403, 404, 413, 422]) expect(aiFailureKind(Object.assign(new Error("no"), { status }))).toBe("refused");
+    expect(aiFailureKind(Object.assign(new Error("conflict"), { status: 409 }))).toBe("other");
     expect(aiFailureKind(new Error("fetch failed"))).toBe("connection");
     expect(aiFailureKind("nope")).toBe("other");
   });
@@ -293,9 +311,14 @@ describe("3. AI failures reach Sentry", () => {
     expect(await generateWeeklyDigest(state.metrics, "Acme", wow, Date.now() + 60_000).catch((e) => e)).toBeInstanceOf(SummaryOutOfTimeError);
     ai.replies = [new APIConnectionError()];
     expect(await generateWeeklyDigest(state.metrics, "Acme", wow, Date.now() + 60_000).catch((e) => e)).toBeInstanceOf(SummaryOutOfTimeError);
+    // A rate limit or an overloaded moment late in a run waits for the next run too.
+    for (const transient of [new RateLimitError(), new InternalServerError()]) {
+      ai.replies = [transient];
+      expect(await generateWeeklyDigest(state.metrics, "Acme", wow, Date.now() + 60_000).catch((e) => e)).toBeInstanceOf(SummaryOutOfTimeError);
+    }
   });
 
-  it("sends the weekly brief without the summary on a refusal, and reports it with the feature named", async () => {
+  it("sends the weekly brief without the summary on a refusal, and says why for the run's one report", async () => {
     ai.replies = [new BadRequestError()];
     const r = await generateWeeklyDigestForConnection("c1", new Date("2026-10-19T00:00:00Z"), "Acme", {
       allowMissingSummary: true,
@@ -303,9 +326,9 @@ describe("3. AI failures reach Sentry", () => {
       deadline: Date.now() + 200_000,
     });
     expect(r.summaryMissing).toBe(true);
-    expect(reports).toHaveLength(1);
-    expect(reports[0].err).toBeInstanceOf(BadRequestError);
-    expect(reports[0].ctx).toEqual({ cron: "weekly-email", feature: "brief-summary" });
+    expect(r.summaryFailure).toEqual({ kind: "refused", message: "400 inference_geo is not supported for this model" });
+    // Not one report per company: the run sends one with the counts (briefRunReports).
+    expect(reports).toHaveLength(0);
   });
 
   it("doesn't report a plain timeout, or a summary the run had no time for", async () => {
@@ -320,6 +343,7 @@ describe("3. AI failures reach Sentry", () => {
       deadline: Date.now() + 5_000,
     });
     expect(noTime.summaryMissing).toBe(true);
+    expect([timedOut.summaryFailure?.kind, noTime.summaryFailure?.kind]).toEqual(["timeout", "out_of_time"]);
     expect(reports).toHaveLength(0);
   });
 
@@ -345,6 +369,59 @@ describe("7. a second brief in the same week reuses only its own summary", () =>
     expect(summaryToReuse(before, emailedAt)).toBeNull();
     expect(summaryToReuse(after, emailedAt)).toBe("Sunday's words.");
     expect(summaryToReuse(before)).toBe("Monday's words.");
+  });
+});
+
+describe("6. a second brief in the same week compares with the one already sent", () => {
+  const week = new Date("2026-10-12T00:00:00Z");
+  const job = (jobName: string, actualCost: number) => ({
+    jobId: jobName, jobName, customerName: null, status: "open", marginPct: 0.2, forecastMarginPct: null,
+    estimatedCost: 30_000, actualCost, estimatedRevenue: 40_000, actualRevenue: 24_000, costByCategory: {},
+    varianceVsEstimate: null, varianceVsEstimatePct: null, overUnderBilling: null, percentComplete: null, flags: [],
+  });
+  /** Monday's brief as stored: its figures, its summary, when it went out. */
+  const monday = () => ({
+    weekStarting: week,
+    createdAt: new Date("2026-10-12T12:00:00Z"),
+    emailedAt: new Date("2026-10-12T12:05:00Z"),
+    metrics: { ...metricsWith([job("MX02 Past Estimate", 30_000)]), builtAt: "2026-10-12T12:00:00.000Z", briefSendSummary: "Monday's words." },
+  });
+
+  beforeEach(() => {
+    ai.replies = [];
+    state.priorWeekLooked = 0;
+    state.metrics = { ...metricsWith([job("MX02 Past Estimate", 34_000)]), weekStarting: week };
+  });
+
+  it("finds the brief already sent this week, from its row or from an unsent try at the second one", () => {
+    const a = earlierSendThisWeek(monday());
+    expect(a?.emailedAt).toBe("2026-10-12T12:05:00.000Z");
+    expect(a?.metrics.briefSendSummary).toBeUndefined();
+    expect((a?.metrics.jobs as any[])[0].actualCost).toBe(30_000);
+    const unsentTry = { ...monday(), metrics: { ...state.metrics, earlierSendThisWeek: a } };
+    expect(earlierSendThisWeek(unsentTry)).toEqual(a);
+    expect(earlierSendThisWeek({ ...monday(), emailedAt: null })).toBeNull();
+  });
+
+  it("says what changed since Monday's brief, and keeps Monday's in what it stores", async () => {
+    state.thisWeek = monday();
+    ai.replies = ["MX02 Past Estimate has $34,000 spent against a $30,000 estimate. It has $24,000 billed."];
+    const r = await generateWeeklyDigestForConnection("c1", week, "Acme", { allowMissingSummary: true, secondThisWeek: true });
+    expect(state.priorWeekLooked).toBe(0);
+    expect(r.weekOverWeek.noComparisonReason ?? null).toBeNull();
+    expect(r.weekOverWeek.comparedToWeekStarting).toEqual(week);
+    expect(r.weekOverWeek.costAdded).toBe(4_000);
+    const kept = (r.metrics as any).earlierSendThisWeek;
+    expect(kept.emailedAt).toBe("2026-10-12T12:05:00.000Z");
+    expect(kept.metrics.jobs[0].actualCost).toBe(30_000);
+  });
+
+  it("compares with the week before for a first brief", async () => {
+    state.thisWeek = monday();
+    ai.replies = ["MX02 Past Estimate has $34,000 spent against a $30,000 estimate. It has $24,000 billed."];
+    const r = await generateWeeklyDigestForConnection("c1", week, "Acme", { allowMissingSummary: true });
+    expect(state.priorWeekLooked).toBe(1);
+    expect((r.metrics as any).earlierSendThisWeek).toBeUndefined();
   });
 });
 

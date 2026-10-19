@@ -8,6 +8,7 @@ import {
   PAYMENT_BEING_CONFIRMED_MESSAGE,
   RECENT_CHECKOUT_SECONDS,
   secondCheckoutDecision,
+  type SecondCheckoutDecision,
   type SubscriptionSummary,
 } from "./duplicateSubscription";
 
@@ -86,18 +87,17 @@ interface ListedCheckoutSession {
 }
 
 /**
- * Stops a second checkout for a customer who already has a subscription or
- * a payment on its way, and closes any checkout still open from the last
- * hour so only the one being started now can be paid. See
- * duplicateSubscription.ts for why, and for the webhook backstop that
- * catches what this can't (two clicks at the same instant). Throws
- * CheckoutBlockedError with a message for the customer.
+ * Whether a new checkout may start for this customer, from what Stripe says
+ * now: its subscriptions and its checkouts from the last hour (see
+ * secondCheckoutDecision). Also used before a login joins someone else's
+ * team (acceptInvite), so a plan it has just paid for isn't left charging.
+ * Throws when Stripe can't be reached.
  *
  * Stripe's list filters are used as documented for API 2024-06-20; not
- * verified against live Stripe. An open session that can't be closed is
- * checked again, since it may have just been paid.
+ * verified against live Stripe.
  */
-async function refuseSecondCheckout(stripe: Stripe, customerId: string, now: Date = new Date()): Promise<void> {
+export async function checkoutDecisionFor(customerId: string, now: Date = new Date()): Promise<SecondCheckoutDecision> {
+  const stripe = getStripe();
   const nowSeconds = Math.floor(now.getTime() / 1000);
   const [subscriptions, sessions] = await Promise.all([
     stripe.subscriptions.list({ customer: customerId, status: "all", limit: 20 }),
@@ -112,7 +112,7 @@ async function refuseSecondCheckout(stripe: Stripe, customerId: string, now: Dat
     status: s.status,
     created: s.created,
   }));
-  const decision = secondCheckoutDecision(
+  return secondCheckoutDecision(
     subs,
     (sessions.data as ListedCheckoutSession[]).map((s) => ({
       id: s.id,
@@ -122,6 +122,19 @@ async function refuseSecondCheckout(stripe: Stripe, customerId: string, now: Dat
     })),
     nowSeconds
   );
+}
+
+/**
+ * Stops a second checkout for a customer who already has a subscription or
+ * a payment on its way, and closes any checkout still open from the last
+ * hour so only the one being started now can be paid. See
+ * duplicateSubscription.ts for why, and for the webhook backstop that
+ * catches what this can't (two clicks at the same instant). Throws
+ * CheckoutBlockedError with a message for the customer. An open session
+ * that can't be closed is checked again, since it may have just been paid.
+ */
+async function refuseSecondCheckout(stripe: Stripe, customerId: string, now: Date = new Date()): Promise<void> {
+  const decision = await checkoutDecisionFor(customerId, now);
   if (decision.block) throw new CheckoutBlockedError(decision.message);
 
   for (const sessionId of decision.expireSessionIds) {
@@ -247,32 +260,17 @@ export async function createBillingPortalSession(
   return session.url;
 }
 
-/** Subscription statuses on file that mean the Stripe subscription may still charge. */
-const CHARGING_STATUSES = ["active", "trialing", "past_due"];
-
 export const CANCEL_FAILED_MESSAGE =
   "We couldn't cancel your subscription with our payment processor, so your account hasn't been deleted and nothing has changed. Please try again in a few minutes, or email support@jobprofitai.com and we'll handle it.";
 
 /**
- * Whether a failed subscription cancel must stop an account deletion
- * (api/account/delete): only while the subscription on file may still
- * charge, and not when Stripe says it's already canceled or doesn't exist,
- * since then nothing is left to bill. Pure, for tests.
- */
-export function cancelFailureBlocksDeletion(status: string | null | undefined, err: unknown): boolean {
-  if (!CHARGING_STATUSES.includes(status ?? "")) return false;
-  const e = err as { code?: string; statusCode?: number; message?: string } | null;
-  if (e?.code === "resource_missing" || e?.statusCode === 404) return false;
-  // Stripe's wording when the subscription was canceled already.
-  if (/already (been )?cancell?ed|canceled subscription/i.test(e?.message ?? "")) return false;
-  return true;
-}
-
-/**
- * Asks Stripe whether a subscription has ended (or doesn't exist), for when
- * cancelling it failed for a reason the error doesn't make plain. False when
- * Stripe can't be reached, so the caller stays on the safe side. Stripe calls
- * follow API 2024-06-20; not verified against live Stripe.
+ * Asks Stripe whether a subscription has ended (canceled or
+ * incomplete_expired) or doesn't exist. Account deletion asks this after any
+ * failed cancel, whatever the stored status says, since the row can be stale
+ * (an "unpaid", "incomplete", "paused" or older "trial_expired" one can still
+ * charge). False when Stripe can't be reached, so the caller stays on the
+ * safe side. Stripe calls follow API 2024-06-20; not verified against live
+ * Stripe.
  */
 export async function stripeSubscriptionEnded(subscriptionId: string): Promise<boolean> {
   try {

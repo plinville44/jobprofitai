@@ -4,7 +4,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { verifyPassword, createSession } from "@/lib/auth";
 import { carryAdOptOutToBrowser, noteBrowserOptOut } from "@/lib/adOptOut";
-import { clientIp, loginLock, recordLoginAttempt, WINDOW_MINUTES } from "@/lib/loginThrottle";
+import { clientIp, finishLoginAttempt, startLoginAttempt, WINDOW_MINUTES } from "@/lib/loginThrottle";
 
 export const runtime = "nodejs";
 
@@ -27,17 +27,17 @@ export async function POST(req: NextRequest) {
 
   // Checked before the password, and answered the same way whether or not
   // the address has an account, so the lockout can't be used to find out.
-  // A locked address still lets a correct password in from a network
-  // address with no recent failures (loginThrottle.ts), so someone else's
-  // wrong guesses can't lock the real customer out.
-  const lock = await loginLock(email, ip);
-  const lockedOut = NextResponse.json(
-    {
-      error: `Too many sign-in attempts. Wait ${WINDOW_MINUTES} minutes and try again, or reset your password.`,
-    },
-    { status: 429 }
-  );
-  if (lock === "locked") return lockedOut;
+  // The attempt is written as a failure before the check (loginThrottle.ts),
+  // so requests sent at once can't make more guesses than the limit.
+  const attempt = await startLoginAttempt(email, ip);
+  if (attempt.locked) {
+    return NextResponse.json(
+      {
+        error: `Too many sign-in attempts. Wait ${WINDOW_MINUTES} minutes and try again, or reset your password.`,
+      },
+      { status: 429 }
+    );
+  }
 
   // Deliberately identical error for "no such user" and "wrong password" -
   // don't leak which one it was.
@@ -55,14 +55,12 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  if (!user) {
-    await recordLoginAttempt(email, ip, false);
-    return lock === "correct_only" ? lockedOut : genericError;
-  }
+  // Already counted as a failed attempt; nothing more to record.
+  if (!user) return genericError;
 
   const valid = await verifyPassword(password, user.passwordHash);
-  await recordLoginAttempt(email, ip, valid);
-  if (!valid) return lock === "correct_only" ? lockedOut : genericError;
+  await finishLoginAttempt(attempt.attemptId, valid);
+  if (!valid) return genericError;
 
   await createSession(user.id);
   // Opt-outs go both ways: this browser's onto the account, the account's onto this browser.

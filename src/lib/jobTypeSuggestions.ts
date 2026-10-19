@@ -45,16 +45,14 @@ export async function getJobTypeSuggestions(connectionId: string, types?: Compan
       select: { id: true, name: true, customerName: true, status: true, statusOverride: true, suggestedCategory: true, suggestionSource: true, suggestionReason: true },
       orderBy: { name: "asc" },
     }),
-    // qboCreatedAt: a transaction tagged to a parent customer is a job's only
-    // from shortly before the job was created on (see resolveJob).
-    prisma.job.findMany({ where: { connectionId }, select: { id: true, qboId: true, parentQboId: true, qboCreatedAt: true } }),
+    prisma.job.findMany({ where: { connectionId }, select: { id: true, qboId: true, parentQboId: true } }),
     prisma.jobEstimate.findMany({ where: { connectionId }, select: { customerQboId: true, amount: true, status: true, txnDate: true, lines: true } }),
   ]);
 
   const index = buildJobIndex(allJobs);
   const linesByJob = new Map<string, { amount: number; status: string; txnDate: Date; lines: EstimateLine[] }[]>();
   for (const e of estimates) {
-    const r = resolveJob(index, e.customerQboId, e.txnDate);
+    const r = resolveJob(index, e.customerQboId);
     if (!r || !Array.isArray(e.lines)) continue;
     linesByJob.set(r.jobId, [
       ...(linesByJob.get(r.jobId) ?? []),

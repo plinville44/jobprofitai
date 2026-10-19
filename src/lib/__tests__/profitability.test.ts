@@ -1530,23 +1530,28 @@ describe("diagnoseOpportunityGap", () => {
 
 describe("findDoubleLabor", () => {
   const now = new Date("2026-09-01T00:00:00Z");
-  const row = (qboSourceType: string, category: string, date = "2026-08-01") => ({
+  const row = (qboSourceType: string, category: string, date = "2026-08-01", accountName: string | null = null) => ({
     qboSourceType,
     category,
     txnDate: new Date(`${date}T00:00:00Z`),
+    accountName,
   });
-  it("lists jobs with labor from both timesheets and journal entries, checks or bills", () => {
+  it("lists jobs with timesheets plus payroll journal entries, or checks or bills to a payroll or wages account", () => {
     const jobs = [
       { id: "a", name: "A", costEntries: [row("TimeActivity", "labor"), row("JournalEntry", "labor")] },
-      // Wages paid by bill or check to a labor account count twice the same way.
-      { id: "b", name: "B", costEntries: [row("TimeActivity", "labor"), row("Bill", "labor")] },
+      // Wages paid by bill or check, to an account named for them.
+      { id: "b", name: "B", costEntries: [row("TimeActivity", "labor"), row("Bill", "labor", "2026-08-01", "Payroll Expenses")] },
       { id: "c", name: "C", costEntries: [row("TimeActivity", "labor"), row("JournalEntry", "materials")] },
       { id: "d", name: "D", costEntries: [row("TimeActivity", "labor", "2024-01-01"), row("JournalEntry", "labor")] },
-      { id: "e", name: "E", costEntries: [row("TimeActivity", "labor"), row("Purchase", "labor")] },
+      { id: "e", name: "E", costEntries: [row("TimeActivity", "labor"), row("Purchase", "labor", "2026-08-01", "Salaries & Wages")] },
       // A subcontractor's bill is not the crew's wages.
-      { id: "f", name: "F", costEntries: [row("TimeActivity", "labor"), row("Bill", "subcontractor")] },
+      { id: "f", name: "F", costEntries: [row("TimeActivity", "labor"), row("Bill", "subcontractor", "2026-08-01", "Payroll Expenses")] },
       // Labor by check with no timesheets is counted once.
-      { id: "g", name: "G", costEntries: [row("Purchase", "labor"), row("Bill", "labor")] },
+      { id: "g", name: "G", costEntries: [row("Purchase", "labor", "2026-08-01", "Payroll Expenses"), row("Bill", "labor")] },
+      // A temp agency or a sub billed to a plain labor account is cost on top of the crew's hours.
+      { id: "h", name: "H", costEntries: [row("TimeActivity", "labor"), row("Bill", "labor", "2026-08-01", "Cost of Labor")] },
+      { id: "i", name: "I", costEntries: [row("TimeActivity", "labor"), row("Purchase", "labor", "2026-08-01", "Temp labor")] },
+      { id: "j", name: "J", costEntries: [row("TimeActivity", "labor"), row("Bill", "labor")] },
     ];
     expect(findDoubleLabor(jobs, now)).toEqual([
       { jobId: "a", jobName: "A" },
@@ -1555,3 +1560,4 @@ describe("findDoubleLabor", () => {
     ]);
   });
 });
+

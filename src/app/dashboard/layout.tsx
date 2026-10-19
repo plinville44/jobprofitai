@@ -4,7 +4,7 @@ import { headers } from "next/headers";
 import { hasAcceptedCurrentTerms } from "@/lib/termsAcceptance";
 import { noteBrowserOptOut } from "@/lib/adOptOut";
 import Link from "next/link";
-import { getAccount, getActiveConnection, pausedTeamLoginFor } from "@/lib/account";
+import { getAccount, getActiveConnection, pausedLoginNoticeFor } from "@/lib/account";
 import CompanySwitcher from "@/components/dashboard/CompanySwitcher";
 import ActiveCompanyLabel from "@/components/dashboard/ActiveCompanyLabel";
 import { getEntitlements, isAdminUser } from "@/lib/entitlements";
@@ -56,7 +56,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
     account.role === "owner" ? removedAccessFor(account.userId) : null,
     // A team login past the plan's limit is shown its own empty account the
     // same way (accountFor), with a line saying why.
-    account.role === "owner" ? pausedTeamLoginFor(account.userId) : null,
+    account.paused ? pausedLoginNoticeFor(account.userId) : null,
   ]);
 
   // Whether the company on screen is being kept up to date. Only for a live

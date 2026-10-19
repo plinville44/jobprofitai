@@ -1,11 +1,12 @@
 import { randomBytes } from "crypto";
 import { prisma } from "./prisma";
 import { hashToken } from "./passwordReset";
-import { getEntitlements } from "./entitlements";
+import { getEntitlements, PAUSED_LOGIN_MESSAGE, pausedTeamLoginFor, teamLoginLimitState } from "./entitlements";
 import { CLIENT_LOGINS_PER_COMPANY } from "./plans";
 import { REMOVED_ROLE } from "./teamRemoval";
 import { NO_PLAN_STATUS } from "./trial";
 import { getStripe } from "./stripe/client";
+import { checkoutDecisionFor } from "./stripe/billing";
 
 /**
  * Team logins.
@@ -78,6 +79,9 @@ export async function createInvite(
 
   const owner = await prisma.user.findUnique({ where: { id: ownerId }, select: { email: true, emailVerifiedAt: true } });
   if (!owner) return { ok: false, error: "Account not found.", status: 404 };
+  // A paused team login has an empty account of its own (accountFor); it
+  // can't build a team there while it still belongs to another one.
+  if (await pausedTeamLoginFor(ownerId)) return { ok: false, error: PAUSED_LOGIN_MESSAGE, status: 403 };
   if (!owner.emailVerifiedAt) {
     return { ok: false, error: "Confirm your own email address first (check your inbox), then invite people.", status: 403 };
   }
@@ -220,6 +224,9 @@ export async function findUsableInvite(token: unknown, now = new Date()): Promis
   };
 }
 
+export const OWN_PLAN_JOIN_MESSAGE =
+  "Your login has paid for a JobProfitAI plan of its own (or a payment for one is going through), so it can't join another account. Ask to be invited at a different address, or email support@jobprofitai.com and we'll help.";
+
 export type AcceptResult = { ok: true; ownerUserId: string } | { ok: false; error: string; status: number };
 
 /**
@@ -260,10 +267,8 @@ export async function acceptInvite(token: unknown, userId: string, now = new Dat
   // with fewer logins). A login joined past the limit would only be paused
   // (see accountFor), so say so now instead.
   if (invite.role !== "client") {
-    const accepted = await prisma.teamMember.count({
-      where: { ownerUserId: invite.ownerUserId, role: { notIn: ["client", REMOVED_ROLE] }, acceptedAt: { not: null } },
-    });
-    if (accepted >= ownerEntitlements.limits.maxTeamMembers) {
+    const { accepted, maxTeamMembers } = await teamLoginLimitState(invite.ownerUserId);
+    if (accepted >= maxTeamMembers) {
       const who = invite.ownerName ?? invite.ownerEmail;
       return {
         ok: false,
@@ -293,6 +298,26 @@ export async function acceptInvite(token: unknown, userId: string, now = new Dat
         "Your login has its own JobProfitAI account (a connected company, a paid plan or a team of its own), so it can't join another one. Ask to be invited at a different address, or email support and we'll help.",
       status: 409,
     };
+  }
+  // A login that started a checkout of its own may have paid for it moments
+  // ago: our row only hears of it from Stripe's webhook. Stripe is asked the
+  // same way a new checkout asks (billing.ts), so a payment can't be left
+  // charging a login that has joined someone else's account.
+  if (subscription?.stripeCustomerId) {
+    let decision: Awaited<ReturnType<typeof checkoutDecisionFor>>;
+    try {
+      decision = await checkoutDecisionFor(subscription.stripeCustomerId, now);
+    } catch (err) {
+      console.error("team: could not check the login's own billing:", err instanceof Error ? err.message : "Unknown error");
+      return {
+        ok: false,
+        error: "We couldn't check your login's billing just now, so the invitation wasn't accepted. Please try again in a few minutes.",
+        status: 503,
+      };
+    }
+    if (decision.block) {
+      return { ok: false, error: OWN_PLAN_JOIN_MESSAGE, status: 409 };
+    }
   }
 
   // Another row can still hold this login's id without giving it any access:
@@ -375,14 +400,22 @@ export interface TeamRow {
   role: "member" | "client";
   /** Client logins: the company they see. */
   connectionId: string | null;
+  /**
+   * An accepted team login past the plan's limit, which has lost access
+   * until the owner makes room (the same ranking as accountFor).
+   */
+  paused: boolean;
 }
 
 export async function listTeam(ownerId: string, now = new Date()): Promise<TeamRow[]> {
-  const rows = await prisma.teamMember.findMany({
-    where: { ownerUserId: ownerId, role: { not: REMOVED_ROLE } },
-    orderBy: { invitedAt: "asc" },
-    include: { member: { select: { name: true } } },
-  });
+  const [rows, limit] = await Promise.all([
+    prisma.teamMember.findMany({
+      where: { ownerUserId: ownerId, role: { not: REMOVED_ROLE } },
+      orderBy: { invitedAt: "asc" },
+      include: { member: { select: { name: true } } },
+    }),
+    teamLoginLimitState(ownerId),
+  ]);
   return rows.map((r) => ({
     id: r.id,
     email: r.email,
@@ -392,6 +425,7 @@ export async function listTeam(ownerId: string, now = new Date()): Promise<TeamR
     acceptedAt: r.acceptedAt,
     role: r.role === "client" ? "client" : "member",
     connectionId: r.connectionId ?? null,
+    paused: r.role !== "client" && r.memberUserId != null && limit.paused.has(r.memberUserId),
   }));
 }
 

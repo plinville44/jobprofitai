@@ -60,13 +60,20 @@ export function inUs(params: Anthropic.MessageCreateParamsNonStreaming): Anthrop
  *  - "timeout": no answer in the time the request was given.
  *  - "connection": the request never got an answer (the network, a dropped
  *    connection).
- *  - "refused": Anthropic answered with a 4xx. A bad request (an
- *    ANTHROPIC_MODEL too old for inference_geo), a key that doesn't work, a
- *    model that doesn't exist: trying again won't help, and someone needs
- *    to know.
- *  - "other": overloaded, a server error, or a reply that couldn't be used.
+ *  - "refused": Anthropic turned the request down (400, 401, 403, 404,
+ *    413, 422). A bad request (an ANTHROPIC_MODEL too old for
+ *    inference_geo), a key that doesn't work, a model that doesn't exist:
+ *    trying again won't help, and someone needs to know.
+ *  - "transient": a rate limit (429), overloaded (529) or another server
+ *    error. Trying again later can work.
+ *  - "other": anything else, such as a failure with no status.
  */
-export function aiFailureKind(err: unknown): "timeout" | "connection" | "refused" | "other" {
+export type AiFailureKind = "timeout" | "connection" | "refused" | "transient" | "other";
+
+/** Statuses that mean the request itself was turned down, whatever the time. */
+const REFUSED_STATUSES = new Set([400, 401, 403, 404, 413, 422]);
+
+export function aiFailureKind(err: unknown): AiFailureKind {
   if (err === null || typeof err !== "object") return "other";
   const e = err as { name?: unknown; status?: unknown; message?: unknown; constructor?: { name?: unknown } };
   const name = [e.name, e.constructor?.name].filter((n): n is string => typeof n === "string").join(" ");
@@ -76,6 +83,7 @@ export function aiFailureKind(err: unknown): "timeout" | "connection" | "refused
   if (/APIConnectionError/.test(name) || (status == null && /^connection error|fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up/i.test(message))) {
     return "connection";
   }
-  if (status != null && status >= 400 && status < 500) return "refused";
+  if (status != null && REFUSED_STATUSES.has(status)) return "refused";
+  if (status != null && (status === 429 || status >= 500)) return "transient";
   return "other";
 }

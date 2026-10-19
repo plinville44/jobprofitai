@@ -173,7 +173,9 @@ function namePattern(name: string, flags: string): RegExp {
 /**
  * A job's leading code, such as "MX04", "J-102" or "2024-118", which the
  * summary often names it by. A code with letters needs 3 characters; one of
- * numbers alone needs 4, so a count or a short number isn't taken for one.
+ * numbers alone needs 4, so a count or a short number isn't taken for one,
+ * and can't look like a year or a month ("2025 Warranty Work" isn't named
+ * by "open since 2025").
  */
 function leadingCode(name: string): string | null {
   const words = name.split(/\s+/);
@@ -181,6 +183,7 @@ function leadingCode(name: string): string | null {
   const code = words[0].replace(/[:,;.]+$/, "");
   if (!/\d/.test(code)) return null;
   if (/[A-Za-z]/.test(code)) return code.length >= 3 ? code : null;
+  if (/^(?:19|20)\d\d(?:[-/.](?:0?[1-9]|1[0-2]))?$/.test(code)) return null;
   return code.length >= 4 && /^#?\d[\d./-]*\d$/.test(code) ? code : null;
 }
 
@@ -249,6 +252,9 @@ const INITIAL = /(?:^|[^A-Za-z0-9])[A-Z]\.$/;
 /** "No. 5 Kitchen": only before a number, so "No. It isn't." still ends a sentence. */
 const NUMBER_SIGN = /(?:^|[^A-Za-z0-9])No\.$/i;
 const SENTENCE_GAP = /(?<=[.!?])\s+(?=["'(]?[A-Z0-9$])/g;
+/** Words that open a sentence, never a name: after "Elm St." or "Building C." they start the next one. */
+const OPENS_SENTENCE =
+  /^["'(]?(?:The|A|An|It|Its|It['\u2019]s|This|That|These|Those|They|Their|There|We|Our|You|Your|He|She|His|Her|In|On|At|For|By|With|After|Before|Since|But|And|So|Also|Still|However|Meanwhile|Overall|Both|Each|All|Every|Most|Some|None|Nothing|One|Two|Three)\b/;
 
 function splitSentences(paragraph: string, names: NameSpan[]): Sentence[] {
   const out: Sentence[] = [];
@@ -270,8 +276,18 @@ function splitSentences(paragraph: string, names: NameSpan[]): Sentence[] {
     if (names.some((n) => n.start < at && at < n.end)) continue;
     if (paragraph[at - 1] === ".") {
       const before = paragraph.slice(from, at);
-      if (ABBREVIATION.test(before) || INITIAL.test(before)) continue;
-      if (NUMBER_SIGN.test(before) && /^["'(]?\d/.test(paragraph.slice(at + m[0].length))) continue;
+      const next = at + m[0].length;
+      if (NUMBER_SIGN.test(before) && /^["'(]?\d/.test(paragraph.slice(next))) continue;
+      if (ABBREVIATION.test(before) || INITIAL.test(before)) {
+        // Still the end of a sentence when a job's name ends at the full stop
+        // ("... on Harborview Building C."), a job's name opens the next one
+        // ("... on Elm St. Torres Bath is ..."), or a word that only opens a
+        // sentence does ("... Elm St. The ..."). Merged, a false claim in
+        // the second passed, or a correct first one went with it.
+        const nameEnds = names.some((n) => n.end === at || n.end === at - 1);
+        const nameOpens = names.some((n) => n.start >= next && /^["'(]?$/.test(paragraph.slice(next, n.start)));
+        if (!nameEnds && !nameOpens && !OPENS_SENTENCE.test(paragraph.slice(next))) continue;
+      }
     }
     push(from, at);
     from = at + m[0].length;
@@ -313,8 +329,9 @@ interface Clause {
   end: number;
 }
 
-// A comma between digits ("$2,000") is part of the number, not a break.
-const CLAUSE_BREAK = /(?<!\d),|,(?!\d)|[;:()]|\s(?:but|while|whereas|although|though|unlike)\s/gi;
+// A comma between digits ("$2,000") is part of the number, not a break. A
+// relative word ("which", "who") opens a clause and stays in it.
+const CLAUSE_BREAK = /(?<!\d),|,(?!\d)|[;:()]|\s(?:but|while|whereas|although|though|unlike)\s|\s(?=(?:which|who|whose)\s)/gi;
 const AND = /\sand\s/gi;
 const wordCount = (s: string) => (s.trim() ? s.trim().split(/\s+/).length : 0);
 
@@ -388,9 +405,12 @@ function clauseJobs(text: string, clause: Clause, names: NameSpan[], phrase?: Cl
 
 /**
  * The jobs a phrase is about: decided in its own clause; when that names
- * no job ("it's forecasting ..."), the nearest clause before it in the
- * sentence that names one, then after it ("Forecasting 15%, Torres Bath
- * ..."), then what the paragraph was last about ("MX02 is the one to watch.
+ * no job ("it's forecasting ...", "which is forecast ..."), the job named
+ * last before it in the sentence ("Smith Kitchen is ahead of Torres Bath,
+ * which is forecast ..." is about Torres Bath), or each job in a subject
+ * like "Ruiz Kitchen and Harborview" when that's the last thing named; then
+ * the first clause after it that names one ("Forecasting 15%, Torres Bath
+ * ..."); then what the paragraph was last about ("MX02 is the one to watch.
  * It's forecast to ...").
  */
 function phraseJobs(text: string, clauses: Clause[], names: NameSpan[], phrase: Clause, paragraphSubject: Tie): Tie {
@@ -400,9 +420,14 @@ function phraseJobs(text: string, clauses: Clause[], names: NameSpan[], phrase: 
     const own = clauseJobs(text, clauses[i], names, phrase);
     if (own) return own;
   }
-  for (let k = i - 1; k >= 0; k--) {
-    const tie = clauseJobs(text, clauses[k], names);
-    if (tie) return tie;
+  const before = names.filter((n) => n.end <= phrase.start);
+  if (before.length) {
+    const nearest = before[before.length - 1];
+    if (nearest.job == null) return "unclear";
+    const home = clauses.find((c) => nearest.start >= c.start && nearest.end <= c.end);
+    const tie = home ? clauseJobs(text, home, names) : null;
+    if (Array.isArray(tie) && tie.length > 1 && tie.includes(nearest.job)) return tie;
+    return [nearest.job];
   }
   for (let k = i + 1; k < clauses.length; k++) {
     const tie = clauseJobs(text, clauses[k], names);

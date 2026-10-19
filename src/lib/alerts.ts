@@ -120,14 +120,16 @@ export async function evaluateAlerts(
       lastFullSyncAt: true,
       fullSyncContinueAt: true,
       lastSyncError: true,
+      lastSyncStatus: true,
     },
   });
 
   // A full read of QuickBooks is partway (src/lib/syncProblem.ts): some
   // figures are read again and some aren't yet, so nothing is judged, sent
   // or settled until the run that finishes it. Nothing is lost: what's
-  // still true then is alerted then.
-  if (fullSyncPartway(connection)) return { pending: [], baseline: false, partway: true };
+  // still true then is alerted then. Not once the read's last try failed:
+  // a stuck read is put off again every time, and alerts stopped for good.
+  if (fullSyncPartway(connection) && connection.lastSyncStatus !== "error") return { pending: [], baseline: false, partway: true };
 
   // A company the plan doesn't cover (see planLimits.ts) gets no alert
   // emails. Its baseline is cleared, so the first run after it's covered

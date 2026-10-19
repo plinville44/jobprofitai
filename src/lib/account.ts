@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import type { QuickBooksConnection } from "@prisma/client";
 import { prisma } from "./prisma";
 import { getSession } from "./auth";
-import { getEntitlements } from "./entitlements";
+import { getEntitlements, pausedTeamLoginFor, teamLoginLimitState } from "./entitlements";
 import { REMOVED_ROLE } from "./teamRemoval";
 
 /**
@@ -31,6 +31,13 @@ export interface AccountContext {
   role: "owner" | "member" | "client";
   /** Client logins only: the one company they may see. Null for owners and members. */
   connectionId: string | null;
+  /**
+   * Set (true) for a team login paused because the account it joined is over
+   * its plan's login limit. It is shown an empty account of its own, but
+   * can't choose a plan, connect a company or invite anyone there
+   * (PAUSED_LOGIN_MESSAGE). Absent for everyone else.
+   */
+  paused?: true;
 }
 
 export async function getAccount(): Promise<AccountContext | null> {
@@ -60,63 +67,28 @@ export async function accountFor(userId: string): Promise<AccountContext> {
     }
     // A plan covers so many team logins. Past that (a trial that invited ten
     // people, then chose a plan with three) the logins who joined last are
-    // paused: they get an empty account of their own, like a removed login,
-    // and the dashboard says why (pausedTeamLoginFor).
-    if (!(await pausedTeamLogins(membership.ownerUserId)).paused.has(userId)) {
+    // paused: they see an empty account of their own, like a removed login,
+    // marked `paused` so nothing an owner does works there, and the
+    // dashboard says why (pausedLoginNoticeFor).
+    if (!(await teamLoginLimitState(membership.ownerUserId)).paused.has(userId)) {
       return { userId, ownerId: membership.ownerUserId, role: "member", connectionId: null };
     }
+    return { userId, ownerId: userId, role: "owner", connectionId: null, paused: true };
   }
   return { userId, ownerId: userId, role: "owner", connectionId: null };
 }
 
-export interface TeamLoginForLimit {
-  memberUserId: string | null;
-  acceptedAt: Date | null;
-  id: string;
-}
-
 /**
- * The team logins past a plan's limit: the plan covers the ones accepted
- * first, the same rule as companies (planLimits.ts). Pure, for tests.
+ * What the dashboard says to a team login paused by its account's limit:
+ * whose account it is and how many logins that plan covers. Null otherwise.
  */
-export function pausedTeamLoginIds(members: TeamLoginForLimit[], maxTeamMembers: number): Set<string> {
-  const sorted = members
-    .filter((m) => m.memberUserId && m.acceptedAt)
-    .sort((a, b) => a.acceptedAt!.getTime() - b.acceptedAt!.getTime() || a.id.localeCompare(b.id));
-  return new Set(sorted.slice(Math.max(0, maxTeamMembers)).map((m) => m.memberUserId!));
-}
-
-/** An account's paused team logins (by login id), and how many its plan covers. Client logins aside. */
-async function pausedTeamLogins(ownerId: string): Promise<{ paused: Set<string>; maxTeamMembers: number }> {
-  const [entitlements, members] = await Promise.all([
-    getEntitlements(ownerId),
-    prisma.teamMember.findMany({
-      where: { ownerUserId: ownerId, acceptedAt: { not: null }, role: { notIn: ["client", REMOVED_ROLE] } },
-      select: { id: true, memberUserId: true, acceptedAt: true },
-    }),
-  ]);
-  const maxTeamMembers = entitlements.limits.maxTeamMembers;
-  return { paused: pausedTeamLoginIds(members, maxTeamMembers), maxTeamMembers };
-}
-
-/**
- * For a team login paused because the account's plan has fewer logins than
- * its team: whose account it is and how many logins the plan covers, so the
- * dashboard can say so plainly. Null otherwise.
- */
-export async function pausedTeamLoginFor(
+export async function pausedLoginNoticeFor(
   userId: string
 ): Promise<{ ownerName: string | null; ownerEmail: string | null; maxTeamMembers: number } | null> {
-  const membership = await prisma.teamMember.findUnique({
-    where: { memberUserId: userId },
-    select: { ownerUserId: true, acceptedAt: true, role: true },
-  });
-  if (!membership?.acceptedAt || membership.role === "client" || membership.role === REMOVED_ROLE) return null;
-  if (membership.ownerUserId === userId) return null;
-  const { paused, maxTeamMembers } = await pausedTeamLogins(membership.ownerUserId);
-  if (!paused.has(userId)) return null;
-  const owner = await prisma.user.findUnique({ where: { id: membership.ownerUserId }, select: { name: true, email: true } });
-  return { ownerName: owner?.name ?? null, ownerEmail: owner?.email ?? null, maxTeamMembers };
+  const paused = await pausedTeamLoginFor(userId);
+  if (!paused) return null;
+  const owner = await prisma.user.findUnique({ where: { id: paused.ownerUserId }, select: { name: true, email: true } });
+  return { ownerName: owner?.name ?? null, ownerEmail: owner?.email ?? null, maxTeamMembers: paused.maxTeamMembers };
 }
 
 /**

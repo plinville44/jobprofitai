@@ -503,7 +503,7 @@ export function revenueByClass(
     ];
   }
   // What's still owed goes to the classes billed on the invoice, never to a
-  // class with only a credit on it. Shared by the positive classes alone, so
+  // class with only a credit on it (that one owes 0). Shared by the positive classes alone, so
   // together they are owed exactly the invoice's balance: by share of the
   // whole, a +$3,000 line for one job and a -$2,000 line for another with
   // $1,000 owed read as $3,000 owed on the first job.
@@ -525,7 +525,9 @@ export function revenueByClass(
       classQboId,
       amount: round2(whole.amount * share),
       tax: round2(whole.tax * share),
-      openBalance: owed.get(classQboId) ?? null,
+      // On an open invoice every class has a balance, if only 0: null reads
+      // as "not known yet" on Money Owed.
+      openBalance: whole.openBalance == null ? null : owed.get(classQboId) ?? 0,
       // Every class's share is part of the same invoice, due the same day.
       docNumber: whole.docNumber,
       dueDate: whole.dueDate,
@@ -539,8 +541,9 @@ export function revenueByClass(
 
 export interface NormalizedRevenueLine {
   lineId: string;
-  /** Null only for a class-mode line with the job's class and no customer. */
+  /** Null only for a class-mode line with the job's class and no customer, or with no class (withUnclassed). */
   customerQboId: string | null;
+  /** Null in class mode only for a line with no class, returned with withUnclassed for Data Health's count. */
   classQboId: string | null;
   /** Signed: money in to an income account is positive. */
   amount: number;
@@ -567,7 +570,13 @@ function isIncomeAccount(accountId: string | null, lookups: Lookups): boolean {
  * Lines to anything but an income account (a customer deposit held as a
  * liability, a transfer, a refund from a supplier) aren't revenue either.
  */
-export function depositRevenueLines(txn: any, lookups: Lookups, byClass = false): NormalizedRevenueLine[] {
+export function depositRevenueLines(
+  txn: any,
+  lookups: Lookups,
+  byClass = false,
+  /** Jobs by class: also return income lines with no class (classQboId null), so they can be counted as on no job. */
+  withUnclassed = false
+): NormalizedRevenueLine[] {
   const out: NormalizedRevenueLine[] = [];
   const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
   const rate = exchangeRate(txn);
@@ -581,7 +590,7 @@ export function depositRevenueLines(txn: any, lookups: Lookups, byClass = false)
     const classQboId = str(d.ClassRef?.value) ?? str(txn?.ClassRef?.value);
     // Jobs by class: income with the job's class counts whether or not a
     // customer is named, as it does in QuickBooks' report for that class.
-    if (byClass ? !classQboId || (entityType !== "" && entityType !== "customer") : !customerQboId) continue;
+    if (byClass ? (!classQboId && !withUnclassed) || (entityType !== "" && entityType !== "customer") : !customerQboId) continue;
     if (!isIncomeAccount(str(d.AccountRef?.value), lookups)) continue;
     const amount = num(line.Amount);
     if (amount === 0) continue;
@@ -601,7 +610,13 @@ export function depositRevenueLines(txn: any, lookups: Lookups, byClass = false)
  * adds income, a debit takes it away. (Cost lines on the same entry are
  * read by expenseLines.)
  */
-export function journalRevenueLines(txn: any, lookups: Lookups, byClass = false): NormalizedRevenueLine[] {
+export function journalRevenueLines(
+  txn: any,
+  lookups: Lookups,
+  byClass = false,
+  /** As for depositRevenueLines. */
+  withUnclassed = false
+): NormalizedRevenueLine[] {
   const out: NormalizedRevenueLine[] = [];
   const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
   const rate = exchangeRate(txn);
@@ -612,7 +627,7 @@ export function journalRevenueLines(txn: any, lookups: Lookups, byClass = false)
     const entityType = String(entity?.Type ?? "").toLowerCase();
     const customerQboId = entityType === "customer" ? str(entity?.EntityRef?.value) : null;
     const classQboId = str(d.ClassRef?.value);
-    if (byClass ? !classQboId || (entityType !== "" && entityType !== "customer") : !customerQboId) continue;
+    if (byClass ? (!classQboId && !withUnclassed) || (entityType !== "" && entityType !== "customer") : !customerQboId) continue;
     if (!isIncomeAccount(str(d.AccountRef?.value), lookups)) continue;
     const raw = num(line.Amount);
     if (raw === 0) continue;
@@ -639,7 +654,9 @@ export function expenseRevenueLines(
   txn: any,
   sourceType: "Purchase" | "Bill" | "VendorCredit",
   lookups: Lookups,
-  byClass = false
+  byClass = false,
+  /** As for depositRevenueLines. */
+  withUnclassed = false
 ): NormalizedRevenueLine[] {
   const out: NormalizedRevenueLine[] = [];
   const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
@@ -651,7 +668,7 @@ export function expenseRevenueLines(
     if (!isIncomeAccount(str(d.AccountRef?.value), lookups)) continue;
     const customerQboId = str(d.CustomerRef?.value);
     const classQboId = str(d.ClassRef?.value) ?? str(txn?.ClassRef?.value);
-    if (byClass ? !classQboId : !customerQboId) continue;
+    if (byClass ? !classQboId && !withUnclassed : !customerQboId) continue;
     const raw = num(line.Amount);
     if (raw === 0) continue;
     out.push({

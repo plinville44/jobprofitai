@@ -908,9 +908,10 @@ export interface DataHealthReport {
   countsAsOf: Date | null;
   possibleDuplicates: { jobName: string; amount: number; date: string; jobId: string }[];
   /**
-   * Jobs with labor from timesheets AND labor from journal entries (a
-   * payroll that posts to jobs) or from checks, expenses or bills to a labor
-   * account (see findDoubleLabor). Usually the same wages counted twice.
+   * Jobs to check: labor from timesheets AND wages from journal entries (a
+   * payroll that posts to jobs) or from checks, expenses or bills to an
+   * account named for payroll or wages (see findDoubleLabor). Can be the
+   * same wages counted twice; worth a look, not a certain duplicate.
    */
   jobsWithDoubleLabor: { jobId: string; jobName: string }[];
   overallConfidence: DataConfidence;
@@ -1395,23 +1396,35 @@ const estimateOrNull = (d: Prisma.Decimal | null | undefined): number | null => 
   return n > 0 ? n : null;
 };
 
-/** Labor rows that aren't timesheets: payroll journal entries, and checks, expenses and bills to a labor account. */
-const NON_TIMESHEET_LABOR_SOURCES = new Set(["JournalEntry", "Purchase", "Bill"]);
+/**
+ * Whether an account name says it holds wages: payroll, wages or salaries,
+ * as whole words. "Labor" alone doesn't count: QuickBooks' own "Cost of
+ * Labor" account and names like "Temp labor" take agency and sub bills too.
+ * The stored cost rows carry the account's name only, not its detail type,
+ * so the name is all there is to go on.
+ */
+function isWagesAccountName(name: string | null | undefined): boolean {
+  const n = ` ${(name ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ")} `;
+  return ["payroll", "wage", "wages", "salary", "salaries"].some((w) => n.includes(` ${w} `));
+}
 
 /**
- * Jobs carrying labor from both timesheets and another source: a journal
- * entry (a payroll service posting wages to jobs), or a check, expense or
- * bill to a labor account (wages paid by check, or a payroll bill). Either,
- * plus timesheets costed at their cost rates, counts the same hours twice.
- * Subcontractor bills aren't labor here (they're categorized subcontractor),
- * so a sub on a job with a crew isn't flagged. Only rows from the last year
- * are looked at.
+ * Jobs to check for labor counted twice: labor from timesheets AND wages
+ * from another source on the same job. The other source is a journal entry
+ * (a payroll service posting wages to jobs), or a check, expense or bill to
+ * an account named for payroll or wages (wages paid by check, a payroll
+ * bill). Either, plus timesheets costed at their cost rates, can count the
+ * same hours twice. A check or bill to a plain labor account isn't enough:
+ * a temp agency or a sub billed to "Cost of Labor" is real cost on top of
+ * the crew's hours. Subcontractor lines aren't labor here either. Only rows
+ * from the last year are looked at. It's a list to check, not a finding:
+ * the two can be different people's time.
  */
 export function findDoubleLabor(
   jobs: {
     id: string;
     name: string;
-    costEntries: { qboSourceType: string; category: string; txnDate: Date }[];
+    costEntries: { qboSourceType: string; category: string; txnDate: Date; accountName?: string | null }[];
   }[],
   now: Date = new Date()
 ): DataHealthReport["jobsWithDoubleLabor"] {
@@ -1419,13 +1432,14 @@ export function findDoubleLabor(
   const out: DataHealthReport["jobsWithDoubleLabor"] = [];
   for (const job of jobs) {
     let timesheet = false;
-    let paidElsewhere = false;
+    let wagesElsewhere = false;
     for (const c of job.costEntries) {
       if (c.txnDate.getTime() < since || c.category !== "labor") continue;
       if (c.qboSourceType === "TimeActivity") timesheet = true;
-      else if (NON_TIMESHEET_LABOR_SOURCES.has(c.qboSourceType)) paidElsewhere = true;
+      else if (c.qboSourceType === "JournalEntry") wagesElsewhere = true;
+      else if ((c.qboSourceType === "Purchase" || c.qboSourceType === "Bill") && isWagesAccountName(c.accountName)) wagesElsewhere = true;
     }
-    if (timesheet && paidElsewhere) out.push({ jobId: job.id, jobName: job.name });
+    if (timesheet && wagesElsewhere) out.push({ jobId: job.id, jobName: job.name });
   }
   return out;
 }

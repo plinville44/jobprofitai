@@ -36,15 +36,33 @@ export function fullSyncTooLong(c: { lastSyncError?: string | null }): boolean {
 }
 
 /**
- * Whether a full read of the company's QuickBooks data is partway: one is
- * owed or stopped between steps (fullSyncContinueAt is set), and it isn't the
+ * fullSyncContinueAt for a full read that is owed but has nothing read yet:
+ * QuickBooks' change feed failed, or the read was put off to the start of
+ * the next run before it began. The epoch, so it's first in line for the
+ * nightly sync's full-sync slot. The stored figures are as the last sync
+ * left them, whole, so nothing waits for it. No other value means this: a
+ * read that has saved progress is given a real time, or FULL_SYNC_PARTWAY_FIRST_AT.
+ */
+export const FULL_SYNC_OWED_AT = new Date(0);
+/** First in line as well, for a read put off partway through (it has saved progress). */
+export const FULL_SYNC_PARTWAY_FIRST_AT = new Date(1);
+
+/** A full read is owed and none of it has been read yet (see FULL_SYNC_OWED_AT). Pure. */
+export function fullSyncOwed(c: { fullSyncContinueAt?: Date | null }): boolean {
+  return c.fullSyncContinueAt != null && c.fullSyncContinueAt.getTime() === FULL_SYNC_OWED_AT.getTime();
+}
+
+/**
+ * Whether a full read of the company's QuickBooks data is partway: it has
+ * read and saved at least one step and stopped before the last
+ * (fullSyncContinueAt is set, and isn't FULL_SYNC_OWED_AT), and it isn't the
  * once-a-day case above. Some data types are then read and others not yet,
  * so on a first sync jobs show costs with no invoices, and on a later one
  * some figures are older than others. Anything that judges the figures (the
  * weekly brief, alerts, the WIP report) should wait while this is true. Pure.
  */
 export function fullSyncPartway(c: { fullSyncContinueAt?: Date | null; lastSyncError?: string | null }): boolean {
-  return c.fullSyncContinueAt != null && !fullSyncTooLong(c);
+  return c.fullSyncContinueAt != null && !fullSyncOwed(c) && !fullSyncTooLong(c);
 }
 
 export function syncProblemFor(

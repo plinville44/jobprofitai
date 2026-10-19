@@ -904,10 +904,11 @@ describe("a repeat client's first project, seeded and synced", () => {
     const old = qb.create("Invoice", { CustomerRef: { value: lena }, TxnDate: dayStr(730), Line: sale(40_000) });
     old.Balance = 0;
     qb.create("Bill", { VendorRef: { value: supply }, TxnDate: dayStr(730), Line: cost(28_000, lena) });
-    qb.create("Estimate", { CustomerRef: { value: lena }, TxnDate: dayStr(740), TxnStatus: "Closed", Line: sale(40_000) });
-    // The new project, created today, with its own estimate, cost and invoice.
+    // The new job's estimate, bid on the customer three months ago, before
+    // there was a project to put it on.
+    qb.create("Estimate", { CustomerRef: { value: lena }, TxnDate: dayStr(90), TxnStatus: "Accepted", Line: sale(15_000) });
+    // The new project, created today, with its own cost and invoice.
     const project = qb.create("Customer", { DisplayName: "Bathroom 2026 (test)", ParentRef: { value: lena }, Job: true }).Id;
-    qb.create("Estimate", { CustomerRef: { value: project }, TxnDate: dayStr(3), TxnStatus: "Accepted", Line: sale(15_000) });
     qb.create("Purchase", { PaymentType: "Cash", AccountRef: { value: acct("Checking") }, EntityRef: { value: supply, type: "Vendor" }, TxnDate: dayStr(2), Line: cost(2_000, project) });
     qb.create("Invoice", { CustomerRef: { value: project }, TxnDate: dayStr(1), Line: sale(5_000) });
     // Materials bought on the customer a week before the project was set up: this job's.
@@ -917,7 +918,7 @@ describe("a repeat client's first project, seeded and synced", () => {
     bath = (await getJobProfitData(jobByName("Bathroom 2026 (test)").id, new Date()))!;
   });
 
-  it("shows the project its own revenue, cost and contract only", () => {
+  it("shows the project its own revenue and cost only, and the contract from the estimate made before it", () => {
     expect([bath.financials.revenue, Math.round(bath.financials.costs * 100) / 100]).toEqual([5_000, 2_400]);
     expect(jobByName("Bathroom 2026 (test)").estimatedRevenue).toBe(15_000);
     const stored = (fake.client as any).costEntry.rows.filter((c: any) => c.jobId === jobByName("Bathroom 2026 (test)").id);

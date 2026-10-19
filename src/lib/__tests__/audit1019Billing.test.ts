@@ -37,6 +37,7 @@ class FakeStripe {
     retrieve: async (id: string) => {
       const s = stripeState.subscriptions.get(id);
       if (!s) throw missing("subscription", id);
+      if (s.retrieveError) throw Object.assign(new Error("An error occurred with our connection to Stripe."), { type: "StripeConnectionError" });
       return copy(s);
     },
     list: async ({ customer }: Obj) => ({
@@ -165,7 +166,7 @@ vi.mock("next/server", () => {
   };
 });
 
-const auth = { session: null as null | { userId: string }, created: [] as string[], revoked: [] as string[] };
+const auth = { session: null as null | { userId: string }, created: [] as string[], revoked: [] as string[], passwordChecks: 0 };
 vi.mock("@/lib/auth", () => ({
   createSession: async (userId: string) => {
     auth.created.push(userId);
@@ -174,7 +175,10 @@ vi.mock("@/lib/auth", () => ({
   },
   getSession: async () => auth.session,
   hashPassword: async (p: string) => `hashed:${p}`,
-  verifyPassword: async (p: string, hash: string) => hash === `hashed:${p}`,
+  verifyPassword: async (p: string, hash: string) => {
+    auth.passwordChecks++;
+    return hash === `hashed:${p}`;
+  },
   clearSession: async () => {
     auth.session = null;
   },
@@ -275,13 +279,12 @@ import { encodeSource } from "../adSource";
 import { getStripe } from "../stripe/client";
 import { CLAIM_IN_PROGRESS_PREFIX, EventInProgressError, processStripeEvent, storedStatusFor } from "../stripe/webhookHandlers";
 import { UNPAID_SUBSCRIPTION_MESSAGE, isLiveSubscriptionStatus, secondCheckoutDecision } from "../stripe/duplicateSubscription";
-import { cancelFailureBlocksDeletion } from "../stripe/billing";
-import { accountFor, pausedTeamLoginFor, pausedTeamLoginIds } from "../account";
-import { acceptInvite, createInvite, teamLoginsInUse } from "../team";
+import { accountFor, pausedLoginNoticeFor } from "../account";
+import { acceptInvite, createInvite, listTeam, OWN_PLAN_JOIN_MESSAGE, teamLoginsInUse } from "../team";
 import { planFit, teamLoginsMisfit } from "../planLimits";
-import { getEntitlements } from "../entitlements";
+import { canConnectAnotherCompany, getEntitlements, PAUSED_LOGIN_MESSAGE, pausedTeamLoginIds } from "../entitlements";
 import { computeTrialState, expireFinishedTrials } from "../trial";
-import { clearFailedLogins, emailKey, ipKey, loginLock, SIGNUPS_PER_IP_PER_HOUR } from "../loginThrottle";
+import { clearFailedLogins, emailKey, isLockedOut, SIGNUPS_PER_IP_PER_HOUR, signupKey } from "../loginThrottle";
 import { hashToken } from "../passwordReset";
 import { handleIntuitFlow, INTUIT_PENDING_COOKIE, OIDC_NONCE_COOKIE, startIntuitFlow } from "../intuitSignIn";
 import { europeanTimeZone } from "../tracking";
@@ -392,6 +395,7 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
     auth.session = null;
     auth.created = [];
     auth.revoked = [];
+    auth.passwordChecks = 0;
     sent.length = 0;
     timeline.length = 0;
     attached.length = 0;
@@ -522,13 +526,48 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
       await seedTeam({ status: "active", stripeSubscriptionId: "sub_o" }, 4);
       expect(await accountFor("m1")).toEqual({ userId: "m1", ownerId: "owner", role: "member", connectionId: null });
       expect(await accountFor("m3")).toMatchObject({ ownerId: "owner", role: "member" });
-      // The $149 plan has 3 logins: the fourth to join gets an empty account of its own.
-      expect(await accountFor("m4")).toEqual({ userId: "m4", ownerId: "m4", role: "owner", connectionId: null });
-      expect(await pausedTeamLoginFor("m4")).toEqual({ ownerName: "Sam Builder", ownerEmail: "owner@example.com", maxTeamMembers: 3 });
-      expect(await pausedTeamLoginFor("m1")).toBeNull();
+      // The $149 plan has 3 logins: the fourth to join gets an empty account
+      // of its own, marked paused.
+      expect(await accountFor("m4")).toEqual({ userId: "m4", ownerId: "m4", role: "owner", connectionId: null, paused: true });
+      expect(await pausedLoginNoticeFor("m4")).toEqual({ ownerName: "Sam Builder", ownerEmail: "owner@example.com", maxTeamMembers: 3 });
+      expect(await pausedLoginNoticeFor("m1")).toBeNull();
       const layout = flat("app/dashboard/layout.tsx");
-      expect(layout).toContain('account.role === "owner" ? pausedTeamLoginFor(account.userId) : null');
+      expect(layout).toContain("account.paused ? pausedLoginNoticeFor(account.userId) : null");
       expect(layout).toContain("<PausedLoginNotice");
+    });
+
+    it("shows the owner who is paused, by the same ranking", async () => {
+      await seedTeam({ status: "active", stripeSubscriptionId: "sub_o" }, 4, 1);
+      const team = await listTeam("owner");
+      expect(team.filter((r) => r.paused).map((r) => r.email)).toEqual(["m4@example.com"]);
+      // Agrees with accountFor for every member.
+      for (const r of team.filter((row) => row.status === "active")) {
+        const id = r.email.split("@")[0];
+        expect(Boolean((await accountFor(id)).paused)).toBe(r.paused);
+      }
+      expect(flat("app/dashboard/settings/TeamSection.tsx")).toContain("Paused: over your plan's ${entitlements.limits.maxTeamMembers} logins");
+      expect(flat("app/dashboard/settings/TeamManager.tsx")).toContain("{row.pausedNote}");
+      const billing = flat("app/dashboard/billing/page.tsx");
+      expect(billing).toContain('title="Some team logins are paused"');
+      expect(billing).toContain("const pausedLogins = joinedLogins.filter((r) => r.paused);");
+      // The Pro to $149 warning counts logins as well as companies.
+      expect(billing).toContain("(downgradePauses > 0 || downgradeLoginPauses > 0)");
+    });
+
+    it("won't let a paused login check out, connect a company or invite people", async () => {
+      await seedTeam({ status: "active", stripeSubscriptionId: "sub_o" }, 4);
+      await fake.client.user.update({ where: { id: "m4" }, data: { emailVerifiedAt: new Date() } });
+      auth.session = { userId: "m4" };
+      const res: any = await checkout(post({ plan: "profit_intelligence" }));
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe(PAUSED_LOGIN_MESSAGE);
+      expect(await canConnectAnotherCompany("m4")).toMatchObject({ allowed: false, reason: PAUSED_LOGIN_MESSAGE });
+      expect(await createInvite("m4", "friend@example.com")).toEqual({ ok: false, error: PAUSED_LOGIN_MESSAGE, status: 403 });
+      expect(PAUSED_LOGIN_MESSAGE).toBe(
+        "Your login is paused because the account you joined is over its plan's login limit. Ask the owner to free a seat or move up a plan."
+      );
+      // A member inside the limit is unaffected.
+      expect((await canConnectAnotherCompany("m1")).reason).not.toBe(PAUSED_LOGIN_MESSAGE);
     });
 
     it("lets everyone in on a plan (or trial) that covers them", async () => {
@@ -640,30 +679,44 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
       expect(reported).toHaveLength(1);
     });
 
-    it("goes ahead when the subscription is already canceled or missing", async () => {
+    it("goes ahead when Stripe says the subscription doesn't exist", async () => {
       await seedDeletable();
+      stripeState.subscriptions.delete("sub_live");
       stripeState.cancelError = missing("subscription", "sub_live");
       expect(((await deleteAccount(confirm())) as any).status).toBe(200);
       expect(await fake.client.user.count()).toBe(0);
       expect(reported).toHaveLength(0);
     });
 
-    it("goes ahead when the error is unclear but Stripe says the subscription has ended", async () => {
+    it.each(["canceled", "incomplete_expired"])("goes ahead when Stripe says the subscription is %s", async (status: string) => {
       await seedDeletable();
-      stripeState.subscriptions.get("sub_live")!.status = "canceled";
+      stripeState.subscriptions.get("sub_live")!.status = status;
       stripeState.cancelError = new Error("Something went wrong");
       expect(((await deleteAccount(confirm())) as any).status).toBe(200);
       expect(await fake.client.user.count()).toBe(0);
     });
 
-    it("only blocks while the subscription on file may still charge", () => {
-      const err = new Error("timeout");
-      expect(cancelFailureBlocksDeletion("active", err)).toBe(true);
-      expect(cancelFailureBlocksDeletion("past_due", err)).toBe(true);
-      expect(cancelFailureBlocksDeletion("trialing", err)).toBe(true);
-      expect(cancelFailureBlocksDeletion("canceled", err)).toBe(false);
-      expect(cancelFailureBlocksDeletion("active", missing("subscription", "x"))).toBe(false);
-      expect(cancelFailureBlocksDeletion("active", new Error("A canceled subscription can only update its cancellation_details and metadata."))).toBe(false);
+    it.each(["canceled", "unpaid", "incomplete", "paused", "trial_expired", "past_due"])(
+      "asks Stripe whatever the stored status (%s), and refuses while it may still charge",
+      async (stored: string) => {
+        await seedDeletable();
+        // The row says one thing; Stripe says the subscription is still live.
+        await fake.client.subscription.update({ where: { userId: "u1" }, data: { status: stored } });
+        stripeState.subscriptions.get("sub_live")!.status =
+          stored === "canceled" ? "active" : stored === "trial_expired" ? "trialing" : stored;
+        stripeState.cancelError = new Error("This subscription can't be cancelled right now.");
+        const res: any = await deleteAccount(confirm());
+        expect(res.status).toBe(502);
+        expect(await fake.client.user.count()).toBe(1);
+      }
+    );
+
+    it("refuses when Stripe can't be reached to check", async () => {
+      await seedDeletable();
+      stripeState.cancelError = new Error("timeout");
+      stripeState.subscriptions.get("sub_live")!.retrieveError = true;
+      const res: any = await deleteAccount(confirm());
+      expect(res.status).toBe(502);
     });
   });
 
@@ -762,7 +815,32 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
       expect(await fake.client.user.findFirst({ where: { email: "person99@example.com" } })).toBeNull();
       expect(emails.filter((e) => e === "email_verification")).toHaveLength(SIGNUPS_PER_IP_PER_HOUR);
       expect(((await signup(form(100, "8.8.8.8"))) as any).status).toBe(200);
-      expect(await loginLock("person1@example.com", "9.9.9.9")).toBe("open");
+      expect(await isLockedOut("person1@example.com", "9.9.9.9")).toBe(false);
+    });
+
+    it("can't be got round by sending signups at once", async () => {
+      // Started a moment apart, so their steps interleave every which way.
+      const results: any[] = await Promise.all(
+        Array.from({ length: 25 }, async (_, i) => {
+          for (let k = 0; k < i * 3; k++) await null;
+          return signup(form(200 + i, "7.7.7.7"));
+        })
+      );
+      const created = results.filter((r) => r.status === 200).length;
+      expect(created).toBeGreaterThan(0);
+      expect(created).toBeLessThanOrEqual(SIGNUPS_PER_IP_PER_HOUR);
+      expect(results.filter((r) => r.status === 429).length).toBe(25 - created);
+      expect(emails.filter((e) => e === "email_verification")).toHaveLength(created);
+      // Refused ones give their place back, so only real signups are counted.
+      expect(await fake.client.loginAttempt.count({ where: { emailHash: signupKey("7.7.7.7") } })).toBe(created);
+    });
+
+    it("gives the place back when no account is created", async () => {
+      await fake.client.user.create({ data: { id: "taken", email: "person1@example.com" } });
+      for (let i = 0; i < SIGNUPS_PER_IP_PER_HOUR + 2; i++) {
+        expect(((await signup(form(1, "6.6.6.6"))) as any).status).toBe(409);
+      }
+      expect(((await signup(form(2, "6.6.6.6"))) as any).status).toBe(200);
     });
   });
 
@@ -775,14 +853,59 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
       await fake.client.subscription.create({
         data: { userId: "pm", status: "trialing", stripeCustomerId: "cus_pm", trialEndsAt: new Date(Date.now() + 9 * DAY) },
       });
-      stripeState.sessions.set("cs_open", { id: "cs_open", customer: "cus_pm", status: "open" });
-      stripeState.sessions.set("cs_done", { id: "cs_done", customer: "cus_pm", status: "complete" });
+      stripeState.sessions.set("cs_open", { id: "cs_open", customer: "cus_pm", status: "open", created: nowSeconds() - 600 });
+      // A checkout finished two hours ago whose subscription has since ended.
+      stripeState.sessions.set("cs_done", { id: "cs_done", customer: "cus_pm", status: "complete", created: nowSeconds() - 7200 });
       const invite = await createInvite("owner", "pm@example.com");
       if (!invite.ok) throw new Error(invite.error);
       expect((await acceptInvite(invite.token, "pm")).ok).toBe(true);
       const row = await fake.client.subscription.findUnique({ where: { userId: "pm" } });
       expect(row).toMatchObject({ status: "none", stripeCustomerId: "cus_pm", trialEndsAt: null });
       expect(stripeState.expired).toEqual(["cs_open"]);
+    });
+
+    describe("6 (review). a login that has just paid for its own plan", () => {
+      async function seedJoiner() {
+        await fake.client.user.create({ data: { id: "owner", email: "owner@example.com", name: "Sam Builder", emailVerifiedAt: new Date() } });
+        await fake.client.subscription.create({ data: { userId: "owner", status: "trialing", trialEndsAt: new Date(Date.now() + 5 * DAY) } });
+        await fake.client.user.create({ data: { id: "pm", email: "pm@example.com" } });
+        // Our row hasn't heard from the webhook yet: still the trial.
+        await fake.client.subscription.create({
+          data: { userId: "pm", status: "trialing", stripeCustomerId: "cus_pm", trialEndsAt: new Date(Date.now() + 9 * DAY) },
+        });
+        const invite = await createInvite("owner", "pm@example.com");
+        if (!invite.ok) throw new Error(invite.error);
+        return invite.token;
+      }
+
+      it("can't join while Stripe has a live subscription for it", async () => {
+        const token = await seedJoiner();
+        stripeState.subscriptions.set("sub_pm", stripeSubscription("sub_pm", { customer: "cus_pm" }));
+        expect(await acceptInvite(token, "pm")).toEqual({ ok: false, error: OWN_PLAN_JOIN_MESSAGE, status: 409 });
+        expect(await fake.client.teamMember.findFirst({ where: { memberUserId: "pm" } })).toBeNull();
+        // Its own billing row is left as it was.
+        expect((await fake.client.subscription.findUnique({ where: { userId: "pm" } })).status).toBe("trialing");
+      });
+
+      it("can't join while a checkout it completed in the last hour is still going through", async () => {
+        const token = await seedJoiner();
+        stripeState.sessions.set("cs_paid", { id: "cs_paid", customer: "cus_pm", status: "complete", created: nowSeconds() - 60, subscription: "sub_new" });
+        expect(await acceptInvite(token, "pm")).toMatchObject({ ok: false, status: 409 });
+      });
+
+      it("isn't let in when Stripe can't be asked", async () => {
+        const token = await seedJoiner();
+        const stripe: any = getStripe();
+        const real = stripe.subscriptions.list;
+        stripe.subscriptions.list = async () => {
+          throw new Error("Stripe is down");
+        };
+        try {
+          expect(await acceptInvite(token, "pm")).toMatchObject({ ok: false, status: 503 });
+        } finally {
+          stripe.subscriptions.list = real;
+        }
+      });
     });
 
     it("still drops the trial row of a login that never started a checkout", async () => {
@@ -808,15 +931,26 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
 
   // -------------------------------------------------------------------------
   describe("9. an unpaid subscription", () => {
-    it("counts as live, so no second subscription can start beside it", async () => {
+    it("counts as live in Stripe, so no second subscription can start beside it", async () => {
       expect(isLiveSubscriptionStatus("unpaid")).toBe(true);
       const decision = secondCheckoutDecision([{ id: "sub_u", status: "unpaid", created: 1 }], [], 2);
       expect(decision).toEqual({ block: true, message: UNPAID_SUBSCRIPTION_MESSAGE });
       await seedPayer({ status: "unpaid", stripeSubscriptionId: "sub_u" });
+      stripeState.subscriptions.set("sub_u", stripeSubscription("sub_u", { status: "unpaid" }));
       auth.session = { userId: "u1" };
       const res: any = await checkout(post({ plan: "profit_intelligence" }));
       expect(res.status).toBe(409);
       expect(res.body.error).toBe(UNPAID_SUBSCRIPTION_MESSAGE);
+    });
+
+    it("doesn't trust a stale stored 'unpaid': one Stripe has canceled can check out", async () => {
+      await seedPayer({ status: "unpaid", stripeSubscriptionId: "sub_u" });
+      stripeState.subscriptions.set("sub_u", stripeSubscription("sub_u", { status: "canceled" }));
+      auth.session = { userId: "u1" };
+      const res: any = await checkout(post({ plan: "profit_intelligence" }));
+      expect(res.status).toBe(200);
+      expect(res.body.url).toContain("checkout.stripe.test");
+      expect(flat("app/dashboard/billing/page.tsx")).not.toContain("unpaidReason");
     });
   });
 
@@ -824,42 +958,61 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
   describe("10. someone else's wrong passwords", () => {
     const attempt = (password: string, ip: string) => login(post({ email: "owner@example.com", password }, { "x-forwarded-for": ip })) as Promise<any>;
 
-    it("lock the address, but a correct password from a clean network address still gets in", async () => {
+    it("lock the address for every network address after 8, checked before the password", async () => {
       await seedPayer();
-      for (let i = 0; i < 8; i++) expect((await attempt("wrong", "1.1.1.1")).status).toBe(401);
-      expect((await attempt("right-password", "1.1.1.1")).status).toBe(429);
-      expect(await loginLock("owner@example.com", "2.2.2.2")).toBe("correct_only");
-      const ok = await attempt("right-password", "2.2.2.2");
-      expect(ok.status).toBe(200);
-      expect(auth.created).toEqual(["u1"]);
-      // A wrong guess from a fresh address is answered as locked, and that
-      // address is then locked too.
-      expect((await attempt("wrong", "3.3.3.3")).status).toBe(429);
-      expect((await attempt("right-password", "3.3.3.3")).status).toBe(429);
+      for (let i = 0; i < 8; i++) expect((await attempt("wrong", `1.1.1.${i}`)).status).toBe(401);
+      expect(auth.passwordChecks).toBe(8);
+      // Strict: even the right password from an address with no failures waits.
+      expect((await attempt("right-password", "2.2.2.2")).status).toBe(429);
+      expect(auth.passwordChecks).toBe(8);
+      expect(auth.created).toEqual([]);
+      expect(await isLockedOut("owner@example.com", "2.2.2.2")).toBe(true);
     });
 
-    it("stay locked for everyone once guesses come from many machines", async () => {
-      for (let i = 0; i < 30; i++) {
-        await fake.client.loginAttempt.create({ data: { emailHash: emailKey("owner@example.com"), ipHash: ipKey(`5.5.5.${i}`), success: false } });
-      }
-      expect(await loginLock("owner@example.com", "6.6.6.6")).toBe("locked");
+    it("can't be got round by sending guesses at once", async () => {
+      await seedPayer();
+      const results: any[] = await Promise.all(
+        Array.from({ length: 20 }, async (_, i) => {
+          for (let k = 0; k < i * 3; k++) await null;
+          return attempt("wrong", `3.3.${i}.1`);
+        })
+      );
+      expect(auth.passwordChecks).toBeGreaterThan(0);
+      expect(auth.passwordChecks).toBeLessThanOrEqual(8);
+      expect(results.filter((r) => r.status === 401).length).toBe(auth.passwordChecks);
+      // Refused requests aren't counted as guesses.
+      expect(await fake.client.loginAttempt.count({ where: { emailHash: emailKey("owner@example.com"), success: false } })).toBe(
+        auth.passwordChecks
+      );
     });
 
-    it("are forgotten after a password reset", async () => {
+    it("count a right password as a success, not a failure", async () => {
+      await seedPayer();
+      for (let i = 0; i < 7; i++) await attempt("wrong", "4.4.4.4");
+      expect((await attempt("right-password", "4.4.4.4")).status).toBe(200);
+      expect(await isLockedOut("owner@example.com", "4.4.4.4")).toBe(false);
+    });
+
+    it("are forgotten after a password reset, the customer's way back in", async () => {
       await seedPayer();
       for (let i = 0; i < 8; i++) await attempt("wrong", "1.1.1.1");
-      expect(await loginLock("owner@example.com", "1.1.1.1")).toBe("locked");
+      expect((await attempt("right-password", "1.1.1.1")).status).toBe(429);
       await fake.client.passwordResetToken.create({
         data: { userId: "u1", tokenHash: hashToken("reset-token-123"), expiresAt: new Date(Date.now() + 3_600_000) },
       });
       const res: any = await resetPassword(post({ token: "reset-token-123", password: "new-password-1" }));
       expect(res.body).toEqual({ ok: true });
-      expect(await loginLock("owner@example.com", "1.1.1.1")).toBe("open");
+      expect(await isLockedOut("owner@example.com", "1.1.1.1")).toBe(false);
+      expect((await attempt("new-password-1", "1.1.1.1")).status).toBe(200);
       await clearFailedLogins("nobody@example.com"); // harmless for an address with none
     });
 
     it("lock the Intuit link form the same way", async () => {
-      expect(flat("app/api/auth/intuit/link/route.ts")).toContain('return lock === "correct_only" ? lockedOut');
+      const link = flat("app/api/auth/intuit/link/route.ts");
+      expect(link).toContain("const attempt = await startLoginAttempt(email, ip); if (attempt.locked) {");
+      expect(link).toContain("await finishLoginAttempt(attempt.attemptId, valid);");
+      expect(link).not.toContain("correct_only");
+      expect(flat("app/api/auth/login/route.ts")).not.toContain("correct_only");
     });
   });
 
@@ -983,6 +1136,27 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
       // The member's own login went; the owner's companies were not touched otherwise.
       expect(await fake.client.user.findUnique({ where: { id: "pm" } })).toBeNull();
       expect(intuit.revoked).toBe(0);
+    });
+
+    it("leaves another account's lists alone for a login that was removed from it, or never joined", async () => {
+      await fake.client.user.create({ data: { id: "owner", email: "owner@example.com" } });
+      // The owner added the address back to a brief by hand after removing the login.
+      await fake.client.quickBooksConnection.create({
+        data: { id: "c1", userId: "owner", realmIdHash: "h1", refreshToken: "rt", emailRecipients: ["pm@example.com"], emailEnabled: true },
+      });
+      await fake.client.user.create({ data: { id: "pm", email: "pm@example.com", passwordHash: "hashed:pm-password" } });
+      await fake.client.teamMember.create({
+        data: { ownerUserId: "owner", email: "pm@example.com", memberUserId: "pm", tokenHash: "t", role: "removed", acceptedAt: null, expiresAt: new Date() },
+      });
+      auth.session = { userId: "pm" };
+      expect(((await deleteAccount(post({ password: "pm-password", confirm: "DELETE" }))) as any).status).toBe(200);
+      expect(await fake.client.quickBooksConnection.findUnique({ where: { id: "c1" } })).toMatchObject({
+        emailRecipients: ["pm@example.com"],
+        emailEnabled: true,
+      });
+      expect(flat("app/api/account/delete/route.ts")).toContain(
+        "if (membership?.acceptedAt && membership.role !== REMOVED_ROLE && membership.ownerUserId !== user.id) {"
+      );
     });
   });
 });

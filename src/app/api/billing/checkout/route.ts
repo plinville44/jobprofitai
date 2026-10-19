@@ -3,8 +3,7 @@ import { getAccount, refuseClient } from "@/lib/account";
 import { PLANS, isPlanId } from "@/lib/plans";
 import { prisma } from "@/lib/prisma";
 import { CheckoutBlockedError, createCheckoutSession } from "@/lib/stripe/billing";
-import { UNPAID_SUBSCRIPTION_MESSAGE } from "@/lib/stripe/duplicateSubscription";
-import { getEntitlements } from "@/lib/entitlements";
+import { getEntitlements, PAUSED_LOGIN_MESSAGE } from "@/lib/entitlements";
 import { teamLoginsMisfit } from "@/lib/planLimits";
 import { teamLoginsInUse } from "@/lib/team";
 import { reportServerEvent } from "@/lib/serverEvents";
@@ -28,6 +27,11 @@ export async function POST(req: NextRequest) {
     if (account.role !== "owner") {
       return NextResponse.json({ error: "Only the account owner can change the plan." }, { status: 403 });
     }
+    // A paused team login sees an empty account of its own; a plan for it
+    // would be paid for nothing while it still belongs to another team.
+    if (account.paused) {
+      return NextResponse.json({ error: PAUSED_LOGIN_MESSAGE }, { status: 403 });
+    }
 
     const body = await req.json().catch(() => ({}));
     const plan = body?.plan;
@@ -40,8 +44,10 @@ export async function POST(req: NextRequest) {
     // from paying customers; this is the server-side rule behind that.
     // Our own row only learns of a payment from Stripe's webhook, so
     // createCheckoutSession also asks Stripe (a checkout paid moments ago in
-    // another tab), and the webhook cancels and refunds a second
-    // subscription that still gets through.
+    // another tab, or a subscription left unpaid), and the webhook cancels
+    // and refunds a second subscription that still gets through. An "unpaid"
+    // row here isn't refused on its own: it can be stale, and Stripe's
+    // answer is the one that counts.
     const entitlements = await getEntitlements(account.ownerId);
     if (entitlements.access === "complimentary") {
       return NextResponse.json(
@@ -54,12 +60,6 @@ export async function POST(req: NextRequest) {
         { error: "You already have a subscription. Use Manage Billing to switch plans." },
         { status: 409 }
       );
-    }
-    // An unpaid subscription (Stripe stopped retrying) is still there and
-    // can still be paid, so a second one could bill twice. paymentIssue on
-    // an inactive account means exactly that status (entitlements.ts).
-    if (entitlements.paymentIssue) {
-      return NextResponse.json({ error: UNPAID_SUBSCRIPTION_MESSAGE }, { status: 409 });
     }
 
     // A plan must cover the companies already connected. Without this, an
