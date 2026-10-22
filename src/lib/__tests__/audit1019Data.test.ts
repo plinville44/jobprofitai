@@ -180,6 +180,7 @@ describe("3 and 4. a weekly run says what went wrong, once per kind", () => {
       summariesMissing: 3,
       summaryFailureKinds: { refused: 2, timeout: 1 },
       firstRefusal: "400 inference_geo is not supported for this model",
+      firstOther: null,
       sentPartway: 1,
       senderRefused: 1,
       refusedCompanies: 2,
@@ -202,6 +203,27 @@ describe("3 and 4. a weekly run says what went wrong, once per kind", () => {
         "1 weekly brief went out from what was synced while a full read of QuickBooks was unfinished: its sync failed, or it had waited a day past the brief's time.",
       ],
     ]);
+  });
+
+  it("carries the first unexplained failure's words, so an \"other\" report explains itself", () => {
+    const p = briefRunProblems(
+      [
+        { status: "sent", summaryMissing: true, summaryFailure: { kind: "other", message: "The brief's write-up came back cut off at the length limit twice; not sending a partial brief." } },
+        { status: "sent", summaryMissing: true, summaryFailure: { kind: "timeout", message: "Request timed out." } },
+        { status: "sent", summaryMissing: true },
+      ],
+      NOW
+    );
+    expect(p).toMatchObject({ summariesMissing: 3, summaryFailureKinds: { other: 2, timeout: 1 }, firstRefusal: null });
+    expect(briefRunReports(p).map((r) => [r.name, r.message])).toEqual([
+      [
+        "BriefSummaryMissing",
+        '3 weekly briefs went out without the written summary in this run (other: 2, timed out: 1). The first "other" failure said: The brief\'s write-up came back cut off at the length limit twice; not sending a partial brief.',
+      ],
+    ]);
+    // A failure with no message recorded adds nothing rather than "undefined".
+    const bare = briefRunReports(briefRunProblems([{ status: "sent", summaryMissing: true }], NOW));
+    expect(bare.map((r) => r.message)).toEqual(["1 weekly brief went out without the written summary in this run (other: 1)."]);
   });
 
   it("counts the run as failed for a refusal on our side, or three companies refused, and not for one bad address", () => {

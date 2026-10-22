@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // and aiFailureKind() are what the brief uses here.
 
 const ai = {
-  replies: [] as (string | Error)[],
+  replies: [] as (string | Error | { empty: string })[],
   calls: [] as { params: any; opts: any }[],
 };
 vi.mock("@anthropic-ai/sdk", () => {
@@ -22,6 +22,7 @@ vi.mock("@anthropic-ai/sdk", () => {
           ai.calls.push({ params, opts });
           const next = ai.replies.shift() ?? "MX04 Expected Loss has $30,000 spent against a $60,000 estimate. MX02 Past Estimate has $34,000 spent.";
           if (next instanceof Error) throw next;
+          if (typeof next === "object") return { stop_reason: next.empty, content: [] };
           return { stop_reason: "end_turn", content: [{ type: "text", text: next }] };
         },
       };
@@ -328,6 +329,19 @@ describe("3. AI failures reach Sentry", () => {
     expect(r.summaryMissing).toBe(true);
     expect(r.summaryFailure).toEqual({ kind: "refused", message: "400 inference_geo is not supported for this model" });
     // Not one report per company: the run sends one with the counts (briefRunReports).
+    expect(reports).toHaveLength(0);
+  });
+
+  it("says why for a failure with no known cause: the reply's stop reason, or the error's type", async () => {
+    // Oct 22, 2026: one brief went without its summary, and the run's report
+    // said only "other: 1". The reason was in Vercel's logs alone.
+    const send = { allowMissingSummary: true, deadline: Date.now() + 200_000 };
+    ai.replies = [{ empty: "refusal" }];
+    const noText = await generateWeeklyDigestForConnection("c1", new Date("2026-10-19T00:00:00Z"), "Acme", send);
+    expect(noText.summaryFailure).toEqual({ kind: "other", message: "Claude did not return a text response for the digest (stop reason: refusal)." });
+    ai.replies = [new TypeError("Cannot read properties of undefined (reading 'map')")];
+    const bug = await generateWeeklyDigestForConnection("c1", new Date("2026-10-19T00:00:00Z"), "Acme", send);
+    expect(bug.summaryFailure).toEqual({ kind: "other", message: "TypeError: Cannot read properties of undefined (reading 'map')" });
     expect(reports).toHaveLength(0);
   });
 

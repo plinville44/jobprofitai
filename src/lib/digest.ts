@@ -319,9 +319,12 @@ ${JSON.stringify(
   return text;
 }
 
-function textOf(message: { content: { type: string; text?: string }[] }): string {
+function textOf(message: { stop_reason?: string | null; content: { type: string; text?: string }[] }): string {
   const block = message.content.find((b) => b.type === "text");
-  if (!block || typeof block.text !== "string") throw new Error("Claude did not return a text response for the digest.");
+  if (!block || typeof block.text !== "string") {
+    // The stop reason says why ("refusal", say), which the run's report then carries.
+    throw new Error(`Claude did not return a text response for the digest (stop reason: ${message.stop_reason ?? "none"}).`);
+  }
   return block.text;
 }
 
@@ -599,7 +602,11 @@ export async function generateWeeklyDigestForConnection(
       // Not reported here: the weekly run reports once, with how many went
       // without the summary and why (briefRunReports), so an AI outage is
       // one report a run, not one per company.
-      summaryFailure = { kind: err instanceof SummaryOutOfTimeError ? "out_of_time" : aiFailureKind(err), message };
+      const kind = err instanceof SummaryOutOfTimeError ? "out_of_time" : aiFailureKind(err);
+      // With no known cause, the error's type is half the story ("TypeError:
+      // Cannot read properties of undefined" against a plain message).
+      const named = kind === "other" && err instanceof Error && err.name && err.name !== "Error" ? `${err.name}: ${message}` : message;
+      summaryFailure = { kind, message: named };
     }
     body = SUMMARY_UNAVAILABLE;
   }
