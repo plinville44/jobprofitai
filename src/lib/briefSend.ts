@@ -102,6 +102,8 @@ export interface BriefRunProblems {
   summaryFailureKinds: Record<string, number>;
   /** What the first refused AI request said, the likeliest cause to fix. */
   firstRefusal: string | null;
+  /** What the first failure with no known cause said, so the report explains itself. */
+  firstOther: string | null;
   sentPartway: number;
   senderRefused: number;
   /** Companies whose every recipient was refused, for any reason. */
@@ -139,6 +141,7 @@ export function briefRunProblems(results: BriefRunResult[], now: Date): BriefRun
     summariesMissing: missing.length,
     summaryFailureKinds,
     firstRefusal: missing.find((r) => r.summaryFailure?.kind === "refused")?.summaryFailure?.message ?? null,
+    firstOther: missing.find((r) => (r.summaryFailure?.kind ?? "other") === "other")?.summaryFailure?.message ?? null,
     sentPartway: results.filter((r) => r.status === "sent" && r.sentPartway).length,
     senderRefused,
     refusedCompanies,
@@ -178,7 +181,10 @@ export function briefRunReports(p: BriefRunProblems): BriefRunProblem[] {
       .map(([kind, n]) => `${FAILURE_WORDS[kind] ?? kind}: ${n}`)
       .join(", ");
     const refusal = p.firstRefusal ? ` The first refusal said: ${p.firstRefusal.slice(0, 200)}` : "";
-    out.push(new BriefRunProblem("BriefSummaryMissing", `${briefs(p.summariesMissing)} went out without the written summary in this run (${why}).${refusal}`));
+    // "other" alone says nothing about the cause (Oct 22, 2026: one brief,
+    // and the reason was only in Vercel's logs), so its message comes too.
+    const other = p.firstOther ? ` The first "other" failure said: ${p.firstOther.slice(0, 200)}` : "";
+    out.push(new BriefRunProblem("BriefSummaryMissing", `${briefs(p.summariesMissing)} went out without the written summary in this run (${why}).${refusal}${other}`));
   }
   if (p.senderRefused > 0) {
     out.push(

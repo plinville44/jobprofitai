@@ -17,62 +17,69 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 type Obj = Record<string, any>;
-const copy = <T>(v: T): T => (v == null ? v : JSON.parse(JSON.stringify(v)));
-const stripeState = {
-  options: [] as Obj[],
-  subscriptions: new Map<string, Obj>(),
-  charges: new Map<string, Obj>(),
-  invoices: new Map<string, Obj>(),
-  sessions: new Map<string, Obj>(),
-  expired: [] as string[],
-  cancelError: null as unknown,
-};
-const missing = (what: string, id: string) =>
-  Object.assign(new Error(`No such ${what}: '${id}'`), { code: "resource_missing", statusCode: 404 });
-class FakeStripe {
-  constructor(_key: string, options: Obj) {
-    stripeState.options.push(options);
-  }
-  subscriptions = {
-    retrieve: async (id: string) => {
-      const s = stripeState.subscriptions.get(id);
-      if (!s) throw missing("subscription", id);
-      if (s.retrieveError) throw Object.assign(new Error("An error occurred with our connection to Stripe."), { type: "StripeConnectionError" });
-      return copy(s);
-    },
-    list: async ({ customer }: Obj) => ({
-      data: Array.from(stripeState.subscriptions.values()).filter((s) => s.customer === customer).map(copy),
-    }),
-    update: async (id: string) => copy(stripeState.subscriptions.get(id)),
-    cancel: async (id: string) => {
-      if (stripeState.cancelError) throw stripeState.cancelError;
-      const s = stripeState.subscriptions.get(id);
-      if (!s) throw missing("subscription", id);
-      if (s.cancelFails) throw new Error("Stripe couldn't cancel this one");
-      s.status = "canceled";
-      return copy(s);
-    },
+// vi.mock factories run before the rest of this file, so the Stripe stand-in
+// and its state are made in vi.hoisted, which runs before them too. A class
+// declared at the top level isn't there yet when the factory needs it
+// ("Cannot access 'FakeStripe' before initialization" under Vitest).
+const { stripeState, missing, FakeStripe } = vi.hoisted(() => {
+  const copy = <T>(v: T): T => (v == null ? v : JSON.parse(JSON.stringify(v)));
+  const stripeState = {
+    options: [] as Obj[],
+    subscriptions: new Map<string, Obj>(),
+    charges: new Map<string, Obj>(),
+    invoices: new Map<string, Obj>(),
+    sessions: new Map<string, Obj>(),
+    expired: [] as string[],
+    cancelError: null as unknown,
   };
-  charges = { retrieve: async (id: string) => copy(stripeState.charges.get(id)) };
-  invoices = { retrieve: async (id: string) => copy(stripeState.invoices.get(id)), voidInvoice: async () => ({}) };
-  refunds = { create: async () => ({ id: "re_1", amount: 0 }), list: async () => ({ data: [] }) };
-  customers = { create: async () => ({ id: "cus_created" }) };
-  checkout = {
-    sessions: {
-      list: async ({ customer, status }: Obj) => ({
-        data: Array.from(stripeState.sessions.values())
-          .filter((s) => s.customer === customer && (!status || s.status === status))
-          .map(copy),
-      }),
-      expire: async (id: string) => {
-        stripeState.sessions.get(id)!.status = "expired";
-        stripeState.expired.push(id);
+  const missing = (what: string, id: string) =>
+    Object.assign(new Error(`No such ${what}: '${id}'`), { code: "resource_missing", statusCode: 404 });
+  class FakeStripe {
+    constructor(_key: string, options: Obj) {
+      stripeState.options.push(options);
+    }
+    subscriptions = {
+      retrieve: async (id: string) => {
+        const s = stripeState.subscriptions.get(id);
+        if (!s) throw missing("subscription", id);
+        if (s.retrieveError) throw Object.assign(new Error("An error occurred with our connection to Stripe."), { type: "StripeConnectionError" });
+        return copy(s);
       },
-      retrieve: async (id: string) => copy(stripeState.sessions.get(id)),
-      create: async () => ({ id: "cs_new", url: "https://checkout.stripe.test/cs_new" }),
-    },
-  };
-}
+      list: async ({ customer }: Obj) => ({
+        data: Array.from(stripeState.subscriptions.values()).filter((s) => s.customer === customer).map(copy),
+      }),
+      update: async (id: string) => copy(stripeState.subscriptions.get(id)),
+      cancel: async (id: string) => {
+        if (stripeState.cancelError) throw stripeState.cancelError;
+        const s = stripeState.subscriptions.get(id);
+        if (!s) throw missing("subscription", id);
+        if (s.cancelFails) throw new Error("Stripe couldn't cancel this one");
+        s.status = "canceled";
+        return copy(s);
+      },
+    };
+    charges = { retrieve: async (id: string) => copy(stripeState.charges.get(id)) };
+    invoices = { retrieve: async (id: string) => copy(stripeState.invoices.get(id)), voidInvoice: async () => ({}) };
+    refunds = { create: async () => ({ id: "re_1", amount: 0 }), list: async () => ({ data: [] }) };
+    customers = { create: async () => ({ id: "cus_created" }) };
+    checkout = {
+      sessions: {
+        list: async ({ customer, status }: Obj) => ({
+          data: Array.from(stripeState.sessions.values())
+            .filter((s) => s.customer === customer && (!status || s.status === status))
+            .map(copy),
+        }),
+        expire: async (id: string) => {
+          stripeState.sessions.get(id)!.status = "expired";
+          stripeState.expired.push(id);
+        },
+        retrieve: async (id: string) => copy(stripeState.sessions.get(id)),
+        create: async () => ({ id: "cs_new", url: "https://checkout.stripe.test/cs_new" }),
+      },
+    };
+  }
+  return { stripeState, missing, FakeStripe };
+});
 vi.mock("stripe", () => ({ __esModule: true, default: FakeStripe }));
 
 // zod is only a type stub in this sandbox. The few schema pieces the routes
