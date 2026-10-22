@@ -77,7 +77,9 @@ vi.mock("@/lib/monitoring", () => ({
 }));
 vi.mock("@/lib/cronAuth", () => ({ authorizeCron: () => ({ ok: true }) }));
 
-class SummaryOutOfTimeError extends Error {}
+// Made in vi.hoisted: the vi.mock factories below run before the rest of this
+// file, and a class declared at the top level isn't there yet when they do.
+const { SummaryOutOfTimeError } = vi.hoisted(() => ({ SummaryOutOfTimeError: class SummaryOutOfTimeError extends Error {} }));
 const brief = {
   summaryMissing: false,
   fail: null as Error | null,
@@ -151,7 +153,7 @@ vi.mock("@/lib/opportunityData", () => ({
 }));
 vi.mock("@/lib/jobTypesServer", () => ({ getJobTypes: async () => [] }));
 vi.mock("@/lib/sameOrigin", () => ({ refuseCrossSite: () => null }));
-class SuggestionCooldownError extends Error {}
+const { SuggestionCooldownError } = vi.hoisted(() => ({ SuggestionCooldownError: class SuggestionCooldownError extends Error {} }));
 const suggest: { fail: Error | null; calls: number } = { fail: null, calls: 0 };
 vi.mock("@/lib/jobTypeSuggestions", () => ({
   SuggestionCooldownError,
