@@ -132,9 +132,10 @@ describe("legal pages", () => {
     expect(terms).toContain("plus the view-only client logins of the {firm.name} plan");
   });
 
-  it("carries the new date, and the acceptance version matches it", () => {
+  it("carries the new date, and keeps the version people accepted", () => {
     const version = read("lib/legalVersion.ts");
-    expect(version).toContain('LEGAL_LAST_UPDATED = "October 14, 2026"');
+    // The Videos section (October 26) didn't need a new acceptance.
+    expect(version).toContain('LEGAL_LAST_UPDATED = "October 26, 2026"');
     expect(version).toContain('ACCEPTANCE_VERSION = "2026-10-14"');
     expect(read("components/marketing/Legal.tsx")).toContain('export { LEGAL_LAST_UPDATED } from "@/lib/legalVersion"');
   });

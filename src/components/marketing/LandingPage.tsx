@@ -10,6 +10,7 @@ import {
   WipPreview,
 } from "./ProductPreview";
 import QuickBooksComparison from "./QuickBooksComparison";
+import DemoVideo from "./DemoVideo";
 import FitCheck from "./FitCheck";
 import PricingCards from "./PricingCards";
 import { LANDING_PAGES, type LandingSection, type LandingSlug } from "@/lib/landingPages";
@@ -237,6 +238,18 @@ export default function LandingPage({ slug }: { slug: LandingSlug }) {
           </p>
         </div>
         <div className="mx-auto mt-12 max-w-4xl">{heroPreview}</div>
+      </Section>
+
+      {/* The demo video: the sample company in about two minutes. Loads from
+          YouTube only when played (DemoVideo.tsx, Privacy Policy "Videos"). */}
+      <Section className="!pt-0">
+        <div className="mx-auto max-w-4xl">
+          <p className="mb-4 text-center text-sm font-semibold uppercase tracking-wide text-jp-blue">See it in about 2 minutes</p>
+          <DemoVideo />
+          <p className="mt-3 text-center text-xs text-jp-muted">
+            An example company with example data.
+          </p>
+        </div>
       </Section>
 
       {/* The answer to "QuickBooks already does this". */}

@@ -9,7 +9,8 @@ import { LANDING_PAGES, LANDING_SLUGS } from "@/lib/landingPages";
 
 const SRC = join(__dirname, "..", "..");
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
-const allCopy = () => JSON.stringify(LANDING_PAGES) + read("components/marketing/LandingPage.tsx") + read("app/lp/layout.tsx");
+const allCopy = () =>
+  JSON.stringify(LANDING_PAGES) + read("components/marketing/LandingPage.tsx") + read("app/lp/layout.tsx") + read("components/marketing/DemoVideo.tsx");
 
 describe("ad landing pages", () => {
   it("has the four ad groups' pages, each wired to its own copy", () => {
@@ -43,6 +44,13 @@ describe("ad landing pages", () => {
       expect({ slug: p.slug, title: p.metaTitle.length <= 50 }).toEqual({ slug: p.slug, title: true });
       expect({ slug: p.slug, description: p.metaDescription.length <= 170 }).toEqual({ slug: p.slug, description: true });
     }
+  });
+
+  it("shows the demo video under the hero, loading it only on click, with its picture on our own site", () => {
+    const page = read("components/marketing/LandingPage.tsx");
+    expect(page).toContain("<DemoVideo />");
+    expect(page.indexOf("<DemoVideo />")).toBeLessThan(page.indexOf("<QuickBooksComparison />"));
+    expect(existsSync(join(SRC, "..", "public", "demo-video-poster.jpg"))).toBe(true);
   });
 
   it("follows the house style: no en or em dashes", () => {

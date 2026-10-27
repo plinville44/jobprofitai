@@ -170,9 +170,26 @@ describe("what the pages promise", () => {
       expect({ phrase, found: privacy.includes(phrase) }).toEqual({ phrase, found: true });
     }
     // Not running at launch. Adding any of them means adding its disclosure first.
-    for (const phrase of ["LinkedIn Insight Tag", "Enhanced conversions:", "li_sugr", "YouTube"]) {
+    for (const phrase of ["LinkedIn Insight Tag", "Enhanced conversions:", "li_sugr"]) {
       expect({ phrase, found: privacy.includes(phrase) }).toEqual({ phrase, found: false });
     }
+  });
+
+  it("discloses the demo video the way the player loads it", () => {
+    // DemoVideo.tsx shows our own picture until play, then YouTube's privacy-enhanced player.
+    for (const phrase of [
+      '<LegalSub title="Videos">',
+      "Until you click play, the page shows only a still picture from our own website, and nothing is loaded from YouTube.",
+      "privacy-enhanced mode (youtube-nocookie.com)",
+      "YouTube when you play one of our demo videos",
+    ]) {
+      expect({ phrase, found: privacy.includes(phrase) }).toEqual({ phrase, found: true });
+    }
+    const player = flat("components/marketing/DemoVideo.tsx");
+    expect(player).toContain("const [playing, setPlaying] = useState(false);");
+    expect(player).toContain("{playing ? ( <iframe");
+    expect(flat("lib/demoVideo.ts")).toContain("https://www.youtube-nocookie.com/embed/");
+    expect(flat("lib/demoVideo.ts")).not.toMatch(/https:\/\/www\.youtube\.com\/embed/);
   });
 
   it("lists every cookie, says where the tags run, and covers GPC and Do Not Track", () => {

@@ -121,11 +121,13 @@ describe("how long QuickBooks data is kept", () => {
 });
 
 describe("acceptance of the Terms", () => {
-  it("has a version that matches the printed date", () => {
-    const [y, m, d] = ACCEPTANCE_VERSION.split("-").map(Number);
-    expect(new Date(`${LEGAL_LAST_UPDATED} 12:00 UTC`).toISOString().slice(0, 10)).toBe(
-      `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`
-    );
+  // The accepted version moves only for a material change; the printed date
+  // moves for every change (src/lib/legalVersion.ts).
+  const printed = new Date(`${LEGAL_LAST_UPDATED} 12:00 UTC`).toISOString().slice(0, 10);
+
+  it("has a version on or before the printed date", () => {
+    expect(ACCEPTANCE_VERSION).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(ACCEPTANCE_VERSION <= printed).toBe(true);
   });
 
   it("starts every agreement box unchecked and refuses a signup without it", () => {
@@ -153,10 +155,12 @@ describe("acceptance of the Terms", () => {
     expect(read("../prisma/schema.prisma")).toContain("model TermsAcceptance {");
   });
 
-  it("keeps the text of the version people accept", () => {
-    for (const doc of ["terms", "privacy", "dpa", "privacy-choices"]) {
-      const file = join(ROOT, "legal-archive", ACCEPTANCE_VERSION, `${doc}.md`);
-      expect({ doc, archived: existsSync(file) }).toEqual({ doc, archived: true });
+  it("keeps the text of the version people accept, and of the version on the site now", () => {
+    for (const version of [ACCEPTANCE_VERSION, printed]) {
+      for (const doc of ["terms", "privacy", "dpa", "privacy-choices"]) {
+        const file = join(ROOT, "legal-archive", version, `${doc}.md`);
+        expect({ version, doc, archived: existsSync(file) }).toEqual({ version, doc, archived: true });
+      }
     }
   });
 });
@@ -262,7 +266,8 @@ describe("what the legal pages now say", () => {
     // Launched without these; each needs its paragraph back before it's turned on.
     expect(privacy).not.toContain("LinkedIn Insight Tag");
     expect(privacy).not.toContain("Enhanced conversions:");
-    expect(privacy).not.toContain("YouTube");
+    // The demo video came back on October 26 with its paragraph ("Videos").
+    expect(privacy).toContain('<LegalSub title="Videos">');
   });
 
   it("Addendum: instructions, service provider terms, subprocessors, incidents, deletion", () => {

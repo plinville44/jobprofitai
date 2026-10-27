@@ -17,6 +17,8 @@ import {
   TRIAL_DAYS,
 } from "@/lib/plans";
 import { OG_IMAGE } from "@/lib/siteMeta";
+import DemoVideo from "@/components/marketing/DemoVideo";
+import { BOOKKEEPER_VIDEO } from "@/lib/demoVideo";
 
 export const metadata: Metadata = {
   title: "Partner Program for Accountants & Bookkeepers",
@@ -184,6 +186,20 @@ export default function PartnersPage() {
           </div>
           <p className="mt-5 text-sm text-jp-muted">
             Free to join &middot; Applications reviewed by a person
+          </p>
+        </div>
+      </Section>
+
+      {/* ── Bookkeeper video (the pricing page's Firm plan links here) ── */}
+      <Section className="!pt-0">
+        {/* scroll-mt keeps the sticky header off the video when arriving at #video. */}
+        <div id="video" className="mx-auto max-w-4xl scroll-mt-24">
+          <p className="mb-4 text-center text-sm font-semibold uppercase tracking-wide text-jp-blue">
+            See it in about 4 minutes
+          </p>
+          <DemoVideo video={BOOKKEEPER_VIDEO} />
+          <p className="mt-3 text-center text-xs text-jp-muted">
+            Example companies with example data.
           </p>
         </div>
       </Section>

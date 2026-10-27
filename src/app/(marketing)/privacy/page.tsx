@@ -316,7 +316,7 @@ export default function PrivacyPage() {
             Using cookies, it collects the pages you view; the website, search, ad or link that
             brought you here, including any campaign tags in the link; your device, browser, screen
             size and language; your approximate location, worked out from your IP address; and steps
-            you take, such as starting a trial. We link Google Analytics to our Google Ads account so
+            you take, such as playing our demo video or starting a trial. We link Google Analytics to our Google Ads account so
             it can tell us which ad clicks lead to trials and subscriptions. We have set it up so it
             isn&rsquo;t used to choose who sees our ads: Google signals and personalized advertising
             are turned off. Google explains what it does with this information in{" "}
@@ -374,6 +374,21 @@ export default function PrivacyPage() {
             customers and not just visits, and remove the cookie. We don&rsquo;t set this cookie if you
             have opted out or your browser sends Global Privacy Control, and we don&rsquo;t copy it if
             either was in effect when you signed up.
+          </p>
+        </LegalSub>
+
+        <LegalSub title="Videos">
+          <p>
+            Some of our website pages, such as our ad landing pages, include a demo video hosted on
+            YouTube, a Google service. Until you click play, the page shows only a still picture from
+            our own website, and nothing is loaded from YouTube. When you click play, the video loads
+            from YouTube in its privacy-enhanced mode (youtube-nocookie.com). YouTube may then store
+            cookies or similar information in your browser and collect information such as your IP
+            address, your device and how you watch, under{" "}
+            <ExternalLink href="https://policies.google.com/privacy">Google&rsquo;s privacy policy</ExternalLink>.
+            Google says views in this mode don&rsquo;t change what YouTube recommends to you and
+            aren&rsquo;t used to personalize ads shown outside our website. Where our Google Analytics
+            tags are running, they may also count that you played the video.
           </p>
         </LegalSub>
 
@@ -439,6 +454,7 @@ export default function PrivacyPage() {
               How Google uses cookies
             </ExternalLink>
             .
+            If you play a demo video, YouTube may store its own cookies, as Videos above describes.
             Our payment pages are hosted by Stripe, which sets its own cookies under{" "}
             <ExternalLink href="https://stripe.com/privacy">Stripe’s privacy policy</ExternalLink>. You
             can also block or delete cookies in your browser&rsquo;s settings; if you block the cookies
@@ -579,8 +595,9 @@ export default function PrivacyPage() {
         </LegalSub>
         <LegalSub title="Advertising and analytics companies">
           <p>
-            Google LLC receives information through its tags on our public website pages, and the
-            steps reported from our servers, as Section 2 describes. Google uses it to provide its
+            Google LLC receives information through its tags on our public website pages, the steps
+            reported from our servers, and YouTube when you play one of our demo videos, as Section 2
+            describes. Google uses it to provide its
             services to us, and also for its own purposes under{" "}
             <ExternalLink href="https://policies.google.com/privacy">Google&rsquo;s privacy policy</ExternalLink>.
           </p>
