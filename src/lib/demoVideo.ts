@@ -1,19 +1,24 @@
 /**
  * Our videos. DEMO_VIDEO plays on the ad landing pages and BOOKKEEPER_VIDEO
- * on the partner page, both through src/components/marketing/DemoVideo.tsx;
- * GETTING_STARTED_VIDEO, below, is linked from the trial emails.
+ * on the partner page, both through src/components/marketing/DemoVideo.tsx.
  *
- * Hosted on YouTube (unlisted) and played in YouTube's privacy-enhanced
- * mode, from youtube-nocookie.com. The page shows our own still picture
- * (public/demo-video-poster.jpg) until someone clicks play, so nothing is
- * loaded from YouTube before then. The Privacy Policy's "Videos" section
- * says exactly this; change both together.
+ * On our website they play from our own files: 1080p MP4s in our public
+ * Vercel Blob store, so they're always sharp (YouTube picks a low quality
+ * for a player this size and can't be told otherwise). Nothing on our
+ * website loads from YouTube. The Privacy Policy's "Videos" section says
+ * exactly this; change both together.
+ *
+ * The same videos are on YouTube (unlisted) for links in emails and
+ * outreach. GETTING_STARTED_VIDEO, below, is linked from the trial emails.
  *
  * The videos show the labelled sample company, Example Builders, with its
  * figures from src/lib/sampleCompany.ts. The bookkeeper video's portfolio
  * page adds four more made-up client companies beside it.
  */
 export interface SiteVideo {
+  /** The MP4 (H.264, 1080p) in our public Vercel Blob store. */
+  src: string;
+  /** The same video on YouTube, for links in emails and outreach. */
   youtubeId: string;
   title: string;
   /** Shown on the play button. */
@@ -23,6 +28,7 @@ export interface SiteVideo {
 }
 
 export const DEMO_VIDEO: SiteVideo = {
+  src: "https://ysywlv60mtve3piz.public.blob.vercel-storage.com/jobprofitai-demo.mp4",
   youtubeId: "WUFhwPolxaI",
   title: "JobProfitAI demo: what to change on your jobs, and what it's worth",
   length: "2 min",
@@ -33,23 +39,16 @@ export const DEMO_VIDEO: SiteVideo = {
  * The 4-minute version for bookkeepers and accountants: the portfolio page,
  * client view-only logins, the WIP report, the cleanup list, the Firm price
  * and the partner commission. On the partner page, and linked from the Firm
- * plan on the pricing page. It is also the partner demo link in outreach.
+ * plan on the pricing page. Its YouTube link is the partner demo link in
+ * outreach.
  */
 export const BOOKKEEPER_VIDEO: SiteVideo = {
+  src: "https://ysywlv60mtve3piz.public.blob.vercel-storage.com/jobprofitai-for-bookkeepers.mp4",
   youtubeId: "NISEzBwD5xY",
   title: "JobProfitAI for bookkeepers and accountants",
   length: "4 min",
   poster: "/bookkeeper-video-poster.jpg",
 };
-
-/**
- * The player address. enablejsapi=1 lets Google Analytics' enhanced
- * measurement count plays where our tags are allowed to run; rel=0 keeps
- * the suggestions at the end to our own channel.
- */
-export function demoVideoEmbedUrl(id: string = DEMO_VIDEO.youtubeId): string {
-  return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1&rel=0&playsinline=1&enablejsapi=1`;
-}
 
 /**
  * The 1-minute getting-started video: connecting QuickBooks, the first

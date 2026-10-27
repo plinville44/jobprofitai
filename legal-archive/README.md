@@ -10,7 +10,8 @@ folder is named for a date:
   covered.
 - A later "Last updated" date (`LEGAL_LAST_UPDATED`) for a change that wasn't
   material, so it needed no new acceptance. 2026-10-26 added the Privacy
-  Policy's "Videos" section; people who accepted 2026-10-14 accepted that
+  Policy's "Videos" section, and 2026-10-27 changed it to say the videos
+  play from our own website; people who accepted 2026-10-14 accepted that
   version.
 
 Add a new folder, generated from the page source, whenever either date
