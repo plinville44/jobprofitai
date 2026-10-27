@@ -266,7 +266,7 @@ describe("what the legal pages now say", () => {
     // Launched without these; each needs its paragraph back before it's turned on.
     expect(privacy).not.toContain("LinkedIn Insight Tag");
     expect(privacy).not.toContain("Enhanced conversions:");
-    // The demo video came back on October 26 with its paragraph ("Videos").
+    // The demo videos' paragraph ("Videos"), from October 26; since October 27 they play from our own files.
     expect(privacy).toContain('<LegalSub title="Videos">');
   });
 

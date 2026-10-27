@@ -379,16 +379,14 @@ export default function PrivacyPage() {
 
         <LegalSub title="Videos">
           <p>
-            Some of our website pages, such as our ad landing pages, include a demo video hosted on
-            YouTube, a Google service. Until you click play, the page shows only a still picture from
-            our own website, and nothing is loaded from YouTube. When you click play, the video loads
-            from YouTube in its privacy-enhanced mode (youtube-nocookie.com). YouTube may then store
-            cookies or similar information in your browser and collect information such as your IP
-            address, your device and how you watch, under{" "}
+            Some of our website pages, such as our ad landing pages and our partner page, include a demo
+            video. It plays from our own website: the video files are stored with Vercel, our hosting
+            provider, and nothing on our website loads from YouTube. Until you click play, the page
+            shows only a still picture, and the video downloads only when you play it. Where our Google
+            Analytics tags are running, they may count that you started or finished a video. Some of
+            our emails link to the same videos on YouTube, a Google service. If you open one there,
+            YouTube collects information under{" "}
             <ExternalLink href="https://policies.google.com/privacy">Google&rsquo;s privacy policy</ExternalLink>.
-            Google says views in this mode don&rsquo;t change what YouTube recommends to you and
-            aren&rsquo;t used to personalize ads shown outside our website. Where our Google Analytics
-            tags are running, they may also count that you played the video.
           </p>
         </LegalSub>
 
@@ -454,7 +452,6 @@ export default function PrivacyPage() {
               How Google uses cookies
             </ExternalLink>
             .
-            If you play a demo video, YouTube may store its own cookies, as Videos above describes.
             Our payment pages are hosted by Stripe, which sets its own cookies under{" "}
             <ExternalLink href="https://stripe.com/privacy">Stripe’s privacy policy</ExternalLink>. You
             can also block or delete cookies in your browser&rsquo;s settings; if you block the cookies
@@ -596,7 +593,7 @@ export default function PrivacyPage() {
         <LegalSub title="Advertising and analytics companies">
           <p>
             Google LLC receives information through its tags on our public website pages, the steps
-            reported from our servers, and YouTube when you play one of our demo videos, as Section 2
+            reported from our servers, and YouTube if you open one of our videos there, as Section 2
             describes. Google uses it to provide its
             services to us, and also for its own purposes under{" "}
             <ExternalLink href="https://policies.google.com/privacy">Google&rsquo;s privacy policy</ExternalLink>.

@@ -240,8 +240,8 @@ export default function LandingPage({ slug }: { slug: LandingSlug }) {
         <div className="mx-auto mt-12 max-w-4xl">{heroPreview}</div>
       </Section>
 
-      {/* The demo video: the sample company in about two minutes. Loads from
-          YouTube only when played (DemoVideo.tsx, Privacy Policy "Videos"). */}
+      {/* The demo video: the sample company in about two minutes. Plays from our
+          own file, downloaded only when played (DemoVideo.tsx, Privacy Policy "Videos"). */}
       <Section className="!pt-0">
         <div className="mx-auto max-w-4xl">
           <p className="mb-4 text-center text-sm font-semibold uppercase tracking-wide text-jp-blue">See it in about 2 minutes</p>

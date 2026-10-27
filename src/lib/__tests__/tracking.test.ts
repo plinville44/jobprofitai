@@ -175,21 +175,30 @@ describe("what the pages promise", () => {
     }
   });
 
-  it("discloses the demo video the way the player loads it", () => {
-    // DemoVideo.tsx shows our own picture until play, then YouTube's privacy-enhanced player.
+  it("discloses the demo videos the way the player loads them", () => {
+    // DemoVideo.tsx shows our own picture until play, then plays our own file
+    // from Vercel Blob. Nothing on the website loads from YouTube.
     for (const phrase of [
       '<LegalSub title="Videos">',
-      "Until you click play, the page shows only a still picture from our own website, and nothing is loaded from YouTube.",
-      "privacy-enhanced mode (youtube-nocookie.com)",
-      "YouTube when you play one of our demo videos",
+      "It plays from our own website: the video files are stored with Vercel, our hosting provider, and nothing on our website loads from YouTube.",
+      "the video downloads only when you play it",
+      "YouTube if you open one of our videos there",
     ]) {
       expect({ phrase, found: privacy.includes(phrase) }).toEqual({ phrase, found: true });
     }
+    expect(privacy).not.toContain("youtube-nocookie");
+    expect(privacy).not.toContain("YouTube may store its own cookies");
     const player = flat("components/marketing/DemoVideo.tsx");
-    expect(player).toContain("const [playing, setPlaying] = useState(false);");
-    expect(player).toContain("{playing ? ( <iframe");
-    expect(flat("lib/demoVideo.ts")).toContain("https://www.youtube-nocookie.com/embed/");
-    expect(flat("lib/demoVideo.ts")).not.toMatch(/https:\/\/www\.youtube\.com\/embed/);
+    expect(player).toContain('preload="none"');
+    expect(player).not.toMatch(/iframe|youtube/i);
+    expect(flat("lib/demoVideo.ts")).not.toMatch(/youtube-nocookie|youtube\.com\/embed/);
+  });
+
+  it("sends video plays only to tags that are already running", () => {
+    // The GTM loader creates window.dataLayer; the player never does.
+    const player = flat("components/marketing/DemoVideo.tsx");
+    expect(player).toContain("if (Array.isArray(layer)) layer.push({ event, video_title: video.title");
+    expect(player).not.toMatch(/dataLayer\s*=|dataLayer\s*\|\|/);
   });
 
   it("lists every cookie, says where the tags run, and covers GPC and Do Not Track", () => {

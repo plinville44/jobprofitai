@@ -1,36 +1,62 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Image from "next/image";
-import { DEMO_VIDEO, demoVideoEmbedUrl, type SiteVideo } from "@/lib/demoVideo";
+import { DEMO_VIDEO, type SiteVideo } from "@/lib/demoVideo";
 
 /**
- * A demo video, loaded only when someone clicks play. The ad landing pages
- * show DEMO_VIDEO (the default); the partner page passes BOOKKEEPER_VIDEO.
+ * Tells Google Tag Manager that a video started or finished. Only where our
+ * tags are running: the loader (src/lib/tracking.ts) is what creates
+ * window.dataLayer, so after an opt-out or a Global Privacy Control signal
+ * there is nothing to push to and nothing is sent.
+ */
+function videoEvent(event: "video_start" | "video_complete", video: SiteVideo) {
+  const layer = (window as { dataLayer?: unknown[] }).dataLayer;
+  if (Array.isArray(layer)) layer.push({ event, video_title: video.title, video_provider: "jobprofitai" });
+}
+
+/**
+ * A demo video, played from our own 1080p file. The ad landing pages show
+ * DEMO_VIDEO (the default); the partner page passes BOOKKEEPER_VIDEO.
  *
- * Until then it's our own still picture and a play button: no request goes to
- * YouTube, the page stays fast, and the Privacy Policy's "Videos" section
- * stays true. The click swaps in YouTube's privacy-enhanced player
- * (youtube-nocookie.com), which starts playing straight away.
+ * Until someone clicks play it's our still picture and a play button, and
+ * preload="none" means the file isn't downloaded until then. The click
+ * starts the video with sound and shows the browser's own controls.
  */
 export default function DemoVideo({ video = DEMO_VIDEO }: { video?: SiteVideo }) {
   const [playing, setPlaying] = useState(false);
+  const player = useRef<HTMLVideoElement>(null);
+  const started = useRef(false);
+
+  function play() {
+    setPlaying(true);
+    // Inside the click itself, so browsers (Safari on iPhone included) let it play with sound.
+    const attempt = player.current?.play();
+    // If the browser refuses or the file can't load, show the picture and button again.
+    if (attempt) attempt.catch(() => setPlaying(false));
+  }
 
   return (
     <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-jp-line bg-jp-ink shadow-[0_18px_40px_-24px_rgba(15,31,75,0.35)]">
-      {playing ? (
-        <iframe
-          src={demoVideoEmbedUrl(video.youtubeId)}
-          title={video.title}
-          allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-          allowFullScreen
-          referrerPolicy="strict-origin-when-cross-origin"
-          className="absolute inset-0 h-full w-full"
-        />
-      ) : (
+      <video
+        ref={player}
+        src={video.src}
+        preload="none"
+        playsInline
+        controls={playing}
+        aria-label={video.title}
+        onPlay={() => {
+          if (started.current) return;
+          started.current = true;
+          videoEvent("video_start", video);
+        }}
+        onEnded={() => videoEvent("video_complete", video)}
+        className="absolute inset-0 h-full w-full"
+      />
+      {!playing && (
         <button
           type="button"
-          onClick={() => setPlaying(true)}
+          onClick={play}
           aria-label={`Play the demo video (${video.length})`}
           className="group absolute inset-0 h-full w-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-jp-blue"
         >

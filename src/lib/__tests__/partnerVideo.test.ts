@@ -5,16 +5,22 @@ import { BOOKKEEPER_VIDEO, DEMO_VIDEO } from "@/lib/demoVideo";
 
 // The 4-minute bookkeeper video sits under the hero on the partner page, in
 // the same click-to-play player as the ad landing pages, and the Firm plan on
-// the pricing page links to it.
+// the pricing page links to it. Both play from our own files in Vercel Blob.
 
 const SRC = join(__dirname, "..", "..");
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
 const flat = (rel: string) => read(rel).replace(/\s+/g, " ");
 
 describe("bookkeeper video", () => {
-  it("is its own video, with its own picture on our site", () => {
+  it("is its own video, with its own file and picture", () => {
     expect(BOOKKEEPER_VIDEO.youtubeId).toBe("NISEzBwD5xY");
     expect(BOOKKEEPER_VIDEO.youtubeId).not.toBe(DEMO_VIDEO.youtubeId);
+    expect(BOOKKEEPER_VIDEO.src).not.toBe(DEMO_VIDEO.src);
+    for (const video of [DEMO_VIDEO, BOOKKEEPER_VIDEO]) {
+      // Our public Vercel Blob store, over https, as an MP4.
+      const url = new URL(video.src);
+      expect({ src: video.src, ok: url.protocol === "https:" && url.hostname.endsWith(".public.blob.vercel-storage.com") && url.pathname.endsWith(".mp4") }).toEqual({ src: video.src, ok: true });
+    }
     for (const video of [DEMO_VIDEO, BOOKKEEPER_VIDEO]) {
       expect({ poster: video.poster, exists: existsSync(join(SRC, "..", "public", video.poster)) }).toEqual({
         poster: video.poster,
@@ -31,10 +37,10 @@ describe("bookkeeper video", () => {
     expect(page.indexOf("<DemoVideo")).toBeLessThan(page.indexOf('eyebrow="Commission"'));
   });
 
-  it("uses the player that loads nothing from YouTube until play, for every video", () => {
+  it("uses the same player for every video, downloading nothing until play", () => {
     const player = flat("components/marketing/DemoVideo.tsx");
     expect(player).toContain("export default function DemoVideo({ video = DEMO_VIDEO }: { video?: SiteVideo })");
-    expect(player).toContain("src={demoVideoEmbedUrl(video.youtubeId)}");
+    expect(player).toContain("src={video.src} preload=\"none\" playsInline");
     expect(player).toContain("<Image src={video.poster}");
   });
 

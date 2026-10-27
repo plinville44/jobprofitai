@@ -14,10 +14,12 @@
  * A change that isn't material moves only LEGAL_LAST_UPDATED, and its text
  * is saved in legal-archive/ under the new date too, so every wording ever
  * published is on record. October 26, 2026 added the Privacy Policy's
- * "Videos" section (the click-to-play demo video), which needs no new
- * acceptance: the 2026-10-14 version stays the one people agree to.
+ * "Videos" section (the click-to-play demo video, then on YouTube), and
+ * October 27, 2026 changed it to say the videos play from our own website.
+ * Neither needs a new acceptance: the 2026-10-14 version stays the one
+ * people agree to.
  */
-export const LEGAL_LAST_UPDATED = "October 26, 2026";
+export const LEGAL_LAST_UPDATED = "October 27, 2026";
 export const ACCEPTANCE_VERSION = "2026-10-14";
 
 /**
