@@ -209,6 +209,17 @@ export default function PricingPage() {
                   </li>
                 ))}
               </ul>
+              <Link
+                href="/partners#video"
+                className="mt-6 inline-flex items-center gap-2 text-[15px] font-semibold text-jp-blue hover:underline"
+              >
+                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-jp-blue text-white" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" className="ml-0.5 h-3.5 w-3.5 fill-current">
+                    <path d="M8 5.5v13l10.5-6.5z" />
+                  </svg>
+                </span>
+                Watch the 4-minute video for bookkeepers
+              </Link>
             </div>
             <div className="flex flex-col justify-center rounded-xl bg-jp-surface p-6">
               <p className="text-4xl font-bold tracking-tight text-jp-ink">

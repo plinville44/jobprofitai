@@ -10,8 +10,14 @@
  * then asked once, at its next visit to the app (/accept-terms), and the
  * acceptance is recorded (src/lib/termsAcceptance.ts). Before bumping it,
  * save the new text in legal-archive/ under the same date.
+ *
+ * A change that isn't material moves only LEGAL_LAST_UPDATED, and its text
+ * is saved in legal-archive/ under the new date too, so every wording ever
+ * published is on record. October 26, 2026 added the Privacy Policy's
+ * "Videos" section (the click-to-play demo video), which needs no new
+ * acceptance: the 2026-10-14 version stays the one people agree to.
  */
-export const LEGAL_LAST_UPDATED = "October 14, 2026";
+export const LEGAL_LAST_UPDATED = "October 26, 2026";
 export const ACCEPTANCE_VERSION = "2026-10-14";
 
 /**

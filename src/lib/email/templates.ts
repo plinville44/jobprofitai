@@ -11,6 +11,7 @@ import {
 import { DEFAULT_TIME_ZONE, formatDateTime } from "@/lib/format";
 import { DISCONNECTED_RETENTION_DAYS, LAPSED_DISCONNECT_DAYS } from "@/lib/dataRetention";
 import { JOB_SOURCE_QUESTION } from "@/lib/jobSetup";
+import { GETTING_STARTED_VIDEO, youtubeWatchUrl } from "@/lib/demoVideo";
 
 // Branded transactional email templates.
 //
@@ -53,6 +54,8 @@ export interface EmailContent {
   body: string[];
   bullets?: string[];
   cta?: EmailButton;
+  /** A plain text link right under the CTA, for something to watch first. */
+  link?: EmailButton;
   /** Boxed callout rendered above the CTA - used for dates and amounts. */
   callout?: { label: string; value: string };
   /** Small print under the CTA. */
@@ -108,6 +111,10 @@ export function renderHtml(content: EmailContent): string {
        </table>`
     : "";
 
+  const linkHtml = content.link
+    ? `<p style="margin:0 0 20px;font-size:16px;line-height:1.6;"><a href="${escapeHtml(content.link.url)}" style="color:${NAVY};font-weight:600;">${escapeHtml(content.link.label)}</a></p>`
+    : "";
+
   const footnoteHtml = content.footnote
     ? `<p style="margin:0 0 8px;font-size:14px;line-height:1.5;color:${MUTED};">${escapeHtml(content.footnote)}</p>`
     : "";
@@ -133,6 +140,7 @@ export function renderHtml(content: EmailContent): string {
         ${bulletsHtml}
         ${calloutHtml}
         ${ctaHtml}
+        ${linkHtml}
         ${footnoteHtml}
       </td></tr>
       <tr><td style="padding:8px 32px 28px;">
@@ -167,6 +175,9 @@ export function renderText(content: EmailContent): string {
   }
   if (content.cta) {
     parts.push("", `${content.cta.label}: ${content.cta.url}`);
+  }
+  if (content.link) {
+    parts.push("", `${content.link.label}: ${content.link.url}`);
   }
   if (content.footnote) {
     parts.push("", content.footnote);
@@ -387,6 +398,12 @@ export function passwordChangedEmail(): RenderedEmail {
 // TRIAL LIFECYCLE
 // ─────────────────────────────────────────────────────────────────────────
 
+/** Under the Connect button in the welcome and setup reminder emails. */
+const SETUP_VIDEO_LINK: EmailButton = {
+  label: "Watch the 1-minute setup video",
+  url: youtubeWatchUrl(GETTING_STARTED_VIDEO.youtubeId),
+};
+
 export function trialWelcomeEmail(name: string | null): RenderedEmail {
   return buildEmail("Welcome to JobProfitAI. Connect QuickBooks to get started", {
     preheader: "One step to see which jobs are actually making you money.",
@@ -401,6 +418,7 @@ export function trialWelcomeEmail(name: string | null): RenderedEmail {
       "A Weekly Profit Brief so you don't have to go looking for problems",
     ],
     cta: { label: "Connect QuickBooks", url: appUrl("/dashboard") },
+    link: SETUP_VIDEO_LINK,
     footnote: "Takes about two minutes. You can disconnect at any time from Settings.",
   });
 }
@@ -415,6 +433,7 @@ export function setupReminderEmail(name: string | null, daysLeft: number): Rende
     ],
     callout: { label: "Days left in your trial", value: String(daysLeft) },
     cta: { label: "Connect QuickBooks", url: appUrl("/dashboard") },
+    link: SETUP_VIDEO_LINK,
     footnote: "If something got in the way, reply to this email and we'll help.",
   });
 }
