@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { NO_VALUE, formatDate, formatCents } from "@/lib/format";
 import { AdminSection, AdminTable, Pill, Td } from "@/components/dashboard/AdminTable";
 import { planDisplayName } from "@/lib/plans";
+import { HELD_FOR_CHECK_WHERE, isHeldForCheck } from "@/lib/referrals";
+import { ReferralCheckActions } from "./ReferralCheckActions";
 
 export const dynamic = "force-dynamic";
 
@@ -29,72 +31,112 @@ export default async function AdminReferralsPage() {
   // by requesting this page's data directly.
   if (!(await getAdminSession())) notFound();
 
-  const referrals = await prisma.referral.findMany({
-    orderBy: { signedUpAt: "desc" },
-    take: 300,
-    include: {
-      referrer: { select: { email: true } },
-      referredUser: { select: { email: true, subscription: { select: { status: true, plan: true } } } },
-      partner: { select: { firmName: true } },
-      reward: true,
-    },
-  });
+  const include = {
+    referrer: { select: { email: true } },
+    referredUser: { select: { email: true, subscription: { select: { status: true, plan: true } } } },
+    partner: { select: { firmName: true } },
+    reward: true,
+  } as const;
+  const [referrals, held] = await Promise.all([
+    prisma.referral.findMany({ orderBy: { signedUpAt: "desc" }, take: 300, include }),
+    // Every referral held for a check, with its own query and no limit, so
+    // an older one can't drop off the ledger below with nobody to decide it
+    // (customer referrals aren't on the Partners tab). Nothing is paid on
+    // them until someone does (audit Oct 27, B3 review).
+    prisma.referral.findMany({ where: HELD_FOR_CHECK_WHERE, orderBy: { signedUpAt: "asc" }, include }),
+  ]);
 
   return (
-    <AdminSection
-      title="Referrals"
-      description="Both programs. Customer referrals earn account credit; partner referrals earn commission (see the Partners tab)."
-    >
-      <AdminTable
-        headers={["Signed up", "Type", "Referrer", "Referred account", "Plan", "Status", "Credit", "Applied"]}
-        empty={referrals.length === 0}
-        minWidth={1040}
+    <div className="space-y-4">
+      {held.length > 0 ? (
+        <AdminSection
+          title="Waiting for a check"
+          description="Each account's email address was first proven by a password reset, so whoever signed up through the link may not have owned it. No credit or commission is paid on these until you decide."
+        >
+          <AdminTable headers={["Signed up", "Type", "Referrer", "Referred account", "Status", "Decide"]} minWidth={900}>
+            {held.map((r) => (
+              <tr key={r.id}>
+                <Td className="whitespace-nowrap">{formatDate(r.signedUpAt)}</Td>
+                <Td>{r.kind === "partner" ? <Pill tone="info">Partner</Pill> : <Pill>Customer</Pill>}</Td>
+                <Td className="whitespace-nowrap">
+                  {r.kind === "partner" ? (r.partner?.firmName ?? NO_VALUE) : (r.referrer?.email ?? NO_VALUE)}
+                </Td>
+                <Td className="whitespace-nowrap">
+                  {r.referredUser?.email ?? <span className="text-gray-400">account deleted</span>}
+                </Td>
+                <Td>
+                  <Pill tone={TONE[r.status] ?? "neutral"}>{r.status}</Pill>
+                  <span className="mt-1 block text-xs text-gray-500">{r.disqualifiedReason}</span>
+                </Td>
+                <Td>
+                  <ReferralCheckActions referralId={r.id} />
+                </Td>
+              </tr>
+            ))}
+          </AdminTable>
+        </AdminSection>
+      ) : null}
+
+      <AdminSection
+        title="Referrals"
+        description="Both programs. Customer referrals earn account credit; partner referrals earn commission (see the Partners tab)."
       >
-        {referrals.map((r) => (
-          <tr key={r.id}>
-            <Td className="whitespace-nowrap">{formatDate(r.signedUpAt)}</Td>
-            <Td>
-              {r.kind === "partner" ? <Pill tone="info">Partner</Pill> : <Pill>Customer</Pill>}
-            </Td>
-            <Td className="whitespace-nowrap">
-              {r.kind === "partner" ? (r.partner?.firmName ?? NO_VALUE) : (r.referrer?.email ?? NO_VALUE)}
-            </Td>
-            <Td className="whitespace-nowrap">
-              {r.referredUser?.email ?? <span className="text-gray-400">account deleted</span>}
-            </Td>
-            {/* The plan is only meaningful once they pay. Every new account
-                carries the default plan id while on trial, so this column used
-                to show a raw "profit_intelligence" for people paying nothing. */}
-            <Td>
-              {r.referredUser?.subscription?.status === "active" || r.referredUser?.subscription?.status === "past_due"
-                ? planDisplayName(r.referredUser.subscription.plan)
-                : r.referredUser?.subscription?.status === "trialing"
-                  ? "On trial"
-                  : NO_VALUE}
-            </Td>
-            <Td>
-              <Pill tone={TONE[r.status] ?? "neutral"}>{r.status}</Pill>
-              {r.disqualifiedReason ? (
-                <span className="mt-1 block text-xs text-gray-500">{r.disqualifiedReason}</span>
-              ) : null}
-            </Td>
-            <Td className="font-medium text-navy">{money(r.reward?.amountCents)}</Td>
-            <Td className="whitespace-nowrap">
-              {/* Status first: a reversed credit keeps its applied date, and
-                  used to show that date instead of saying it was voided. */}
-              {r.reward?.status === "voided" ? (
-                <Pill tone="bad">voided</Pill>
-              ) : r.reward?.status === "pending" ? (
-                <Pill tone="warn">pending</Pill>
-              ) : r.reward?.appliedAt ? (
-                formatDate(r.reward.appliedAt)
-              ) : (
-                NO_VALUE
-              )}
-            </Td>
-          </tr>
-        ))}
-      </AdminTable>
-    </AdminSection>
+        <AdminTable
+          headers={["Signed up", "Type", "Referrer", "Referred account", "Plan", "Status", "Credit", "Applied"]}
+          empty={referrals.length === 0}
+          minWidth={1040}
+        >
+          {referrals.map((r) => (
+            <tr key={r.id}>
+              <Td className="whitespace-nowrap">{formatDate(r.signedUpAt)}</Td>
+              <Td>
+                {r.kind === "partner" ? <Pill tone="info">Partner</Pill> : <Pill>Customer</Pill>}
+              </Td>
+              <Td className="whitespace-nowrap">
+                {r.kind === "partner" ? (r.partner?.firmName ?? NO_VALUE) : (r.referrer?.email ?? NO_VALUE)}
+              </Td>
+              <Td className="whitespace-nowrap">
+                {r.referredUser?.email ?? <span className="text-gray-400">account deleted</span>}
+              </Td>
+              {/* The plan is only meaningful once they pay. Every new account
+                  carries the default plan id while on trial, so this column used
+                  to show a raw "profit_intelligence" for people paying nothing. */}
+              <Td>
+                {r.referredUser?.subscription?.status === "active" || r.referredUser?.subscription?.status === "past_due"
+                  ? planDisplayName(r.referredUser.subscription.plan)
+                  : r.referredUser?.subscription?.status === "trialing"
+                    ? "On trial"
+                    : NO_VALUE}
+              </Td>
+              <Td>
+                <Pill tone={TONE[r.status] ?? "neutral"}>{r.status}</Pill>
+                {isHeldForCheck(r) ? (
+                  <span className="ml-1.5">
+                    <Pill tone="warn">held</Pill>
+                  </span>
+                ) : null}
+                {r.disqualifiedReason ? (
+                  <span className="mt-1 block text-xs text-gray-500">{r.disqualifiedReason}</span>
+                ) : null}
+              </Td>
+              <Td className="font-medium text-navy">{money(r.reward?.amountCents)}</Td>
+              <Td className="whitespace-nowrap">
+                {/* Status first: a reversed credit keeps its applied date, and
+                    used to show that date instead of saying it was voided. */}
+                {r.reward?.status === "voided" ? (
+                  <Pill tone="bad">voided</Pill>
+                ) : r.reward?.status === "pending" ? (
+                  <Pill tone="warn">pending</Pill>
+                ) : r.reward?.appliedAt ? (
+                  formatDate(r.reward.appliedAt)
+                ) : (
+                  NO_VALUE
+                )}
+              </Td>
+            </tr>
+          ))}
+        </AdminTable>
+      </AdminSection>
+    </div>
   );
 }

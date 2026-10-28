@@ -20,7 +20,7 @@ import {
   parentsNeedingFullSync,
   qboDate,
   resolveJob,
-  ESTIMATE_PARENT_FALLBACK_GRACE_DAYS,
+  estimatesByJob,
   revenueByClass,
   revenueFromTxn,
   revenueId,
@@ -92,8 +92,11 @@ import { FULL_SYNC_OWED_AT, FULL_SYNC_PARTWAY_FIRST_AT, fullSyncOwed } from "@/l
  *    client's whole history); amounts in another currency are converted to
  *    home currency; an invoice's balance in class mode is owed only by the
  *    classes billed on it.
+ * 8: the CPA's over and under billing adjustments aren't read as billing;
+ *    a project's contract value comes from its own estimates before its
+ *    parent customer's (audit Oct 27, F1 and F4).
  */
-export const SYNC_VERSION = 7;
+export const SYNC_VERSION = 8;
 
 /**
  * The last version that changed how COSTS and REVENUE are stored. The weekly
@@ -105,9 +108,11 @@ export const SYNC_VERSION = 7;
  * balance-sheet postings as cost, so it waits for that too. Version 6 changes
  * journal entry costs, refunds and deposits, so it waits for that as well.
  * Version 7 moves a repeat client's old costs and revenue off their new job
- * and converts foreign-currency amounts, so it waits for that too.
+ * and converts foreign-currency amounts, so it waits for that too. Version 8
+ * changes journal entry revenue and contract values (F4 and F1), so it waits
+ * as well.
  */
-export const COST_SYNC_VERSION = 7;
+export const COST_SYNC_VERSION = 8;
 
 const FULL_SYNC_INTERVAL_DAYS = 30;
 /** Data Health tallies look at the last 12 months, not the company's whole history. */
@@ -116,6 +121,41 @@ const COUNTER_WINDOW_DAYS = 365;
 const STALE_SYNC_MINUTES = 10;
 /** Incremental syncs re-read this much before the last sync's start. */
 const CDC_OVERLAP_MS = 5 * 60_000;
+
+/**
+ * Where the next incremental sync asks QuickBooks for changes from: the
+ * earlier of when the last finished sync started (lastSyncedAt) and the
+ * start of the oldest sync since then that couldn't read every type
+ * (changeFeedFrom, kept in lastSyncEntitiesUpdated). Pure.
+ *
+ * A sync that couldn't read a type (bills, say: see runStep) still finishes,
+ * and lastSyncedAt moves on, because everything else reads it as "the last
+ * sync that finished". Starting the change feed there skipped every change
+ * to that type the failed read never saw, until the next 30-day full sync
+ * (F2, audit Oct 27). Starting from the older point reads them again.
+ *
+ * Never further back than the change feed reaches (CHANGE_FEED_REACH_MS):
+ * asked for more, QuickBooks refuses the whole feed and every sync fell back
+ * to a full one, which missed the same type again and kept the same start.
+ * Past that reach, a missed type waits for the next full read, as it did
+ * before (audit Oct 27 review).
+ */
+export function changeFeedStart(
+  c: { lastSyncedAt: Date | null; lastSyncEntitiesUpdated?: Prisma.JsonValue | null },
+  now: number = Date.now()
+): Date | null {
+  const stored = c.lastSyncEntitiesUpdated;
+  const raw = stored != null && typeof stored === "object" && !Array.isArray(stored) ? stored.changeFeedFrom : null;
+  const from = typeof raw === "string" ? Date.parse(raw) : NaN;
+  if (!Number.isFinite(from) || now - from > CHANGE_FEED_REACH_MS) return c.lastSyncedAt;
+  return c.lastSyncedAt == null || from < c.lastSyncedAt.getTime() ? new Date(from) : c.lastSyncedAt;
+}
+/**
+ * How far back a change-feed start is kept. QuickBooks' Change Data Capture
+ * reaches back 30 days; a day less leaves room for the overlap and for a
+ * sync that starts late.
+ */
+const CHANGE_FEED_REACH_MS = 29 * 86_400_000;
 /** QuickBooks' Change Data Capture returns at most this many records. */
 const CDC_MAX_PER_ENTITY = 1000;
 
@@ -548,10 +588,9 @@ export async function runSyncForConnection(
       unfinished = part.progress;
     } else {
       try {
-        counts = await runIncrementalSync(
-          ctx,
-          new Date((connection.lastSyncedAt?.getTime() ?? 0) - CDC_OVERLAP_MS)
-        );
+        const feedFrom = changeFeedStart(connection);
+        ctx.changedSince = feedFrom ? new Date(feedFrom.getTime() - CDC_OVERLAP_MS) : null;
+        counts = await runIncrementalSync(ctx, new Date((feedFrom?.getTime() ?? 0) - CDC_OVERLAP_MS));
       } catch (cdcErr) {
         if (isReconnectError(cdcErr)) throw cdcErr;
         // Recorded as a failed sync, which it is; the nightly sync retries it.
@@ -630,20 +669,34 @@ export async function runSyncForConnection(
     // be incremental, which only reads records that change, and the type
     // that failed (time entries, say) would stay missing for up to 30 days.
     const partialErrors = (counts.partialErrors ?? {}) as Record<string, string>;
+    const missedAType = Object.keys(partialErrors).length > 0;
     const cutShort = Object.values(partialErrors).some((m) => /temporarily unavailable/i.test(String(m)));
     let recordFull = mode === "full";
-    if (recordFull && cutShort) {
-      // Retried as a full sync for up to a day, then accepted: a data
-      // type that keeps failing mustn't make every nightly sync a full one.
+    if (recordFull && missedAType) {
       const since = (await prisma.quickBooksConnection.findUnique({ where: { id: connection.id }, select: { fullSyncCutShortAt: true } }))
         ?.fullSyncCutShortAt;
-      if (!since) {
-        await prisma.quickBooksConnection.update({ where: { id: connection.id }, data: { fullSyncCutShortAt: now } });
-        recordFull = false;
-      } else if (now.getTime() - since.getTime() < 86_400_000) {
-        recordFull = false;
+      // A company's first read that missed a type has none of that type
+      // stored at all, and no change feed can bring back its history, so it
+      // is retried like one cut short, and so is a retry within that day
+      // that misses one again (F2, audit Oct 27). So is the full read a new
+      // version of these rules asks for: recorded as done, the missed type's
+      // stored rows would keep the old rules until the 30-day full sync.
+      if (cutShort || connection.lastSyncedAt == null || connection.syncVersion < SYNC_VERSION || since != null) {
+        // Retried as a full sync for up to a day, then accepted: a data
+        // type that keeps failing mustn't make every nightly sync a full one.
+        if (!since) {
+          await prisma.quickBooksConnection.update({ where: { id: connection.id }, data: { fullSyncCutShortAt: now } });
+          recordFull = false;
+        } else if (now.getTime() - since.getTime() < 86_400_000) {
+          recordFull = false;
+        }
       }
     }
+    // A sync that missed a type keeps the change feed's start where this one
+    // began reading, so the next incremental sync reads that type's changes
+    // again (see changeFeedStart). One that read everything drops it.
+    const carried = missedAType ? changeFeedStart(connection, now.getTime()) : null;
+    const changeFeedFrom = carried && now.getTime() - carried.getTime() <= CHANGE_FEED_REACH_MS ? carried : null;
     // A full sync of a company stored under older rules for costs and revenue
     // can rewrite its figures without anything happening in QuickBooks.
     // Marked (as of the end of the rewrite) so the brief and alerts don't
@@ -661,7 +714,7 @@ export async function runSyncForConnection(
         lastSyncStatus: "success",
         lastSyncError: null,
         lastSyncAttemptAt: now,
-        lastSyncEntitiesUpdated: counts,
+        lastSyncEntitiesUpdated: changeFeedFrom ? { ...counts, changeFeedFrom: changeFeedFrom.toISOString() } : counts,
         ...(rebuiltUnderNewRules ? { basisChangedAt: now } : {}),
       },
     });
@@ -861,6 +914,8 @@ interface SyncCtx {
    * (see Writer.txnUnchangedSinceLastSync).
    */
   previousSyncAt?: Date | null;
+  /** An incremental sync's: the point QuickBooks' change feed was read from (see changeFeedStart). */
+  changedSince?: Date | null;
   /**
    * Set by an incremental sync that gave a parent customer or class its
    * first job or a second one: costs tagged to the parent must move onto
@@ -1336,9 +1391,8 @@ async function upsertJobs(
   if (!fullList) {
     const live = existing.filter((j) => j.missingSince == null);
     if (parentsNeedingFullSync(live, candidates).length > 0) {
-      const last = await prisma.quickBooksConnection.findUnique({ where: { id: ctx.connectionId }, select: { lastSyncedAt: true } });
       // The same point the change list was read from (see runSyncForConnection).
-      const changedSince = last?.lastSyncedAt ? new Date(last.lastSyncedAt.getTime() - CDC_OVERLAP_MS) : null;
+      const changedSince = ctx.changedSince ?? null;
       if (parentsNeedingFullSync(live, candidates, customersCreatedSince(customers, changedSince)).length > 0) ctx.fullSyncNeeded = true;
     }
   }
@@ -1728,7 +1782,7 @@ async function applyEstimates(
   lookups: Lookups,
   /** A full read that matched QuickBooks' count: stored estimates it didn't return are deleted. */
   removeMissing: boolean = full
-): Promise<void> {
+): Promise<number> {
   const touchedCustomers = new Set<string>();
   const existing = await prisma.jobEstimate.findMany({ where: { connectionId: ctx.connectionId } });
   const existingById = new Map(existing.map((e) => [e.id, e]));
@@ -1795,14 +1849,11 @@ async function applyEstimates(
   // job's estimates rather than from just the ones in this batch.
   const index = await loadJobIndex(ctx.connectionId);
   const all = await prisma.jobEstimate.findMany({ where: { connectionId: ctx.connectionId } });
+  // A job's own estimates, or its parent customer's when it has none (see
+  // estimatesByJob for the dating rules).
   const byJob = new Map<string, { amount: number; status: string; txnDate: Date }[]>();
-  for (const e of all) {
-    // Dated with a longer grace than costs and revenue: an estimate on the
-    // customer normally comes before the project it turns into, often by
-    // months, but one from a year or more before is an earlier job's.
-    const resolved = resolveJob(index, e.customerQboId, e.txnDate, ESTIMATE_PARENT_FALLBACK_GRACE_DAYS);
-    if (!resolved) continue;
-    byJob.set(resolved.jobId, [...(byJob.get(resolved.jobId) ?? []), { amount: Number(e.amount), status: e.status, txnDate: e.txnDate }]);
+  for (const [jobId, list] of estimatesByJob(index, all)) {
+    byJob.set(jobId, list.map((e) => ({ amount: Number(e.amount), status: e.status, txnDate: e.txnDate })));
   }
   const affectedJobs = new Set<string>();
   if (full) {
@@ -1815,14 +1866,22 @@ async function applyEstimates(
   }
   const current = await prisma.job.findMany({
     where: { id: { in: [...affectedJobs] } },
-    select: { id: true, estimatedRevenue: true },
+    select: { id: true, estimatedRevenue: true, manualContractValue: true },
   });
+  // Contract values that changed and are the ones the figures use (a value
+  // typed in JobProfitAI wins): counted with the sync's figure changes, so
+  // an upgrade that moves them under new rules is marked like one that
+  // moves cost rows (rebuildChangedFigures), and the alerts and brief don't
+  // read it as news (audit Oct 27 review).
+  let changed = 0;
   for (const job of current) {
     const value = contractValueFromEstimates(byJob.get(job.id) ?? []);
     const now = job.estimatedRevenue == null ? null : Number(job.estimatedRevenue);
     if (value === now || (value != null && now != null && Math.abs(value - now) < 0.005)) continue;
     await prisma.job.update({ where: { id: job.id }, data: { estimatedRevenue: value } });
+    if (!(job.manualContractValue != null && Number(job.manualContractValue) > 0)) changed++;
   }
+  return changed;
 }
 
 // ---------------------------------------------------------------------------
@@ -1894,10 +1953,24 @@ async function planFullSync(
   // rebuild, which starts the count again.
   let since = lastFinished?.startedAt ?? null;
   if (connection.rebuildRequestedAt && (!since || connection.rebuildRequestedAt > since)) since = connection.rebuildRequestedAt;
-  const tries = await prisma.syncRun.findMany({
+  const runs = await prisma.syncRun.findMany({
     where: { connectionId: connection.id, mode: "full", ...(since ? { startedAt: { gt: since } } : {}) },
-    select: { status: true, errorMessage: true },
+    orderBy: { startedAt: "asc" },
+    select: { status: true, errorMessage: true, entitiesUpdated: true },
   });
+  // Only this version's read counts. Runs of a read under an earlier
+  // version, whose progress can't be carried on (usableFullSyncProgress),
+  // and anything before the last of them, aren't tries at this one: a large
+  // company caught partway through a read when the version changed reached
+  // the part limit early and was told it keeps running out of time (audit
+  // Oct 27 review).
+  const versionOf = (r: { entitiesUpdated: unknown }) => (r.entitiesUpdated as Record<string, any> | null)?.fullSyncProgress?.version;
+  let first = 0;
+  runs.forEach((r, i) => {
+    const v = versionOf(r);
+    if (v != null && v !== SYNC_VERSION) first = i + 1;
+  });
+  const tries = runs.slice(first).map((r) => ({ status: r.status, errorMessage: r.errorMessage }));
   return { resume, stepMs, tries };
 }
 
@@ -2049,7 +2122,7 @@ async function runFullSync(
       const rows = await readOrNote("Estimate");
       if (rows == null) return;
       fetched.Estimate = rows.length;
-      await applyEstimates(ctx, rows, true, lookups, await complete("Estimate", rows));
+      totals.figureRowsChanged += await applyEstimates(ctx, rows, true, lookups, await complete("Estimate", rows));
     },
   };
   // Purchase is the backbone of job costing, and Invoice of revenue: if

@@ -140,6 +140,7 @@ export default function ResetPasswordForm() {
             autoComplete="new-password"
             required
             minLength={8}
+            maxLength={200}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             className="mt-1 w-full rounded-lg border border-jp-line px-3 py-2"
@@ -156,6 +157,7 @@ export default function ResetPasswordForm() {
             type="password"
             autoComplete="new-password"
             required
+            maxLength={200}
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             className="mt-1 w-full rounded-lg border border-jp-line px-3 py-2"

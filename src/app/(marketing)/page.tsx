@@ -21,7 +21,7 @@ import {
 import PricingCards from "@/components/marketing/PricingCards";
 import QuickBooksComparison from "@/components/marketing/QuickBooksComparison";
 import FitCheck from "@/components/marketing/FitCheck";
-import { PLANS } from "@/lib/plans";
+import { PLANS, TRIAL_DAYS, TRIAL_LIMITS } from "@/lib/plans";
 import { OG_IMAGE } from "@/lib/siteMeta";
 import { DISCONNECTED_RETENTION_DAYS, LAPSED_DISCONNECT_DAYS } from "@/lib/dataRetention";
 import { IDLE_JOB_DAYS } from "@/lib/profitability";
@@ -124,7 +124,13 @@ const FAQ_ITEMS = [
   },
   {
     q: "Is there a free trial?",
-    a: <>Yes, 14 days, with full access to everything.</>,
+    // The trial's features and limits (src/lib/entitlements.ts TRIAL_FEATURES, TRIAL_LIMITS in plans.ts).
+    a: (
+      <>
+        Yes, {TRIAL_DAYS} days with everything in Pro, plus the {PLANS.firm.name} plan&rsquo;s client logins, for up
+        to {TRIAL_LIMITS.maxConnections} QuickBooks companies.
+      </>
+    ),
   },
   {
     q: "Is a credit card required?",

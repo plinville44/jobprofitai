@@ -18,6 +18,8 @@ export default function DataHealthSummary({ dataHealth, byClass = false }: { dat
   // The first nine are what computeDashboardTotals adds into the
   // "Data Issues" tile. Missing estimates are listed after them as setup
   // rather than a data problem, which is why the tile doesn't count them.
+  // A completed job with revenue and no costs is on the first and third
+  // lines; the tile counts it once.
   const rows: { label: string; count: number | null }[] = [
     { label: "jobs with revenue but no costs", count: dataHealth.jobsMissingCosts.length },
     { label: "stale jobs (no activity in 30+ days)", count: dataHealth.staleJobs.length },

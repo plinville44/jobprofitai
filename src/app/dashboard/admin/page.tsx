@@ -4,6 +4,8 @@ import { formatCents } from "@/lib/format";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { StatGrid } from "@/components/dashboard/AdminTable";
+import { partnerPayout, payoutReferralStates } from "@/lib/partners";
+import { HELD_FOR_CHECK_WHERE } from "@/lib/referrals";
 
 export const dynamic = "force-dynamic";
 
@@ -49,13 +51,21 @@ export default async function AdminOverviewPage() {
     prisma.referralReward.findMany({ select: { status: true, amountCents: true } }),
     prisma.partner.count({ where: { status: "pending" } }),
     prisma.partner.count({ where: { status: "approved" } }),
-    prisma.partnerCommission.findMany({ select: { status: true, commissionCents: true } }),
+    prisma.partnerCommission.findMany({ select: { id: true, status: true, commissionCents: true, referralId: true } }),
     prisma.contactSubmission.count(),
     prisma.emailEvent.count({ where: { status: "failed" } }),
   ]);
   // Counted separately from past_due: unpaid accounts have lost access,
   // past_due ones haven't, and the overview used to report both as "past due".
   const unpaid = await prisma.subscription.count({ where: { status: "unpaid" } });
+  // Referrals waiting for a person's check, and commission owed as the
+  // Partners tab counts it: not what's held for a check or earned on a
+  // disqualified referral (audit Oct 27, B3 review).
+  const heldReferrals = await prisma.referral.count({ where: HELD_FOR_CHECK_WHERE });
+  const payout = partnerPayout(
+    commissions,
+    await payoutReferralStates(commissions.filter((c) => c.status === "earned").map((c) => c.referralId))
+  );
 
   const sum = <T extends { status: string }>(
     rows: (T & { amountCents?: number; commissionCents?: number })[],
@@ -112,14 +122,21 @@ export default async function AdminOverviewPage() {
           stats={[
             { label: "Awaiting review", value: String(partnersPending) },
             { label: "Approved partners", value: String(partnersApproved) },
-            {
-              label: "Commission owed",
-              value: money(sum(commissions, "earned", "commissionCents")),
-            },
+            { label: "Commission owed", value: money(payout.owedCents) },
+            { label: "Commission held", value: money(payout.heldCents) },
             { label: "Commission paid", value: money(sum(commissions, "paid", "commissionCents")) },
             { label: "Voided", value: money(sum(commissions, "voided", "commissionCents")) },
           ]}
         />
+        {heldReferrals > 0 ? (
+          <p className="mt-2 text-xs font-medium text-amber-700">
+            {heldReferrals} referral(s) waiting for a check before any credit or commission is paid:{" "}
+            <Link href="/dashboard/admin/referrals" className="underline">
+              decide them
+            </Link>
+            .
+          </p>
+        ) : null}
         {partnersPending > 0 ? (
           <p className="mt-2 text-xs font-medium text-amber-700">
             {partnersPending} partner application(s) waiting on review:{" "}

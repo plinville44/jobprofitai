@@ -54,6 +54,12 @@ export default async function JobDetailPage({
   const canForecast = Boolean(await requireFeature(account.ownerId, "forecast_at_completion"));
 
   const f = data.financials;
+  // The Work in Progress section: this job as the WIP report has it, as of
+  // today in the company's time zone and only where the schedule measures it
+  // (F7, audit Oct 27), so it can't show unbilled work the WIP report and
+  // Money Owed don't.
+  const w = data.wipAsOf.financials;
+  const wipNeed = data.wipAsOf.need;
   const viewOnly = account.role === "client";
 
   return (
@@ -193,7 +199,14 @@ export default async function JobDetailPage({
       {/* Work in progress: over/under billing for an open job. */}
       {f.status === "open" && (
         <Section title="Work in Progress">
-          {f.wip?.costPastEstimate ? (
+          {/* In the schedule's order: idle first, then what the job needs. */}
+          {w.wip && data.wipAsOf.idle ? (
+            <p className="text-sm text-gray-600">
+              Nothing has been posted to this job in the last 90 days, so it&apos;s left off the WIP schedule and its totals:
+              a job this quiet is usually finished.
+              {viewOnly ? " Your bookkeeper can mark it completed." : " If it is, mark it completed in Job Details."}
+            </p>
+          ) : w.wip?.costPastEstimate ? (
             // Past the estimate, percent complete is capped at 100%, so the
             // whole contract reads as earned and the job looks under billed.
             // That isn't a measurement: say what the WIP report says instead.
@@ -205,31 +218,52 @@ export default async function JobDetailPage({
                 ? " Your bookkeeper can update the estimated cost or enter a percent complete."
                 : " Update the estimated cost or enter a percent complete in Job Details."}
             </p>
-          ) : f.wip ? (
+          ) : w.wip && wipNeed != null ? (
+            <p className="text-sm text-amber-700">
+              {sentence(NOT_SCHEDULED_NEED_TEXT[wipNeed])} Until then this job is left off the WIP schedule and its totals,
+              and its billing isn&apos;t checked.
+              {wipNeed === "costs_behind"
+                ? ` The ${Math.round(w.wip.percentComplete * 100)}% complete entered would show more profit to date than the whole job is estimated to make. Check for bills not entered in QuickBooks yet.${
+                    data.estimateFromTargetMargin
+                      ? viewOnly
+                        ? " The cost estimate was filled in from the target margin, so a real cost estimate is likely the fix."
+                        : " The cost estimate was filled in from your target margin, so entering your own is likely the fix."
+                      : ""
+                  }`
+                : ""}
+              {viewOnly
+                ? " Your bookkeeper can update the percent complete or the cost estimate."
+                : " The percent complete and the cost estimate are both in Job Details."}
+            </p>
+          ) : w.wip ? (
             <>
               <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                 <Stat
                   label="Percent Complete"
-                  value={`${Math.round(f.wip.percentComplete * 100)}%`}
-                  help={f.wip.percentCompleteSource === "manual" ? "Entered in Job Details." : "Cost to date divided by the estimated cost."}
+                  value={`${Math.round(w.wip.percentComplete * 100)}%`}
+                  help={w.wip.percentCompleteSource === "manual" ? "Entered in Job Details." : "Cost to date divided by the estimated cost."}
                 />
-                <Stat label="Earned Revenue" value={formatCurrency(f.wip.earnedRevenue)} help="Contract value times percent complete." />
-                <Stat label="Billed to Date" value={formatCurrency(f.revenue)} help="Invoices and sales receipts so far, excluding tax." />
+                <Stat label="Earned Revenue" value={formatCurrency(w.wip.earnedRevenue)} help="Contract value times percent complete." />
+                <Stat label="Billed to Date" value={formatCurrency(w.revenue)} help="Invoices and sales receipts dated up to today, excluding tax." />
                 <Stat
-                  label={f.wip.overUnderBilling >= 0 ? "Over Billed" : "Under Billed"}
-                  value={formatCurrency(Math.abs(f.wip.overUnderBilling))}
+                  label={w.wip.overUnderBilling >= 0 ? "Over Billed" : "Under Billed"}
+                  value={formatCurrency(Math.abs(w.wip.overUnderBilling))}
                   help="Billed to date minus earned revenue."
                 />
               </dl>
               <p className="mt-3 text-sm text-gray-600">
-                {f.wip.overUnderBilling >= 0
-                  ? `Billed ${formatCurrency(f.wip.overUnderBilling)} ahead of the work done. Good for cash, and a reminder that the remaining work is partly paid for already.`
-                  : `About ${formatCurrency(-f.wip.overUnderBilling)} of work is done but not billed yet.`}
+                {w.wip.overUnderBilling >= 0
+                  ? `Billed ${formatCurrency(w.wip.overUnderBilling)} ahead of the work done. Good for cash, and a reminder that the remaining work is partly paid for already.`
+                  : `About ${formatCurrency(-w.wip.overUnderBilling)} of work is done but not billed yet.`}
                 {/* A client's view-only login has no Job Details form. */}
-                {f.wip.percentCompleteSource === "cost"
+                {w.wip.percentCompleteSource === "cost"
                   ? viewOnly
                     ? " Progress is measured by cost against the estimate."
                     : " Progress is measured by cost against the estimate; enter a percent complete if the work is further along or behind than spending suggests."
+                  : ""}
+                {/* As of today, like the WIP report: an invoice or bill dated later isn't counted yet. */}
+                {w.revenue !== f.revenue || w.costs !== f.costs
+                  ? " As on the WIP report, anything dated after today isn't counted here yet."
                   : ""}
               </p>
             </>

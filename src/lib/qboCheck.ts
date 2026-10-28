@@ -124,7 +124,7 @@ export function compareWithQuickBooks(ours: OurJobTotals, qb: PnlTotals): CheckR
   }
   if (!lines.every((l) => l.matches)) {
     notes.push(
-      "Anything changed in QuickBooks since the last sync shows up here after the next one. Other common causes: an invoice made out to the parent customer instead of this project (counted here when it's that customer's only job), a transaction dated after today (QuickBooks' report stops at today), or a cost posted to a balance sheet account such as inventory, which the Profit and Loss leaves out."
+      "Anything changed in QuickBooks since the last sync shows up here after the next one. Other common causes: an invoice made out to the parent customer instead of this project (counted here when it's that customer's only job), a transaction dated after today (QuickBooks' report stops at today), a cost posted to a balance sheet account such as inventory, which the Profit and Loss leaves out, or an over or under billing adjustment your accountant posted to income as a journal entry: JobProfitAI counts what was billed, which is what the WIP schedule measures, and leaves those adjustments out."
     );
   }
   return { lines, allMatch: lines.every((l) => l.matches), notes };

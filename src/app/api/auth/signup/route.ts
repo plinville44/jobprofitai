@@ -16,10 +16,12 @@ import { claimSignupSlot, clientIp, findLoginByEmail, releaseSignupSlot } from "
 
 export const runtime = "nodejs";
 
+// Every rule a person can trip gets our own words: zod's ("Too big: expected
+// string to have <=200 characters") reached the form as is (audit Oct 27, Z2).
 const SignupSchema = z.object({
-  email: z.string().email().max(320),
-  password: z.string().min(8, "Password must be at least 8 characters").max(200),
-  name: z.string().trim().max(120).optional(),
+  email: z.string().email("Enter a valid email address.").max(320, "Email addresses can be at most 320 characters."),
+  password: z.string().min(8, "Password must be at least 8 characters").max(200, "Passwords can be at most 200 characters."),
+  name: z.string().trim().max(120, "Names can be at most 120 characters.").optional(),
   timeZone: z.string().max(64).optional(),
   // The unchecked "I agree to the Terms of Service and Privacy Policy" box.
   acceptTerms: z.literal(true, {

@@ -161,6 +161,8 @@ vi.mock("next/headers", () => ({
   }),
   headers: async () => browser.headers,
 }));
+// Work a route leaves to run after its reply (forgot-password, audit Oct 27).
+const afterTasks = vi.hoisted(() => [] as Promise<unknown>[]);
 vi.mock("next/server", () => {
   const make = (extra: Obj) => {
     const setCookies: Record<string, string> = {};
@@ -171,6 +173,7 @@ vi.mock("next/server", () => {
       redirect: (url: URL | string) => make({ url: String(url), status: 307 }),
       json: (body: unknown, init?: { status?: number }) => make({ body, status: init?.status ?? 200 }),
     },
+    after: (task: () => unknown) => void afterTasks.push(Promise.resolve().then(task)),
   };
 });
 
@@ -241,6 +244,9 @@ vi.mock("@/lib/signupReferral", () => ({ attributeSignupReferral: async () => fa
 const money = { voided: [] as string[], commissions: [] as string[], disqualified: [] as string[] };
 vi.mock("@/lib/referrals", () => ({
   REFERRAL_COOKIE: "jpai_ref",
+  // As the real one: held for a person's check (audit Oct 27, B3).
+  isHeldForCheck: (r: { status: string; disqualifiedReason: string | null }) =>
+    r.status !== "disqualified" && (r.disqualifiedReason ?? "").startsWith("Check by hand before paying:"),
   applyPendingRewardsForUser: async () => 0,
   disqualifyReferral: async (userId: string) => {
     money.disqualified.push(userId);
@@ -1164,7 +1170,10 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
       await seedPayer({}, { email: "john@example.com" });
       const res: any = await login(post({ email: "j_hn@example.com", password: "right-password" }, { "x-forwarded-for": "1.2.3.4" }));
       expect(res.status).toBe(401);
-      expect(auth.passwordChecks).toBe(0);
+      // One check, against the stand-in hash an address with no login gets so
+      // the reply takes as long (audit Oct 27, B7). Not against john's: his
+      // right password would have signed in.
+      expect(auth.passwordChecks).toBe(1);
       expect(auth.created).toEqual([]);
       // Counted against exactly what was typed, lowercased.
       expect(await fake.client.loginAttempt.count({ where: { emailHash: emailKey("j_hn@example.com"), success: false } })).toBe(1);
@@ -1176,9 +1185,13 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
       await seedPayer({}, { email: "john@example.com" });
       const res: any = await signup(post({ email: "j_hn@example.com", password: "long-enough-1", acceptTerms: true }, { "x-forwarded-for": "5.4.3.2" }));
       expect(res.status).toBe(200);
+      // The reset is made after the reply now (audit Oct 27, B7), so what the
+      // route left running is awaited before looking.
       await forgotPassword(post({ email: "jo%@example.com" }));
+      await Promise.all(afterTasks.splice(0));
       expect(await fake.client.passwordResetToken.count({ where: { userId: "u1" } })).toBe(0);
       await forgotPassword(post({ email: "JOHN@example.com" }));
+      await Promise.all(afterTasks.splice(0));
       expect(await fake.client.passwordResetToken.count({ where: { userId: "u1" } })).toBe(1);
     });
 

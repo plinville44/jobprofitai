@@ -71,8 +71,8 @@ export function ExternalLink({ href, children }: { href: string; children: React
   );
 }
 
-/** Shown on every legal page. Set in src/lib/legalVersion.ts with the acceptance version. */
-export { LEGAL_LAST_UPDATED } from "@/lib/legalVersion";
+/** Each legal page's own "Last updated" date. Set in src/lib/legalVersion.ts with the acceptance version. */
+export { LEGAL_UPDATED } from "@/lib/legalVersion";
 
 /** The postal address, formatted for the Contact section of each legal page. */
 export function MailingAddress() {

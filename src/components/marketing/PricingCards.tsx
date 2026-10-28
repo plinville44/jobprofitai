@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { PLAN_LIST } from "@/lib/plans";
+import { PLAN_LIST, RECOMMENDED_PLAN_BADGE } from "@/lib/plans";
 import { CheckIcon } from "./ui";
 
 /**
@@ -27,8 +27,8 @@ export default function PricingCards({ compact = false }: { compact?: boolean })
           }`}
         >
           {plan.mostPopular ? (
-            <span className="absolute -top-3 left-7 inline-flex items-center rounded-full bg-jp-blue px-3 py-1 text-xs font-semibold text-white">
-              Most Popular
+            <span className="absolute -top-3 left-7 inline-flex items-center whitespace-nowrap rounded-full bg-jp-blue px-3 py-1 text-xs font-semibold text-white">
+              {RECOMMENDED_PLAN_BADGE}
             </span>
           ) : null}
 

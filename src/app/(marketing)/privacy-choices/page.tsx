@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { LegalPage, LegalSection, LEGAL_LAST_UPDATED, SupportEmail } from "@/components/marketing/Legal";
+import { LegalPage, LegalSection, LEGAL_UPDATED, SupportEmail } from "@/components/marketing/Legal";
 import PrivacyChoices from "@/components/marketing/PrivacyChoices";
 
 export const metadata: Metadata = {
@@ -16,7 +16,7 @@ export default function PrivacyChoicesPage() {
   return (
     <LegalPage
       title="Your Privacy Choices"
-      updated={LEGAL_LAST_UPDATED}
+      updated={LEGAL_UPDATED["privacy-choices"]}
       intro={
         <p>
           Our public website uses Google Analytics, which also measures our Google Ads, to see how

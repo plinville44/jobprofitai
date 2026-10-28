@@ -35,6 +35,9 @@ import { fullSyncPartway } from "./syncProblem";
  *    profit beside a large loss to date.
  *  - A job entered as under 25% complete with no cost estimate. Its total
  *    cost can't be estimated, and one blank row would blank the totals.
+ *  - A job whose entered percent complete is well ahead of its costs: the
+ *    row would show more gross profit to date than the whole job is
+ *    estimated to make (see costsBehindEnteredPercent).
  *  - An open job with no cost or invoice for 90 days. It's almost always
  *    finished and never marked so, and its under billing is years-old
  *    history, not money to collect.
@@ -46,8 +49,15 @@ export const WIP_IDLE_DAYS = 90;
 const COMPLETED_WINDOW_DAYS = 365;
 /** Billing past the contract by less than this is rounding, not a change order. */
 const BILLED_PAST_CONTRACT_TOLERANCE = 1;
+/**
+ * Gross profit to date past the estimated gross profit by less than either
+ * of these is a typed-in percent being a little ahead, or a bill a few days
+ * late, not figures that disagree (costsBehindEnteredPercent).
+ */
+const COSTS_BEHIND_MIN_AMOUNT = 1000;
+const COSTS_BEHIND_MIN_SHARE = 0.05;
 
-export type NotScheduledNeed = "contract" | "progress" | "estimate_passed";
+export type NotScheduledNeed = "contract" | "progress" | "estimate_passed" | "costs_behind";
 
 /** What each job not on the schedule needs, in the words the page, report and CSV all use. */
 export const NOT_SCHEDULED_NEED_TEXT: Record<NotScheduledNeed, string> = {
@@ -56,6 +66,7 @@ export const NOT_SCHEDULED_NEED_TEXT: Record<NotScheduledNeed, string> = {
   // early to project the total cost from the percent.
   progress: "needs a cost estimate, or a percent complete of 25% or more",
   estimate_passed: "costs have passed the estimate: needs an updated cost estimate or percent complete",
+  costs_behind: "costs are well behind the percent complete entered: needs an updated percent complete or cost estimate",
 };
 
 export interface WipScheduleRow {
@@ -170,7 +181,32 @@ export function wipScheduleNeed(f: JobFinancials): NotScheduledNeed | null {
     if (f.estimatedCost == null || f.estimatedCost <= 0) return "progress";
     if (f.costs >= f.estimatedCost) return "estimate_passed";
   }
+  if (costsBehindEnteredPercent(f)) return "costs_behind";
   return null;
+}
+
+/**
+ * An entered percent complete well ahead of the costs (F5, audit Oct 27).
+ * Earned revenue follows the percent, while the estimated total cost never
+ * drops below the cost estimate, so the row shows more gross profit to date
+ * than the whole job is estimated to make: a $100,000 contract entered as
+ * 100% complete, with $40,000 of an $80,000 estimate spent, read $60,000
+ * gross profit to date against $20,000 estimated, and $40,000 still to spend
+ * on finished work. Whether the percent, the estimate, or bills not entered
+ * yet are behind it only the contractor knows, so the job is listed with
+ * what it needs rather than shown with figures that contradict each other.
+ * A job expected to lose money already books the whole loss (provisionForLoss).
+ * The same whatever the estimate's source: one filled in from the target
+ * margin would put the same contradiction on a bank-ready report.
+ */
+function costsBehindEnteredPercent(f: JobFinancials): boolean {
+  if (!f.wip || f.wip.percentCompleteSource !== "manual" || f.estimatedRevenue == null) return false;
+  const total = estimatedTotalCostOf(f);
+  if (total == null) return false;
+  const estimatedGrossProfit = f.estimatedRevenue - total;
+  if (estimatedGrossProfit < 0) return false;
+  const ahead = f.wip.earnedRevenue - f.costs - estimatedGrossProfit;
+  return ahead > COSTS_BEHIND_MIN_AMOUNT && ahead > f.estimatedRevenue * COSTS_BEHIND_MIN_SHARE;
 }
 
 /**

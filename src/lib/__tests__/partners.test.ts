@@ -113,6 +113,26 @@ describe("commission rate tiers", () => {
     expect((await currentPartnerTier(partner.id)).ratePct).toBe(20);
   });
 
+  it("doesn't let a client held for a check lift its own rate (audit Oct 27, B3)", async () => {
+    // Nine paying clients, and a tenth whose referral is held and whose subscription hasn't caught up yet.
+    const { partner } = await seedPartnerWithClients(9);
+    await fake.client.user.create({ data: { id: "held_client", email: "held@example.com" } });
+    await fake.client.subscription.create({ data: { userId: "held_client", status: "trialing", plan: "profit_intelligence" } });
+    const held = await fake.client.referral.create({
+      data: {
+        referralCodeId: "rc_1",
+        kind: "partner",
+        partnerId: partner.id,
+        referredUserId: "held_client",
+        status: "signed_up",
+        disqualifiedReason: "Check by hand before paying: this account's email address was first proven by a password reset on Jul 1, 2026, so whoever signed up through this link may not have owned it. Nothing was changed.",
+      },
+    });
+    const result = await recordCommissionForInvoice({ invoice: invoice({ id: "in_held" }), referralId: held.id, partnerId: partner.id, referredUserId: "held_client", paidAt: NOW });
+    // Still 20%: counted, it would have made ten and 25%.
+    expect(result?.rateBps).toBe(2000);
+  });
+
   it("pays 25% at ten or more paying clients", async () => {
     const { partner, referralIds } = await seedPartnerWithClients(12);
     expect(await countPayingClients(partner.id)).toBe(12);

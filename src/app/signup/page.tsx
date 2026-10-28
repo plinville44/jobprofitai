@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { LogoLink } from "@/components/marketing/Logo";
+import { TRADEMARK_NOTICE } from "@/components/marketing/trademark";
 import SignupForm from "./SignupForm";
 
 export const metadata: Metadata = {
@@ -37,6 +38,8 @@ export default function SignupPage() {
             <SignupForm />
           </Suspense>
         </div>
+        {/* The form names QuickBooks and Intuit, and every ad click lands here. */}
+        <p className="mt-3 text-center text-xs text-jp-muted">{TRADEMARK_NOTICE}</p>
 
         <p className="mt-6 text-center text-xs text-jp-muted">
           <Link href="/" className="hover:text-jp-blue">

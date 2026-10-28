@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { LogoLink } from "@/components/marketing/Logo";
+import { TRADEMARK_NOTICE } from "@/components/marketing/trademark";
 import { getAccount, listCompanies } from "@/lib/account";
 import { hashRealmId, legacyHashRealmId } from "@/lib/crypto";
 import { probeConnection } from "@/lib/quickbooksSync";
@@ -108,6 +109,7 @@ export default async function DisconnectedPage(props: { searchParams: Promise<{ 
             .
           </p>
         </div>
+        <p className="mt-3 text-center text-xs text-jp-muted">{TRADEMARK_NOTICE}</p>
       </div>
     </main>
   );

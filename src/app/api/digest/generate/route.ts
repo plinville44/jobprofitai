@@ -9,7 +9,7 @@ import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
 import { generateWeeklyDigestForConnection, SummaryOutOfTimeError } from "@/lib/digest";
 import { overLimitConnectionIds, pausedCompaniesMessage } from "@/lib/planLimits";
 import { fullSyncPartway } from "@/lib/syncProblem";
-import { aiFailureKind } from "@/lib/ai";
+import { aiErrorForReport, aiErrorText, aiFailureKind } from "@/lib/ai";
 import { reportError } from "@/lib/monitoring";
 import { publicErrorMessage } from "@/lib/publicError";
 
@@ -148,11 +148,11 @@ export async function POST(req: NextRequest) {
     // show a real error message instead of hanging.
     // Message only, never the full error object - see the matching comment
     // in api/quickbooks/sync/route.ts for why.
-    console.error("digest/generate failed:", err instanceof Error ? err.message : "Unknown error");
+    console.error("digest/generate failed:", aiErrorText(err));
     // A refused AI request (an old ANTHROPIC_MODEL, a revoked key) used to
     // end here unreported. A plain timeout is the wait, not a fault.
     if (!(err instanceof SummaryOutOfTimeError) && aiFailureKind(err) !== "timeout") {
-      await reportError(err, { route: "/api/digest/generate", method: "POST", feature: "brief-summary" });
+      await reportError(aiErrorForReport(err), { route: "/api/digest/generate", method: "POST", feature: "brief-summary" });
     }
     return NextResponse.json(
       { error: publicErrorMessage(err, "Digest generation failed.") },

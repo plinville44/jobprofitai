@@ -47,7 +47,9 @@ export async function POST(req: NextRequest) {
   }
   // Exactly the address typed, ignoring case (findLoginByEmail), never a wildcard match.
   const user = await findLoginByEmail(email);
-  const valid = user ? await verifyPassword(parsed.data.password, user.passwordHash) : false;
+  // Checked even with no such login, against a stand-in hash, so the reply
+  // takes as long either way (audit Oct 27, B7).
+  const valid = await verifyPassword(parsed.data.password, user?.passwordHash ?? null);
   await finishLoginAttempt(attempt.attemptId, valid);
   if (!user || !valid) return NextResponse.json({ error: "Incorrect email or password." }, { status: 401 });
 

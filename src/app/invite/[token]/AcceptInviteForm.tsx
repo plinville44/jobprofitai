@@ -52,6 +52,7 @@ export default function AcceptInviteForm(
               type="password"
               required
               minLength={8}
+              maxLength={200}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"

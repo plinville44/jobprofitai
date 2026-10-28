@@ -6,7 +6,7 @@ import {
   LegalPage,
   LegalSection,
   LegalSub,
-  LEGAL_LAST_UPDATED,
+  LEGAL_UPDATED,
   MailingAddress,
   SupportEmail,
 } from "@/components/marketing/Legal";
@@ -83,7 +83,7 @@ export default function PrivacyPage() {
   return (
     <LegalPage
       title="Privacy Policy"
-      updated={LEGAL_LAST_UPDATED}
+      updated={LEGAL_UPDATED.privacy}
       intro={
         <>
           <p>
@@ -384,8 +384,10 @@ export default function PrivacyPage() {
             provider, and nothing on our website loads from YouTube. Until you click play, the page
             shows only a still picture, and the video downloads only when you play it. Where our Google
             Analytics tags are running, they may count that you started or finished a video. Some of
-            our emails link to the same videos on YouTube, a Google service. If you open one there,
-            YouTube collects information under{" "}
+            our emails link to our videos on YouTube, a Google service, including a setup video that
+            isn&rsquo;t on our website. If a video can&rsquo;t load on our website, the player offers a
+            link to watch it on YouTube instead. If you open one there, YouTube collects information
+            under{" "}
             <ExternalLink href="https://policies.google.com/privacy">Google&rsquo;s privacy policy</ExternalLink>.
           </p>
         </LegalSub>

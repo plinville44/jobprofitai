@@ -2,7 +2,7 @@ import { AI_MODEL, anthropic, inUs } from "./ai";
 import { prisma } from "./prisma";
 import { getJobTypes } from "./jobTypesServer";
 import { selectableJobTypes, suggestJobType, suggestJobTypeFromEstimateLines, type CompanyJobType } from "./jobTypes";
-import { buildJobIndex, ESTIMATE_PARENT_FALLBACK_GRACE_DAYS, resolveJob, type EstimateLine } from "./qboNormalize";
+import { buildJobIndex, estimatesByJob, type EstimateLine } from "./qboNormalize";
 import { contractEstimates } from "./opportunities";
 
 /**
@@ -45,20 +45,21 @@ export async function getJobTypeSuggestions(connectionId: string, types?: Compan
       select: { id: true, name: true, customerName: true, status: true, statusOverride: true, suggestedCategory: true, suggestionSource: true, suggestionReason: true },
       orderBy: { name: "asc" },
     }),
-    // qboCreatedAt: estimates are matched as the sync matches them for contract value (see resolveJob).
-    prisma.job.findMany({ where: { connectionId }, select: { id: true, qboId: true, parentQboId: true, qboCreatedAt: true } }),
+    // qboCreatedAt: estimates are matched as the sync matches them for contract value (see estimatesByJob),
+    // over the jobs still in QuickBooks, as the sync does.
+    prisma.job.findMany({ where: { connectionId, missingSince: null }, select: { id: true, qboId: true, parentQboId: true, qboCreatedAt: true } }),
     prisma.jobEstimate.findMany({ where: { connectionId }, select: { customerQboId: true, amount: true, status: true, txnDate: true, lines: true } }),
   ]);
 
   const index = buildJobIndex(allJobs);
   const linesByJob = new Map<string, { amount: number; status: string; txnDate: Date; lines: EstimateLine[] }[]>();
-  for (const e of estimates) {
-    const r = resolveJob(index, e.customerQboId, e.txnDate, ESTIMATE_PARENT_FALLBACK_GRACE_DAYS);
-    if (!r || !Array.isArray(e.lines)) continue;
-    linesByJob.set(r.jobId, [
-      ...(linesByJob.get(r.jobId) ?? []),
-      { amount: Number(e.amount), status: e.status, txnDate: e.txnDate, lines: e.lines as unknown as EstimateLine[] },
-    ]);
+  for (const [jobId, list] of estimatesByJob(index, estimates)) {
+    const withLines = list.filter((e) => Array.isArray(e.lines));
+    if (withLines.length === 0) continue;
+    linesByJob.set(
+      jobId,
+      withLines.map((e) => ({ amount: Number(e.amount), status: e.status, txnDate: e.txnDate, lines: e.lines as unknown as EstimateLine[] }))
+    );
   }
 
   const rows: JobTypeSuggestionRow[] = jobs.map((j) => {

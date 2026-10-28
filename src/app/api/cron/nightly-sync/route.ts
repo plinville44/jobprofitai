@@ -3,6 +3,7 @@ import type { QuickBooksConnection } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { authorizeCron } from "@/lib/cronAuth";
 import {
+  COST_SYNC_VERSION,
   FULL_SYNC_TOO_LONG_MESSAGE,
   FullSyncNotAllowedError,
   fullSyncDue,
@@ -14,10 +15,11 @@ import { overLimitConnectionIds } from "@/lib/planLimits";
 import { evaluateAlerts, markAlertsSent } from "@/lib/alerts";
 import { renderAlertEmail } from "@/lib/email/briefEmail";
 import { sendProfitAlerts } from "@/lib/email/lifecycle";
-import { alertsDelivered, alertSendFailure } from "@/lib/briefSend";
+import { alertsDelivered, alertSendFailure, briefDueFirst } from "@/lib/briefSend";
 import { freezeClosedSnapshots, takeWipSnapshot } from "@/lib/wipSnapshots";
 import { dailySyncDue, MIN_GAP_MS } from "@/lib/syncSchedule";
-import { isCodeOrDatabaseFault, reportError, withCronMonitor } from "@/lib/monitoring";
+import { fullSyncPartway } from "@/lib/syncProblem";
+import { isCodeOrDatabaseFault, reportError, RunErrors, withCronMonitor } from "@/lib/monitoring";
 
 /**
  * GET /api/cron/nightly-sync  (Vercel Cron, hourly; see vercel.json)
@@ -172,7 +174,24 @@ async function syncDueCompanies() {
   // A full sync that turns out to be needed after all (Settings asked for a
   // rebuild a moment ago, or QuickBooks' change feed fails) isn't run by an
   // incremental worker: it's left for the full-sync slot (deferFullSync).
-  const fullQueue = [...continuing, ...due.filter((c) => fullSyncDue(c, startedAt))];
+  //
+  // A company whose weekly brief is held for its full sync (an upgrade to
+  // how costs are stored, or a full read partway) and is due within a day,
+  // or already waiting, goes first, soonest due first (briefDueFirst): the
+  // brief's window is 48 hours, and behind everyone else's upgrade it could
+  // close before the sync came round (audit Oct 27, E2).
+  // A brief that already went out for its send isn't waiting (review of
+  // audit Oct 27): when each company's last brief was emailed.
+  const briefHeld = (c: QuickBooksConnection) => c.syncVersion < COST_SYNC_VERSION || fullSyncPartway(c);
+  const fullCandidates = [...continuing, ...due.filter((c) => fullSyncDue(c, startedAt))];
+  const lastEmailed = fullCandidates.length
+    ? await prisma.weeklyDigest.groupBy({
+        by: ["connectionId"],
+        where: { connectionId: { in: fullCandidates.map((c) => c.id) }, emailedAt: { not: null } },
+        _max: { emailedAt: true },
+      })
+    : [];
+  const fullQueue = briefDueFirst(fullCandidates, now, briefHeld, new Map(lastEmailed.map((r) => [r.connectionId, r._max.emailedAt])));
   const incrementalQueue = due.filter((c) => !fullSyncDue(c, startedAt));
 
   // Companies past their plan's company limit, worked out once per account
@@ -189,6 +208,8 @@ async function syncDueCompanies() {
   };
 
   const results: { connectionId: string; status: string; detail?: string }[] = [];
+  // Unexpected errors, one report for each kind once the run is done (E9).
+  const errors = new RunErrors();
   /** Companies whose sync in this run finished cleanly, for the WIP snapshots. */
   const synced: QuickBooksConnection[] = [];
   const onSynced = (connection: QuickBooksConnection) => synced.push(connection);
@@ -199,7 +220,7 @@ async function syncDueCompanies() {
       while (next < queue.length) {
         if (!mayStart()) return;
         const connection = queue[next++];
-        results.push(await syncAndAlert(connection, pausedFor, options, onSynced));
+        results.push(await syncAndAlert(connection, pausedFor, options, onSynced, errors));
       }
     };
   };
@@ -232,6 +253,7 @@ async function syncDueCompanies() {
     }
     snapshots.push(await takeWipSnapshot(connection.id, { paused }));
   }
+  await errors.report({ cron: "nightly-sync" });
 
   return NextResponse.json({
     ok: true,
@@ -249,15 +271,22 @@ async function syncAndAlert(
   pausedFor: (ownerId: string) => Promise<Set<string>>,
   options: SyncOptions,
   /** Called once the company's sync has finished cleanly (not partway, not deferred). */
-  onSynced: (connection: QuickBooksConnection) => void
+  onSynced: (connection: QuickBooksConnection) => void,
+  errors: RunErrors
 ) {
   // To the back of the queue. A full read partway waits until tomorrow; one
   // owed and not begun stays owed, as an ordinary full sync, so it neither
   // reads as partway nor sits first in line run after run (see
   // holdFullSyncForSkippedCompany). A skip is quick, so one first in this
   // run's queue doesn't hold up the companies behind it.
+  //
+  // Its alerts baseline is cleared too: nothing is checked while it's
+  // skipped, so the first check once it's covered again records what built
+  // up meanwhile instead of emailing it all as new (alertsNeedBaseline). The
+  // check itself clears it for a paused company, but a skipped one never
+  // gets that far (review of audit Oct 27, E10).
   const skip = async (detail: string) => {
-    await prisma.quickBooksConnection.update({ where: { id: connection.id }, data: { lastSyncAttemptAt: new Date() } });
+    await prisma.quickBooksConnection.update({ where: { id: connection.id }, data: { lastSyncAttemptAt: new Date(), alertsBaselinedAt: null } });
     await holdFullSyncForSkippedCompany(connection, SKIPPED_FULL_SYNC_WAIT_MS);
     return { connectionId: connection.id, status: "skipped", detail };
   };
@@ -315,8 +344,10 @@ async function syncAndAlert(
     // outage), is recorded on the company and is retried on a later run, so
     // only a fault in our code or the database is reported from it. Anything
     // else here (the plan check, the alerts, their emails, whose sending
-    // problems come back as results, not errors) is unexpected.
-    if (!syncFailed || isCodeOrDatabaseFault(err)) await reportError(err, { cron: "nightly-sync" });
+    // problems come back as results, not errors) is unexpected. Reported once
+    // the run is done, one report for each kind with how many companies had
+    // it: one per company used up the 20 reports a minute (audit Oct 27, E9).
+    if (!syncFailed || isCodeOrDatabaseFault(err)) errors.add(err);
     return { connectionId: connection.id, status: "error", detail: message };
   }
 }

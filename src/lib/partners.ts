@@ -10,7 +10,13 @@ import {
 } from "@/lib/plans";
 import { subscriptionRevenueCents } from "@/lib/stripe/billing";
 import { isFirmInvoice } from "@/lib/stripe/invoicePlan";
-import { getOrCreatePartnerReferralCode, referralUrl } from "@/lib/referrals";
+import {
+  commissionReviewNote,
+  getOrCreatePartnerReferralCode,
+  isHeldForCheck,
+  referralUrl,
+  WITHOUT_CHECK_NOTE_WHERE,
+} from "@/lib/referrals";
 
 // The accountant / bookkeeper partner program.
 //
@@ -85,8 +91,12 @@ export async function countPayingClients(partnerId: string): Promise<number> {
   // what's being counted - and a nested filter across a nullable relation
   // (a referred account can be deleted while the referral record stays) is
   // exactly the kind of thing that silently returns the wrong count.
+  // Not a referral held for a person's check (isHeldForCheck in
+  // referrals.ts): until it's cleared it doesn't raise the rate frozen onto
+  // the partner's other commissions or count toward the free account
+  // (audit Oct 27, B3 review).
   const referrals = await prisma.referral.findMany({
-    where: { partnerId, status: { in: ["paid", "qualified"] } },
+    where: { partnerId, status: { in: ["paid", "qualified"] }, ...WITHOUT_CHECK_NOTE_WHERE },
     select: { referredUserId: true },
   });
 
@@ -189,7 +199,11 @@ export async function recordCommissionForInvoice(params: {
   // this row would otherwise ignore the very client who just paid.
   const counted = await countPayingClients(partnerId);
   const alreadyCounted = referredSub?.status === "active" || referredSub?.status === "past_due";
-  const tier = partnerTierFor(alreadyCounted ? counted : counted + 1);
+  // A referral held for a check isn't a paying client until a person clears
+  // it (countPayingClients), so it doesn't lift its own rate either.
+  const referral = await prisma.referral.findUnique({ where: { id: referralId }, select: { status: true, disqualifiedReason: true } });
+  const held = referral != null && isHeldForCheck(referral);
+  const tier = partnerTierFor(alreadyCounted || held ? counted : counted + 1);
   const commissionCents = Math.round((revenueCents * tier.rateBps) / 10_000);
 
   try {
@@ -271,7 +285,7 @@ export async function flagPaidCommissionsForReview(
   });
 
   for (const row of paid) {
-    const note = `REVIEW ${now.toISOString().slice(0, 10)}: ${reason} after this commission was paid out.`;
+    const note = commissionReviewNote(reason, now);
     await prisma.partnerCommission.update({
       where: { id: row.id },
       // Appended, not replaced. Whatever an admin wrote when they paid this
@@ -320,6 +334,62 @@ export async function maybeGrantFreeFirmAccount(partnerId: string): Promise<bool
  * means writing a payout executor that flips these same rows, not redesigning
  * the data model.
  */
+export interface PartnerPayout {
+  /** Earned commission that can be recorded as paid now. */
+  owedCents: number;
+  /** The commissions behind owedCents: what Mark paid records. */
+  payableIds: string[];
+  /** Earned commission on referrals held for a person's check. */
+  heldCents: number;
+}
+
+/** Of a set of referrals, those whose commission can't be paid now, and why. */
+export interface PayoutReferralStates {
+  /** Held for a person's check (isHeldForCheck). */
+  held: Set<string>;
+  /** Disqualified. */
+  disqualified: Set<string>;
+}
+
+/** Looks up PayoutReferralStates for these referrals. */
+export async function payoutReferralStates(referralIds: string[]): Promise<PayoutReferralStates> {
+  const states: PayoutReferralStates = { held: new Set(), disqualified: new Set() };
+  const ids = [...new Set(referralIds)];
+  if (ids.length === 0) return states;
+  const rows = await prisma.referral.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, status: true, disqualifiedReason: true },
+  });
+  for (const r of rows) {
+    if (r.status === "disqualified") states.disqualified.add(r.id);
+    else if (isHeldForCheck(r)) states.held.add(r.id);
+  }
+  return states;
+}
+
+/**
+ * Splits a partner's earned commission into what can be paid and what can't
+ * (audit Oct 27, B3 review). Held commission, on a referral waiting for a
+ * person's check, stays "earned" and is left out of Owed and of Mark paid
+ * until the referral is cleared (then payable) or disqualified (then
+ * voided). Earned commission on a disqualified referral isn't payable
+ * either: an invoice's webhook can record one just after a hand
+ * disqualification voided the rest. Pure, for tests.
+ */
+export function partnerPayout(
+  commissions: { id: string; status: string; commissionCents: number; referralId: string }[],
+  states: PayoutReferralStates
+): PartnerPayout {
+  const earned = commissions.filter((c) => c.status === "earned");
+  const payable = earned.filter((c) => !states.held.has(c.referralId) && !states.disqualified.has(c.referralId));
+  const sum = (list: typeof earned) => list.reduce((t, c) => t + c.commissionCents, 0);
+  return {
+    owedCents: sum(payable),
+    payableIds: payable.map((c) => c.id),
+    heldCents: sum(earned.filter((c) => states.held.has(c.referralId))),
+  };
+}
+
 export async function markCommissionsPaid(
   commissionIds: string[],
   note: string | null,
@@ -361,7 +431,7 @@ export async function getPartnerDashboardData(partnerId: string): Promise<Partne
 
   const [referralCode, referrals, payingClients, commissions] = await Promise.all([
     prisma.referralCode.findUnique({ where: { partnerId } }),
-    prisma.referral.findMany({ where: { partnerId }, select: { referredUserId: true } }),
+    prisma.referral.findMany({ where: { partnerId }, select: { referredUserId: true, status: true } }),
     countPayingClients(partnerId),
     prisma.partnerCommission.findMany({
       where: { partnerId },
@@ -369,7 +439,11 @@ export async function getPartnerDashboardData(partnerId: string): Promise<Partne
     }),
   ]);
 
+  // A disqualified referral (a self-referral, say) isn't the partner's
+  // client, so its trial isn't counted as theirs (audit Oct 27, B3). One
+  // flagged by flagUnprovenReferral is still theirs until a person decides.
   const referredUserIds = referrals
+    .filter((r) => r.status !== "disqualified")
     .map((r) => r.referredUserId)
     .filter((id): id is string => id != null);
 

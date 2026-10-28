@@ -159,9 +159,13 @@ export async function evaluateAlerts(
   });
   const existingByKey = new Map(existing.map((a) => [`${a.jobId}:${a.kind}`, a]));
 
+  // Work not billed is judged as the WIP report has the job, nothing dated
+  // after today (data.wipAsOf), so it clears on the figures it was raised on.
+  const judgedOn = (a: { jobId: string; kind: string }) =>
+    a.kind === "underbilled" && openJobs.has(a.jobId) ? data.wipAsOf.get(a.jobId) : openJobs.get(a.jobId);
   const cleared = existing
     .filter((a) => !current.has(`${a.jobId}:${a.kind}`))
-    .filter((a) => hasCleared(a.kind, openJobs.get(a.jobId), data.forecasts.get(a.jobId)))
+    .filter((a) => hasCleared(a.kind, judgedOn(a), data.forecasts.get(a.jobId)))
     .map((a) => a.id);
   if (cleared.length) await prisma.jobAlert.deleteMany({ where: { id: { in: cleared } } });
 

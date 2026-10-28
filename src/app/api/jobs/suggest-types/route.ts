@@ -4,7 +4,7 @@ import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
 import { refuseCrossSite } from "@/lib/sameOrigin";
 import { SuggestionCooldownError, suggestJobTypesWithAI } from "@/lib/jobTypeSuggestions";
 import { overLimitConnectionIds } from "@/lib/planLimits";
-import { aiFailureKind } from "@/lib/ai";
+import { aiErrorForReport, aiErrorText, aiFailureKind } from "@/lib/ai";
 import { reportError } from "@/lib/monitoring";
 
 export const maxDuration = 120;
@@ -46,10 +46,12 @@ export async function POST(req: NextRequest) {
     });
   } catch (err) {
     if (err instanceof SuggestionCooldownError) return NextResponse.json({ error: err.message }, { status: 429 });
-    console.error("jobs/suggest-types failed:", err instanceof Error ? err.message : "Unknown error");
+    // aiErrorText: the SDK's message is JSON, whose quoted values the log scrub
+    // removes, reason and all (audit Oct 27, SEC2).
+    console.error("jobs/suggest-types failed:", aiErrorText(err));
     // Reported so a refused AI request (an old ANTHROPIC_MODEL, a revoked key) is noticed. A timeout isn't a fault.
     if (aiFailureKind(err) !== "timeout") {
-      await reportError(err, { route: "/api/jobs/suggest-types", method: "POST", feature: "job-type-suggestions" });
+      await reportError(aiErrorForReport(err), { route: "/api/jobs/suggest-types", method: "POST", feature: "job-type-suggestions" });
     }
     return NextResponse.json({ error: "The suggestions couldn't be made just now. Please try again." }, { status: 500 });
   }

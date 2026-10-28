@@ -595,13 +595,18 @@ describe("monitoring", () => {
         expect({ slug, monitored: monitor > 0 }).toEqual({ slug, monitored: true });
         expect({ slug, authFirst: src.indexOf("authorizeCron(req)") < monitor }).toEqual({ slug, authFirst: true });
         expect(src).toContain("export const maxDuration = 300;");
-        expect(src).toContain(`reportError(err, { cron: "${slug}" })`);
+        // Directly, or grouped into one report per kind for the run (RunErrors, audit Oct 27, E9).
+        expect({ slug, reports: src.includes(`reportError(err, { cron: "${slug}" })`) || src.includes(`.report({ cron: "${slug}" })`) }).toEqual({
+          slug,
+          reports: true,
+        });
       }
     });
 
     it("leave the nightly sync's QuickBooks failures out of the reports", () => {
       const src = read("app/api/cron/nightly-sync/route.ts");
-      expect(src).toContain('if (!syncFailed || isCodeOrDatabaseFault(err)) await reportError(err, { cron: "nightly-sync" });');
+      expect(src).toContain("if (!syncFailed || isCodeOrDatabaseFault(err)) errors.add(err);");
+      expect(src).toContain('await errors.report({ cron: "nightly-sync" });');
     });
   });
 

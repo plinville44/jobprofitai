@@ -2,6 +2,8 @@ import { createHash, randomBytes, timingSafeEqual } from "crypto";
 import { prisma } from "./prisma";
 import { findLoginByEmail } from "./loginThrottle";
 import { hashPassword } from "./auth";
+import { flagUnprovenReferral } from "./referrals";
+import { restartUnusedTrial } from "./trial";
 
 // Password reset.
 //
@@ -165,10 +167,21 @@ export async function completePasswordReset(
     // this person received mail at the account's address. So an unverified
     // account that resets its password is verified by it. Only stamped when
     // still null, so an earlier verification date is never overwritten.
-    await tx.user.updateMany({
+    const firstProof = await tx.user.updateMany({
       where: { id: check.userId, emailVerifiedAt: null },
       data: { emailVerifiedAt: now },
     });
+
+    // Nobody had proven the address before, so whoever signed up with it
+    // may not be the person taking it back now (audit Oct 27, B3). A
+    // referral it came in on is flagged for a person to check before any
+    // payout, never changed: an honest customer who forgot their password
+    // before verifying looks the same. A trial that never connected a
+    // company starts again, since nobody got anything from it.
+    if (firstProof.count > 0) {
+      await flagUnprovenReferral(tx, check.userId, now);
+      await restartUnusedTrial(tx, check.userId, now);
+    }
 
     // Any other live link for this account dies here too. A customer who
     // clicked "forgot password" three times should not be left with two

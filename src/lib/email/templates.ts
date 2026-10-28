@@ -7,6 +7,9 @@ import {
   REFERRAL_QUALIFY_DAYS,
   TRIAL_DAYS,
   TRIAL_EXTENSION_DAYS,
+  monthlyPriceCents,
+  planPriceText,
+  type PlanId,
 } from "@/lib/plans";
 import { DEFAULT_TIME_ZONE, formatDateTime } from "@/lib/format";
 import { DISCONNECTED_RETENTION_DAYS, LAPSED_DISCONNECT_DAYS } from "@/lib/dataRetention";
@@ -604,16 +607,42 @@ export function trialExpiredEmail(opts: { firmOffered?: boolean } = {}): Rendere
  * (see sendBriefOnHold), so a brief never just stops with nobody told.
  * `reason` is shown only when it's a plain sentence meant for customers.
  */
-export function briefOnHoldEmail(companyName: string, reason: string | null, settingsUrl: string): RenderedEmail {
+export function briefOnHoldEmail(
+  companyName: string,
+  reason: string | null,
+  settingsUrl: string,
+  opts: { failing?: boolean } = {}
+): RenderedEmail {
+  // A re-read that is only queued behind other companies, or partway, isn't
+  // failing: it gets its own words, since nothing went wrong and nothing
+  // needs doing. The weekly run sends this one only on the brief's last run,
+  // when it's true that the brief didn't go out this week, and not when the
+  // failing notice below went for the same problem (see sendBriefOnHold).
+  if (opts.failing === false) {
+    return buildEmail(`${companyName}: the Weekly Profit Brief is on hold`, {
+      preheader: "This company's QuickBooks data is still being read again, so its brief didn't go out.",
+      heading: "The Weekly Profit Brief is on hold",
+      body: [
+        `${companyName}'s Weekly Profit Brief didn't go out this week. After our latest update to how QuickBooks is read, each company's QuickBooks data is read again in full, and ${companyName}'s hasn't finished yet. A brief built before it finishes could be wrong.`,
+        "There's nothing you need to do. It carries on overnight, and Settings shows when this company was last read from QuickBooks.",
+        "Once it finishes, the brief starts again on its usual schedule. We'll only email you about this once, not every week.",
+      ],
+      cta: { label: "Open Settings", url: settingsUrl },
+      footnote: "If the brief hasn't come back in a few days, reply to this email and we'll look into it.",
+    });
+  }
+  // The failing notice goes a day after the brief's time, when the brief can
+  // still go later in the week: it says the brief hasn't gone out yet, not
+  // that it didn't go out (review of audit Oct 27).
   return buildEmail(`${companyName}: the Weekly Profit Brief is on hold`, {
-    preheader: "We couldn't update this company from QuickBooks, so its brief didn't go out.",
+    preheader: "We couldn't update this company from QuickBooks, so its brief hasn't gone out.",
     heading: "The Weekly Profit Brief is on hold",
     body: [
-      `We couldn't bring ${companyName} up to date from QuickBooks, so its Weekly Profit Brief didn't go out this week. Its figures are still from before our latest update to how QuickBooks is read, and a brief built from them could be wrong.`,
+      `We couldn't bring ${companyName} up to date from QuickBooks, so its Weekly Profit Brief hasn't gone out yet. Its figures are still from before our latest update to how QuickBooks is read, and a brief built from them could be wrong.`,
       reason
         ? `The last attempt stopped with this message: "${reason}"`
         : "The last few attempts to read QuickBooks didn't finish. Settings shows the latest message for this company.",
-      "Once QuickBooks can be read again, the brief starts again on its usual schedule. We'll only email you about this once, not every week.",
+      "Once QuickBooks can be read again, the brief goes out as usual. We'll only email you about this once, not every week.",
     ],
     cta: { label: "Open Settings", url: settingsUrl },
     footnote: "If it keeps happening and you can't see why, reply to this email and we'll look into it.",
@@ -638,12 +667,29 @@ export function testimonialRequestEmail(name: string | null): RenderedEmail {
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
+ * A plan's price as the subscription email states it. Firm is billed per
+ * connected company with a minimum, so its price names both, and the least
+ * it costs a month, as checkout does. The contractor plans read "$149/month".
+ */
+export function subscriptionPriceText(plan: PlanId): string {
+  if (plan !== "firm") return planPriceText(plan);
+  const min = PLANS.firm.perCompany!.minCompanies;
+  return `${PLANS.firm.priceLabel} per connected QuickBooks company a month, with a ${min}-company minimum (${formatMoney(monthlyPriceCents("firm"))} a month at least)`;
+}
+
+/**
  * Also the acknowledgment California's automatic renewal law asks for: the
  * renewal terms, the cancellation policy and how to cancel, in an email the
  * customer keeps. Business purchases are generally outside that law; this
  * costs nothing and keeps the checkout promise in writing.
  */
-export function subscriptionConfirmedEmail(planName: string, priceText: string): RenderedEmail {
+export function subscriptionConfirmedEmail(
+  planName: string,
+  priceText: string,
+  opts: { perCompany?: boolean } = {}
+): RenderedEmail {
+  // Firm's bill follows the companies connected, as checkout says (src/lib/stripe/billing.ts).
+  const adjusts = opts.perCompany ? " The amount is adjusted as you connect or disconnect companies." : "";
   return buildEmail(`You're on ${planName}. Welcome aboard`, {
     preheader: "Your JobProfitAI subscription is active.",
     heading: "Your subscription is active",
@@ -652,7 +698,7 @@ export function subscriptionConfirmedEmail(planName: string, priceText: string):
       "One thing worth doing now: check that the Weekly Profit Brief is going to the right people in Settings. That email is where most of the day-to-day value lands.",
     ],
     bullets: [
-      `Your subscription renews automatically at ${priceText}, plus any applicable tax, until you cancel.`,
+      `Your subscription renews automatically at ${priceText}, plus any applicable tax, until you cancel.${adjusts}`,
       "Cancel anytime online, with no phone call: open Billing in JobProfitAI, choose Manage Billing, and cancel in the billing portal.",
       "Cancellation takes effect at the end of the month you've already paid for. You keep access until then and aren't charged again. Partial months aren't refunded.",
     ],

@@ -246,6 +246,9 @@ export default async function WipPage() {
             Each needs a contract value (a QuickBooks estimate, or typed in), and an estimated cost or percent complete.
             Once cost to date has passed the estimate, cost can&apos;t measure progress any more, so the job stays off the
             schedule and out of the totals until the estimate is updated or a percent complete is entered.
+            {s.notScheduled.some((j) => j.needs === "costs_behind")
+              ? " A job whose percent complete is well ahead of its costs stays off too: it would show more profit to date than the whole job is estimated to make. Check for bills not entered yet, then update the percent complete or the cost estimate."
+              : ""}
           </p>
           <ul className="mt-3 max-h-64 space-y-1 overflow-y-auto text-sm">
             {s.notScheduled.map((j) => (
@@ -253,7 +256,7 @@ export default async function WipPage() {
                 <Link href={`/dashboard/jobs/${j.jobId}`} className="text-brand hover:underline">
                   {j.jobName}
                 </Link>
-                <span className={`text-right text-xs ${j.needs === "estimate_passed" ? "text-amber-700" : "text-gray-500"}`}>
+                <span className={`text-right text-xs ${j.needs === "estimate_passed" || j.needs === "costs_behind" ? "text-amber-700" : "text-gray-500"}`}>
                   {NOT_SCHEDULED_NEED_TEXT[j.needs]}
                 </span>
               </li>

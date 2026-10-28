@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { COMPANY_LEGAL_NAME, COMPANY_MAILING_ADDRESS } from "@/lib/company";
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { ConnectionMetrics } from "@/lib/profitability";
-import { jobChangeSentence, noComparisonMessage, type WeekOverWeekReport } from "@/lib/weekOverWeek";
+import { jobChangeSentence, noComparisonMessage, nothingChangedSentence, type WeekOverWeekReport } from "@/lib/weekOverWeek";
 import { briefTileJobs, type BriefHeadline, type BriefTileJobs } from "@/lib/briefHeadline";
 import { companyOpenPath } from "@/lib/companyLinks";
 import { JOB_SOURCE_QUESTION } from "@/lib/jobSetup";
@@ -216,10 +216,19 @@ export function renderBriefEmail(input: BriefEmailInput): { subject: string; htm
   const since = wow.comparedToWeekStarting ? `since the brief for the week of ${formatDate(wow.comparedToWeekStarting)}` : "";
 
   const noComparison = noComparisonMessage(wow.noComparisonReason, wow.basisChange ?? "labor_burden");
+  // QuickBooks couldn't be read lately: the figures are as it was last read,
+  // and the email says so above them. It used to present them as current,
+  // with "Nothing changed on your jobs in QuickBooks" (audit Oct 27, E4).
+  const staleText = wow.dataLastReadOn
+    ? `These figures are from QuickBooks as it was on ${wow.dataLastReadOn}. We haven't been able to read it since, so anything entered after that isn't in this brief yet.`
+    : null;
+  const staleHtml = staleText
+    ? `<p style="margin:0 0 20px;padding:12px 14px;border:1px solid ${BORDER};border-radius:8px;font-size:14px;line-height:1.5;color:${TEXT};">${esc(staleText)} <a href="${esc(link("/dashboard/settings"))}" style="color:${NAVY};font-weight:600;">See the sync in Settings</a></p>`
+    : "";
   const changesHtml = wow.noComparisonReason
     ? `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:${MUTED};">${esc(noComparison)}</p>`
     : changes.length === 0
-      ? `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:${MUTED};">Nothing changed on your jobs in QuickBooks ${esc(since)}.</p>`
+      ? `<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:${MUTED};">${esc(nothingChangedSentence(wow, since))}</p>`
       : `<ul style="margin:0 0 16px;padding-left:18px;">${changes
           .map(
             (c) =>
@@ -293,6 +302,7 @@ export function renderBriefEmail(input: BriefEmailInput): { subject: string; htm
     <div style="font-size:13px;color:${MUTED};">${esc(input.kind === "narrative" ? "Weekly Profit Brief" : "Data Health notice")} &middot; week of ${esc(week)}</div>
     <h1 style="margin:4px 0 18px;font-size:22px;line-height:1.3;color:${NAVY};">${esc(input.companyName)}</h1>
     ${questionHtml}
+    ${staleHtml}
     ${headlineHtml}
     ${tilesHtml}
     ${tileJobsHtml}
@@ -305,7 +315,9 @@ export function renderBriefEmail(input: BriefEmailInput): { subject: string; htm
     </td></tr></table>
     ${
       input.kind === "narrative"
-        ? `<p style="margin:0 0 16px;font-size:12px;color:${MUTED};">"What changed" and every figure above are calculated from your QuickBooks data.${
+        ? `<p style="margin:0 0 16px;font-size:12px;color:${MUTED};">"What changed" and every figure above are calculated from your QuickBooks data${
+            wow.dataLastReadOn ? ` as it was on ${esc(wow.dataLastReadOn)}` : ""
+          }.${
             input.summaryMissing ? "" : " The summary is written by AI from those same figures."
           }</p>`
         : ""
@@ -325,12 +337,13 @@ export function renderBriefEmail(input: BriefEmailInput): { subject: string; htm
   const textChanges = wow.noComparisonReason
     ? noComparison
     : changes.length === 0
-      ? `Nothing changed on your jobs in QuickBooks ${since}.`
+      ? nothingChangedSentence(wow, since)
       : changes.map((c) => `- ${c.jobName}: ${jobChangeSentence(c)}`).join("\n") + (hidden > 0 ? `\n${hidden} more jobs also changed.` : "");
   const text = [
     `${input.companyName}: ${input.kind === "narrative" ? "Weekly Profit Brief" : "Data Health notice"}, week of ${week}`,
     "",
     ...(questionText ? [`${questionText} ${link("/dashboard")}`, ""] : []),
+    ...(staleText ? [`${staleText} ${link("/dashboard/settings")}`, ""] : []),
     ...(hl
       ? [
           hl.headline,

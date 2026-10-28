@@ -43,6 +43,7 @@ export default async function WipReportPage() {
   const anyFromTarget = s.inProgress.some((r) => r.costFromTarget);
   const anyPastContract = s.inProgress.some((r) => r.billedPastContract > 0);
   const anyEstimatePassed = s.notScheduled.some((j) => j.needs === "estimate_passed");
+  const anyCostsBehind = s.notScheduled.some((j) => j.needs === "costs_behind");
   const burden = laborBurdenOf(connection);
   const company = connection.companyName ?? "Your company";
 
@@ -208,6 +209,9 @@ export default async function WipReportPage() {
                 cost estimate or percent complete.
                 {anyEstimatePassed
                   ? " Where costs have passed the estimate, cost to date can no longer measure progress, so the job is left out rather than shown as 100% complete until the estimate is updated or a percent complete is entered."
+                  : ""}
+                {anyCostsBehind
+                  ? " Where the percent complete entered is well ahead of the costs, the job would show more gross profit to date than its whole estimated gross profit, so it is left out until the percent complete or the cost estimate is updated."
                   : ""}
               </p>
               <p className="mt-2 text-xs">{s.notScheduled.map((j) => `${j.jobName} (${NOT_SCHEDULED_NEED_TEXT[j.needs]})`).join("; ")}</p>

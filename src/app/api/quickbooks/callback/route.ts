@@ -6,8 +6,11 @@ import { exchangeCodeForTokens } from "@/lib/quickbooks";
 import { attachCompany, OWNER_ONLY_CONNECT_NOTICE } from "@/lib/connectCompany";
 import { handleIntuitFlow } from "@/lib/intuitSignIn";
 
-// Token exchange, company lookups and a revoke can all happen here.
-export const maxDuration = 60;
+// Token exchange, company lookups and a revoke can all happen here. Each
+// QuickBooks request can take up to 46 seconds with its retry and the token
+// exchange 30 (src/lib/quickbooks.ts), so 60 seconds could cut a slow
+// connection off with a platform error page (review of audit Oct 27).
+export const maxDuration = 120;
 
 const appUrl = (path: string) => new URL(path, process.env.APP_URL);
 /**

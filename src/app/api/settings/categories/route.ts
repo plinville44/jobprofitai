@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { connectionForAccount, getAccount, refuseClient } from "@/lib/account";
+import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
 import { COST_CATEGORIES } from "@/lib/qboNormalize";
 
 /**
@@ -21,6 +22,11 @@ export async function GET(req: NextRequest) {
   if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const refused = refuseClient(account);
   if (refused) return refused;
+  // Money by QuickBooks account and item is the company's figures, so it
+  // needs a live trial or plan, as the dashboard does (an inactive account
+  // sees the choose-a-plan screen there). It had no check (audit Oct 27, B9).
+  const entitlements = await getEntitlements(account.ownerId);
+  if (!entitlements.active) return NextResponse.json({ error: inactiveMessage(entitlements) }, { status: 402 });
   const connection = await connectionForAccount(account, req.nextUrl.searchParams.get("connectionId"));
   if (!connection) return NextResponse.json({ error: "Company not found" }, { status: 404 });
 

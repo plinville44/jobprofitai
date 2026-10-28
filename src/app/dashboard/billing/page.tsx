@@ -15,6 +15,7 @@ import {
   SUBSCRIPTION_STATUS_LABELS,
   TRIAL_EXTENSION_DAYS,
   type PlanId,
+  RECOMMENDED_PLAN_BADGE,
 } from "@/lib/plans";
 import { isPlanOffered, isStripeConfigured } from "@/lib/stripe/client";
 import { DEFAULT_TIME_ZONE, NO_VALUE, formatDateTime, formatCents } from "@/lib/format";
@@ -514,11 +515,11 @@ export default async function BillingPage(props: {
                         plan.mostPopular && fit.fits ? "border-brand" : "border-gray-200"
                       }`}
                     >
-                      <div className="flex items-baseline justify-between">
+                      <div className="flex flex-wrap items-baseline justify-between gap-2">
                         <h3 className="font-semibold text-navy">{plan.name}</h3>
                         {plan.mostPopular ? (
-                          <span className="rounded-full bg-brand-light px-2.5 py-0.5 text-xs font-semibold text-brand">
-                            Most Popular
+                          <span className="whitespace-nowrap rounded-full bg-brand-light px-2.5 py-0.5 text-xs font-semibold text-brand">
+                            {RECOMMENDED_PLAN_BADGE}
                           </span>
                         ) : null}
                       </div>

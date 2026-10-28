@@ -20,10 +20,28 @@ export async function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, 12);
 }
 
+/**
+ * A bcrypt hash at hashPassword's cost (12) of a random value that was
+ * thrown away, so no password matches it. Checked against when an address
+ * has no login, so "no such account" takes as long as "wrong password".
+ * Without it the login and Intuit link forms answered about 200 ms sooner
+ * for an unknown address, which told anyone timing them which addresses
+ * have accounts (audit Oct 27, B7). Keep its cost in step with hashPassword.
+ */
+const NO_LOGIN_HASH = "$2a$12$aFR.NrCxHC9sLTs8CWOpLOqRnn34IDwd0ACe6fbuKAskSULA0jBES";
+
+/**
+ * Whether `password` matches `hash`. Pass null for an address with no login:
+ * the answer is false, after the same work as a real check.
+ */
 export async function verifyPassword(
   password: string,
-  hash: string
+  hash: string | null
 ): Promise<boolean> {
+  if (hash == null) {
+    await bcrypt.compare(password, NO_LOGIN_HASH);
+    return false;
+  }
   return bcrypt.compare(password, hash);
 }
 

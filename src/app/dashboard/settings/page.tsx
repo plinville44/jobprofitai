@@ -19,6 +19,7 @@ import TeamSection from "./TeamSection";
 import JobTypesManager from "./JobTypesManager";
 import { getJobTypes } from "@/lib/jobTypesServer";
 import { needsReconnect } from "@/lib/quickbooks";
+import { syncErrorForPeople } from "@/lib/syncProblem";
 import { ConnectToQuickBooksButton } from "@/components/IntuitButtons";
 
 const SYNC_STATUS_DOT: Record<string, "good" | "warning" | "critical" | "unmeasured"> = {
@@ -163,8 +164,8 @@ export default async function SettingsPage(props: {
                       </div>
                       {!active && <SwitchCompanyButton connectionId={c.id} />}
                     </div>
-                    {c.lastSyncStatus === "error" && c.lastSyncError && (
-                      <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{c.lastSyncError}</p>
+                    {c.lastSyncStatus === "error" && syncErrorForPeople(c.lastSyncError) && (
+                      <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{syncErrorForPeople(c.lastSyncError)}</p>
                     )}
                     {needsReconnect(c.lastSyncError) && (
                       <div className="mt-3">

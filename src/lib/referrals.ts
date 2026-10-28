@@ -1,7 +1,8 @@
 import crypto from "crypto";
-import type { Referral } from "@prisma/client";
+import type { Prisma, Referral } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { REFERRAL_QUALIFY_DAYS, monthlyPriceCents } from "@/lib/plans";
+import { formatDate } from "@/lib/format";
 import {
   applyCustomerCredit,
   findCreditByRewardId,
@@ -183,6 +184,138 @@ export async function attributeReferral(
   }
 }
 
+/**
+ * The note left on a referral by flagUnprovenReferral. It sits in
+ * disqualifiedReason because that's what the admin referrals page shows
+ * under the status, for any status; it says plainly that the referral was
+ * NOT disqualified.
+ */
+export const UNPROVEN_REFERRAL_NOTE_START = "Check by hand before paying:";
+export function unprovenReferralNote(provenAt: Date): string {
+  return `${UNPROVEN_REFERRAL_NOTE_START} this account's email address was first proven by a password reset on ${formatDate(provenAt)}, so whoever signed up through this link may not have owned it. Nothing was changed.`;
+}
+
+/**
+ * Flags for a person the referral on an account whose address was first
+ * proven by a password reset, not by whoever signed up (audit Oct 27, B3).
+ * Called from completePasswordReset, inside its transaction, so `db` is
+ * that transaction.
+ *
+ * Signup attributes a referral before anyone has shown they own the
+ * address. A partner (or any customer) could sign up through their own link
+ * with a prospect's address; when the prospect later took the account back
+ * with a reset and paid, the partner earned commission, or the referrer a
+ * free month, on a customer they never brought in.
+ *
+ * Nothing about the referral changes: an honest customer who never clicked
+ * the verification email and then forgot their password looks exactly the
+ * same, and disqualifying them took up to 12 months of commission from the
+ * partner who did bring them in. So only a note is left, for whoever checks
+ * payouts. A reason already there (a disqualification's) is kept, and a
+ * disqualified referral earns nothing anyway, so it isn't flagged.
+ */
+export async function flagUnprovenReferral(
+  db: Prisma.TransactionClient,
+  referredUserId: string,
+  now: Date = new Date()
+): Promise<boolean> {
+  // One guarded write, so a reason written at the same moment is never overwritten.
+  const flagged = await db.referral.updateMany({
+    where: { referredUserId, disqualifiedReason: null, status: { not: "disqualified" } },
+    data: { disqualifiedReason: unprovenReferralNote(now) },
+  });
+  return flagged.count > 0;
+}
+
+/**
+ * Whether a referral is held for a person's check (flagUnprovenReferral):
+ * no reward is made or credited for it, and no commission on it is paid
+ * out, until someone decides (decideHeldReferral). The flag alone held
+ * nothing back, so the money went out before anyone looked (audit Oct 27,
+ * B3 review).
+ */
+export function isHeldForCheck(referral: { status: string; disqualifiedReason: string | null }): boolean {
+  return referral.status !== "disqualified" && (referral.disqualifiedReason?.startsWith(UNPROVEN_REFERRAL_NOTE_START) ?? false);
+}
+
+/** isHeldForCheck as a query. */
+export const HELD_FOR_CHECK_WHERE = {
+  status: { not: "disqualified" },
+  disqualifiedReason: { startsWith: UNPROVEN_REFERRAL_NOTE_START },
+} satisfies Prisma.ReferralWhereInput;
+
+/**
+ * Referrals without the check note, for queries that must leave held ones
+ * out (callers add their own status filter). The empty (null) note is
+ * matched on its own: in SQL a NOT on startsWith is unknown for null, so a
+ * bare NOT would leave out every referral with no note at all.
+ */
+export const WITHOUT_CHECK_NOTE_WHERE = {
+  OR: [{ disqualifiedReason: null }, { NOT: { disqualifiedReason: { startsWith: UNPROVEN_REFERRAL_NOTE_START } } }],
+} satisfies Prisma.ReferralWhereInput;
+
+/** The note added to commission already paid out when its referral is disqualified, as for a refund. */
+export function commissionReviewNote(reason: string, now: Date): string {
+  return `REVIEW ${now.toISOString().slice(0, 10)}: ${reason} after this commission was paid out.`;
+}
+
+/** Of these referrals, the ones held for a check. */
+export async function referralsHeldForCheck(referralIds: string[]): Promise<Set<string>> {
+  if (referralIds.length === 0) return new Set();
+  const held = await prisma.referral.findMany({
+    where: { id: { in: referralIds }, ...HELD_FOR_CHECK_WHERE },
+    select: { id: true },
+  });
+  return new Set(held.map((r) => r.id));
+}
+
+/** The reason a referral disqualified after a person's check is given. */
+export const CHECKED_AND_DISQUALIFIED_REASON =
+  "Disqualified by hand: a person checked this referral after its email address was first proven by a password reset.";
+const NOT_WAITING_MESSAGE = "This referral isn't waiting for a check any more. Refresh the page to see where it stands.";
+
+export type HeldReferralDecision = "clear" | "disqualify";
+export type HeldReferralResult =
+  | { ok: true; decision: "cleared" | "disqualified" }
+  | { ok: false; error: string; status: number };
+
+/**
+ * A person's decision on a referral held for a check (the admin referrals
+ * and partners pages).
+ *
+ * "clear" (Looks fine) takes the note off and changes nothing else, so the
+ * referral earns as usual from then on: the next qualification run makes
+ * its reward if it still meets the rules, and its commission can be paid.
+ *
+ * "disqualify" goes the way a refund's disqualification does
+ * (disqualifyReferral): the status, the reason and any reward voided. Its
+ * commission that is earned but not yet paid out is voided too, since that
+ * is what the hold was keeping back. Commission already paid stays paid,
+ * with a REVIEW note as a refund leaves. Both apply only while it's still
+ * held, so two people deciding at once can't both succeed.
+ */
+export async function decideHeldReferral(
+  referralId: string,
+  decision: HeldReferralDecision,
+  now: Date = new Date()
+): Promise<HeldReferralResult> {
+  const referral = await prisma.referral.findUnique({ where: { id: referralId } });
+  if (!referral) return { ok: false, error: "Referral not found.", status: 404 };
+  if (!isHeldForCheck(referral)) return { ok: false, error: NOT_WAITING_MESSAGE, status: 409 };
+
+  if (decision === "clear") {
+    // Guarded, so it can't undo a decision made at the same moment elsewhere.
+    const cleared = await prisma.referral.updateMany({
+      where: { id: referral.id, ...HELD_FOR_CHECK_WHERE },
+      data: { disqualifiedReason: null },
+    });
+    return cleared.count > 0 ? { ok: true, decision: "cleared" } : { ok: false, error: NOT_WAITING_MESSAGE, status: 409 };
+  }
+
+  const done = await disqualify(referral, CHECKED_AND_DISQUALIFIED_REASON, now, { byHandAfterCheck: true });
+  return done ? { ok: true, decision: "disqualified" } : { ok: false, error: NOT_WAITING_MESSAGE, status: 409 };
+}
+
 /** The referral that brought this account in, if any. */
 export async function getReferralForUser(userId: string) {
   return prisma.referral.findUnique({ where: { referredUserId: userId } });
@@ -225,23 +358,64 @@ export async function disqualifyReferral(
 ): Promise<void> {
   const referral = await prisma.referral.findUnique({ where: { referredUserId } });
   if (!referral || referral.status === "disqualified") return;
+  await disqualify(referral, reason, now);
+}
 
-  const reward = await prisma.referralReward.findUnique({
-    where: { referralId: referral.id },
-  });
+/** What commission already paid out on a referral disqualified by hand is flagged with. */
+const CHECKED_COMMISSION_REVIEW_REASON = "Referral disqualified by hand on a check";
 
-  await prisma.$transaction(async (tx) => {
-    await tx.referral.update({
-      where: { id: referral.id },
+/**
+ * The disqualification itself, shared by disqualifyReferral and a person's
+ * decision on a held referral (decideHeldReferral). Returns false, having
+ * changed nothing, when the referral wasn't in the state the caller decided
+ * on by the time of the write.
+ *
+ * A decision after a check (byHandAfterCheck) applies only while the
+ * referral is still held: "Looks fine" at the same moment in another tab
+ * could otherwise be followed by this, and both report success. It also
+ * voids the commission the hold kept back, and flags commission already
+ * paid out on the referral for review, the way a refund does
+ * (flagPaidCommissionsForReview in partners.ts).
+ */
+async function disqualify(
+  referral: Referral,
+  reason: string,
+  now: Date,
+  opts: { byHandAfterCheck?: boolean } = {}
+): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const changed = await tx.referral.updateMany({
+      where: { id: referral.id, ...(opts.byHandAfterCheck ? HELD_FOR_CHECK_WHERE : { status: { not: "disqualified" } }) },
       data: { status: "disqualified", disqualifiedAt: now, disqualifiedReason: reason },
     });
+    if (changed.count === 0) return false;
 
+    const reward = await tx.referralReward.findUnique({ where: { referralId: referral.id } });
     if (reward && reward.status !== "voided") {
       await tx.referralReward.update({
         where: { id: reward.id },
         data: { status: "voided", voidedAt: now, voidReason: reason },
       });
     }
+
+    if (opts.byHandAfterCheck) {
+      await tx.partnerCommission.updateMany({
+        where: { referralId: referral.id, status: "earned" },
+        data: { status: "voided", voidedAt: now, voidReason: reason },
+      });
+      const paidOut = await tx.partnerCommission.findMany({
+        where: { referralId: referral.id, status: "paid" },
+        select: { id: true, paidNote: true },
+      });
+      const note = commissionReviewNote(CHECKED_COMMISSION_REVIEW_REASON, now);
+      for (const row of paidOut) {
+        await tx.partnerCommission.update({
+          where: { id: row.id },
+          data: { paidNote: row.paidNote ? `${row.paidNote}\n${note}` : note },
+        });
+      }
+    }
+    return true;
   });
 }
 
@@ -297,6 +471,11 @@ export async function qualifyDueReferrals(now: Date = new Date()): Promise<Quali
       qualifiedAt: null,
       reward: null,
       referrerUserId: { not: null },
+      // Not while it's held for a person's check (isHeldForCheck). Left out
+      // of the query, not skipped after it, so held ones can't fill the 200
+      // and keep others waiting. Once cleared it qualifies on a later run if
+      // it still meets the rules.
+      ...WITHOUT_CHECK_NOTE_WHERE,
     },
     take: 200,
   });
@@ -449,6 +628,15 @@ export async function tryApplyReward(rewardId: string): Promise<boolean> {
   const reward = await prisma.referralReward.findUnique({ where: { id: rewardId } });
   if (!reward || reward.status !== "pending") return false;
 
+  // No credit while its referral is held for a person's check (a reward
+  // made before the flag, say). It stays pending, and retryPendingRewards
+  // or the next checkout applies it once the referral is cleared.
+  const referral = await prisma.referral.findUnique({
+    where: { id: reward.referralId },
+    select: { status: true, disqualifiedReason: true },
+  });
+  if (referral && isHeldForCheck(referral)) return false;
+
   const referrerSubscription = await prisma.subscription.findUnique({
     where: { userId: reward.referrerUserId },
     select: { stripeCustomerId: true },
@@ -513,8 +701,12 @@ export async function tryApplyReward(rewardId: string): Promise<boolean> {
  * quietly pay out here, and this is money.
  */
 export async function retryPendingRewards(limit = 200): Promise<number> {
+  // Rewards whose referral is held for a check are left out of the query,
+  // not skipped after it, so they can't fill the batch and keep others
+  // waiting (audit Oct 27, B3 review). They're picked up once cleared.
+  const held = await prisma.referral.findMany({ where: HELD_FOR_CHECK_WHERE, select: { id: true } });
   const pending = await prisma.referralReward.findMany({
-    where: { status: "pending" },
+    where: { status: "pending", ...(held.length > 0 ? { referralId: { notIn: held.map((r) => r.id) } } : {}) },
     select: { id: true, referralId: true },
     take: limit,
   });
@@ -574,17 +766,22 @@ export interface ReferralSummary {
 export async function getReferralSummary(userId: string): Promise<ReferralSummary> {
   const code = await getOrCreateCustomerReferralCode(userId);
 
-  const [referrals, rewards] = await Promise.all([
+  const [referrals, allRewards] = await Promise.all([
     prisma.referral.findMany({
       where: { referrerUserId: userId },
-      select: { status: true },
+      select: { id: true, status: true, disqualifiedReason: true },
     }),
     prisma.referralReward.findMany({
       where: { referrerUserId: userId },
-      select: { status: true, amountCents: true },
+      select: { status: true, amountCents: true, referralId: true },
     }),
   ]);
 
+  // A reward on a referral held for a check isn't counted as earned or
+  // waiting: the page says it applies automatically, and it won't until the
+  // check is done. Its history row says it's being checked (audit Oct 27, B3).
+  const held = new Set(referrals.filter(isHeldForCheck).map((r) => r.id));
+  const rewards = allRewards.filter((r) => !held.has(r.referralId));
   const sum = (status: string) =>
     rewards.filter((r) => r.status === status).reduce((t, r) => t + r.amountCents, 0);
 
@@ -631,6 +828,10 @@ export async function getReferralHistory(userId: string) {
       rewardStatus: reward?.status ?? null,
       rewardAmountCents: reward?.amountCents ?? null,
       rewardAppliedAt: reward?.appliedAt ?? null,
+      // Two cases the page words for itself, without saying why: nothing
+      // was refunded or reversed in either (audit Oct 27, B3 review).
+      beingChecked: isHeldForCheck(r),
+      disqualifiedAfterCheck: r.status === "disqualified" && r.disqualifiedReason === CHECKED_AND_DISQUALIFIED_REASON,
     };
   });
 }

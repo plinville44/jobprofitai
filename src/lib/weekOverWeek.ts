@@ -59,6 +59,14 @@ export interface WeekOverWeekReport {
   /** Most significant first. */
   changes: JobChange[];
   unchangedJobs: number;
+  /**
+   * Set when QuickBooks couldn't be read lately (the last sync failed, or the
+   * last one that worked is over a day and a half old): the day it was last
+   * read, as the brief prints it. The figures are as they were then, so
+   * "nothing changed" means nothing changed in what could be read (audit
+   * Oct 27, E4). Set by the brief (generateWeeklyDigestForConnection).
+   */
+  dataLastReadOn?: string | null;
 }
 
 interface SnapshotJob {
@@ -449,6 +457,19 @@ export function noComparisonMessage(
   return "The previous brief's figures couldn't be read, so there's no comparison this week. Next week's brief will compare against this one.";
 }
 
+/**
+ * "Nothing changed" in a sentence, `since` saying since when. When
+ * QuickBooks couldn't be read lately, it says nothing changed in what could
+ * be read, and when it was last read: the old wording told the owner their
+ * jobs were quiet when the sync had simply failed.
+ */
+export function nothingChangedSentence(report: Pick<WeekOverWeekReport, "dataLastReadOn">, since: string): string {
+  const tail = since ? ` ${since}` : "";
+  return report.dataLastReadOn
+    ? `Nothing changed in what we could read from QuickBooks${tail}. It was last read on ${report.dataLastReadOn}.`
+    : `Nothing changed on your jobs in QuickBooks${tail}.`;
+}
+
 export function renderWeekOverWeek(report: WeekOverWeekReport): string {
   if (report.noComparisonReason || !report.comparedToWeekStarting) {
     return ["WHAT CHANGED SINCE LAST WEEK", noComparisonMessage(report.noComparisonReason, report.basisChange ?? "labor_burden")].join("\n");
@@ -458,7 +479,7 @@ export function renderWeekOverWeek(report: WeekOverWeekReport): string {
   const heading = `WHAT CHANGED SINCE THE BRIEF FOR THE WEEK OF ${since.toUpperCase()}`;
 
   if (report.changes.length === 0) {
-    return [heading, "Nothing changed on your jobs in QuickBooks since then."].join("\n");
+    return [heading, nothingChangedSentence(report, "since then")].join("\n");
   }
 
   const lines: string[] = [heading];
@@ -499,6 +520,8 @@ export function weekOverWeekForModel(report: WeekOverWeekReport) {
   return {
     comparedToWeekStarting: report.comparedToWeekStarting?.toISOString().slice(0, 10) ?? null,
     noComparisonReason: report.noComparisonReason,
+    // Only when it's set, so a brief on current figures reads to the model as before.
+    ...(report.dataLastReadOn ? { quickBooksLastReadOn: report.dataLastReadOn } : {}),
     basisChange: report.basisChange ?? null,
     revenueAddedSinceLastBrief: Math.round(report.revenueAdded),
     costAddedSinceLastBrief: Math.round(report.costAdded),

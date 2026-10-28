@@ -3,7 +3,7 @@ import { prisma } from "./prisma";
 import { requireFeature } from "./entitlements";
 import { effectiveJobStatus, CLOSED_JOB_WHERE, OPEN_JOB_WHERE, VISIBLE_JOB_WHERE } from "./jobStatus";
 import { forecastIsActionable, MIN_ENTERED_PERCENT_TO_PROJECT } from "./forecastRules";
-import { isIdleOpenJob, wipCountsInTotals, wipScheduleNeed } from "./wipSchedule";
+import { isIdleOpenJob, wipCountsInTotals, wipReportDay, wipScheduleNeed, type NotScheduledNeed } from "./wipSchedule";
 import { basisCutoff } from "./weekOverWeek";
 import { marginTrendByPeriod } from "./marginTrend";
 export { forecastIsActionable } from "./forecastRules";
@@ -470,6 +470,15 @@ export function computeNeedsAttentionForJob(
      * no "over its estimate" item or alert, the same as the brief's tile.
      */
     estimateFromTargetMargin?: boolean;
+    /**
+     * The job as the WIP report has it: nothing dated after today in the
+     * company's time zone (wipReportDay). Work done and not billed is judged
+     * on these, so it says what the WIP report and Money Owed say (audit Oct
+     * 27 review). Omitted, the job's own figures.
+     */
+    billingAsOf?: JobFinancials;
+    /** The time the figures are judged at, for the WIP schedule's idle check. Omitted, idle jobs aren't told apart. */
+    now?: Date;
   } = {}
 ): NeedsAttentionItem[] {
   const items: NeedsAttentionItem[] = [];
@@ -572,19 +581,23 @@ export function computeNeedsAttentionForJob(
   // Work done but not billed yet. Cash the contractor has already spent and
   // hasn't asked for. Flagged past $1,000 and 5% of the contract, so
   // ordinary timing between draws doesn't raise it. Only on a job the WIP
-  // schedule measures (wipScheduleNeed): not on one whose costs have passed
-  // the estimate, or one entered as under 25% complete with no estimate.
-  if (f.status === "open" && f.wip && f.estimatedRevenue != null && wipScheduleNeed(f) == null) {
-    const under = -f.wip.overUnderBilling;
-    if (under > 1000 && under > f.estimatedRevenue * 0.05) {
+  // schedule counts in its totals (wipCountsInTotals): not on one whose
+  // costs have passed the estimate, one entered as under 25% complete with
+  // no estimate, or an idle open job, which the job page shows as off the
+  // schedule (audit Oct 27 review).
+  const b = opts.billingAsOf ?? f;
+  const onSchedule = opts.now ? wipCountsInTotals(b, opts.now) : b.status === "open" && wipScheduleNeed(b) == null;
+  if (b.wip && b.estimatedRevenue != null && onSchedule) {
+    const under = -b.wip.overUnderBilling;
+    if (under > 1000 && under > b.estimatedRevenue * 0.05) {
       items.push({
         jobId: f.jobId,
         jobName: f.jobName,
         issueCode: "underbilled",
-        issue: `About ${Math.round(f.wip.percentComplete * 100)}% complete but billed ${Math.round((f.revenue / f.estimatedRevenue) * 100)}% of the contract`,
+        issue: `About ${Math.round(b.wip.percentComplete * 100)}% complete but billed ${Math.round((b.revenue / b.estimatedRevenue) * 100)}% of the contract`,
         financialImpact: under,
-        severity: under > f.estimatedRevenue * 0.2 ? "high" : "medium",
-        confidence: f.wip.percentCompleteSource === "manual" ? "high" : "medium",
+        severity: under > b.estimatedRevenue * 0.2 ? "high" : "medium",
+        confidence: b.wip.percentCompleteSource === "manual" ? "high" : "medium",
       });
     }
   }
@@ -1344,11 +1357,16 @@ export function computeDashboardTotals(
   // succeeded. Idle open jobs are one issue however many there are: one
   // click marks them all finished, and counted one by one they buried the
   // live jobs' issues.
+  // A completed job with revenue and no costs is on two lists, "revenue but
+  // no costs" and "completed with unresolved activity", for the same gap, so
+  // it's one issue here, not two (F6, audit Oct 27).
+  const jobsWithRevenueCostGap = new Set(
+    [...dataHealth.jobsMissingCosts, ...dataHealth.completedJobsWithUnresolvedActivity].map((j) => j.jobId)
+  ).size;
   const dataIssues =
     (dataHealth.idleOpenJobs.length > 0 ? 1 : 0) +
-    dataHealth.jobsMissingCosts.length +
+    jobsWithRevenueCostGap +
     dataHealth.staleJobs.length +
-    dataHealth.completedJobsWithUnresolvedActivity.length +
     (dataHealth.untaggedJobCostCount ?? 0) +
     (dataHealth.unresolvedExpenseCount ?? 0) +
     (dataHealth.timeEntriesWithoutPayRate ?? 0) +
@@ -1451,6 +1469,11 @@ export function findDoubleLabor(
  * here means two distinct QBO transactions landed with identical numbers,
  * worth a human glance rather than an automatic merge (per spec: flag, don't
  * auto-merge).
+ *
+ * Time entries aren't checked: a crew on the same cost rate and hours makes
+ * entries of the same amount on the same day every day it works, and a
+ * three-person crew read as 20 possible duplicates in four weeks (F6, audit
+ * Oct 27). The caller passes the jobs Data Health covers (isInScope).
  */
 // Exported (was module-private) so Phase 8's Vitest suite can test the
 // duplicate-detection logic directly - it's already a pure function (no
@@ -1460,13 +1483,14 @@ export function findPossibleDuplicateCostEntries(
   jobs: {
     id: string;
     name: string;
-    costEntries: { qboSourceId: string; amount: Prisma.Decimal; txnDate: Date }[];
+    costEntries: { qboSourceId: string; qboSourceType?: string; amount: Prisma.Decimal; txnDate: Date }[];
   }[]
 ): DataHealthReport["possibleDuplicates"] {
   const duplicates: DataHealthReport["possibleDuplicates"] = [];
   for (const job of jobs) {
     const seen = new Map<string, Set<string>>(); // key: amount|day -> set of qboSourceIds
     for (const entry of job.costEntries) {
+      if (entry.qboSourceType === "TimeActivity") continue;
       const amount = toNum(entry.amount);
       const day = entry.txnDate.toISOString().slice(0, 10);
       const key = `${amount}|${day}`;
@@ -1532,6 +1556,13 @@ export interface ConnectionProfitData {
   lifetimeJobs: JobFinancials[];
   /** Forecasts for open jobs, when the plan includes forecasting. */
   forecasts: Map<string, ForecastResult>;
+  /**
+   * Each open job as the WIP report has it: whole life, nothing dated after
+   * today in the company's time zone (wipReportDay), or the as-of day asked
+   * for. What anything says about work not billed, or billed ahead, is worked
+   * out from these (audit Oct 27 review).
+   */
+  wipAsOf: Map<string, JobFinancials>;
   /** Jobs on the selected Active/Completed/All tab, activity or not. */
   jobsInTab: number;
   needsAttention: NeedsAttentionItem[];
@@ -1703,6 +1734,19 @@ export async function getConnectionProfitData(
   const companyLifetimeFinancials =
     statusFilter === "all" ? lifetimeFinancials : allJobs.map((j) => computeJobFinancials(toJobInput(j, false), ctx));
 
+  // Open jobs as the WIP report has them (see wipAsOf). The same figures as
+  // the lifetime ones unless something on the job is dated after the day.
+  const wipDay = asOf ?? wipReportDay(now, connection.emailTimezone);
+  const wipAsOf = new Map<string, JobFinancials>();
+  for (const [i, j] of jobs.entries()) {
+    const f = lifetimeFinancials[i];
+    if (f.status !== "open") continue;
+    const input = toJobInput(j, false);
+    const later =
+      input.costEntries.some((c) => !datedOnOrBefore(c.txnDate, wipDay)) || input.invoices.some((inv) => !datedOnOrBefore(inv.txnDate, wipDay));
+    wipAsOf.set(f.jobId, later ? jobAsOfDay(input, wipDay, ctx) : f);
+  }
+
   // The last FULL sync, deliberately, not the last sync of any kind.
   //
   // These counters are whole-company tallies: how many expenses are tagged to
@@ -1728,7 +1772,11 @@ export async function getConnectionProfitData(
     (latestFullSync?.entitiesUpdated as Record<string, unknown> | null) ?? null,
     latestFullSync?.finishedAt ?? latestFullSync?.startedAt ?? null
   );
-  dataHealth.possibleDuplicates = findPossibleDuplicateCostEntries(allJobs);
+  // Over the jobs Data Health covers, open and recent ones, as its card says:
+  // two equal permits paid on one day in 2019 aren't a data issue today (F6,
+  // audit Oct 27).
+  const inScopeIds = new Set(companyLifetimeFinancials.filter((f) => isInScope(f, now)).map((f) => f.jobId));
+  dataHealth.possibleDuplicates = findPossibleDuplicateCostEntries(allJobs.filter((j) => inScopeIds.has(j.id)));
   dataHealth.jobsWithDoubleLabor = findDoubleLabor(allJobs);
 
   // Company-wide, like Data Health: patterns across completed jobs don't
@@ -1775,7 +1823,18 @@ export async function getConnectionProfitData(
   // so, and three items each ("no estimate", "no activity", "no costs") on
   // forty old customers drowned the live jobs. Data Health counts them once
   // (idleOpenJobs). The alert emails read this list, so they skip them too.
-  const needsAttention = lifetimeFinancials.filter((f) => !isIdleOpenJob(f, now)).flatMap((f) => {
+  // So are jobs completed more than 12 months ago, the scope Data Health
+  // and the brief use (isInScope): on the All and Completed tabs every job
+  // ever finished below target counted in Jobs Below Target and Profit At
+  // Risk (F8, audit Oct 27). A period picked further back keeps the
+  // completed jobs with activity in it: picking 2019 is asking about 2019's
+  // jobs. Completed only: the default view is the last 12 months, and an idle
+  // open job brought back that way showed work not billed that the WIP
+  // report leaves out (audit Oct 27 review).
+  const activeInPeriod = new Set(
+    dateRange ? financials.filter((f) => f.status === "closed" && (f.revenue !== 0 || f.costs !== 0)).map((f) => f.jobId) : []
+  );
+  const needsAttention = lifetimeFinancials.filter((f) => isInScope(f, now) || activeInPeriod.has(f.jobId)).flatMap((f) => {
     const peerCompletedCostByCategory: Record<string, number[]> = {};
     if (canBenchmark && f.category && completedByCategory[f.category]) {
       for (const peer of completedByCategory[f.category]) {
@@ -1790,6 +1849,8 @@ export async function getConnectionProfitData(
       peerCompletedCostByCategory,
       forecast: forecastByJob.get(f.jobId) ?? null,
       estimateFromTargetMargin: targetFilledEstimates.has(f.jobId),
+      billingAsOf: wipAsOf.get(f.jobId),
+      now,
     });
   });
 
@@ -1805,8 +1866,19 @@ export async function getConnectionProfitData(
     totals,
     targetMarginPct: ctx.targetMarginPct,
     forecasts: forecastByJob,
+    wipAsOf,
     lifetimeJobs: lifetimeFinancials,
   };
+}
+
+/**
+ * A job's figures as the books stood at the end of `day` (jobRowsAsOf), for
+ * what's said about its billing. A job QuickBooks created after the day,
+ * with nothing on or before it, has nothing to bill yet.
+ */
+function jobAsOfDay(input: JobInput, day: Date, ctx: FinancialContext): JobFinancials {
+  const [onDay] = jobRowsAsOf([input], day);
+  return computeJobFinancials(onDay ?? { ...input, costEntries: [], invoices: [] }, ctx);
 }
 
 export interface MarginTrendPoint {
@@ -1900,6 +1972,15 @@ export interface JobProfitData {
   syncedStatus: string;
   /** Same check as Data Health, for this job only. */
   possibleDuplicates: DataHealthReport["possibleDuplicates"];
+  /**
+   * The job as the WIP report has it: its figures as of today in the
+   * company's time zone (nothing dated later), and whether the schedule
+   * leaves it out, and why. The job page's Work in Progress section shows
+   * these, so it says what the WIP report and Money Owed say (F7, audit Oct 27).
+   */
+  wipAsOf: { financials: JobFinancials; need: NotScheduledNeed | null; idle: boolean };
+  /** The cost estimate was filled in from the target margin, not priced by the contractor. */
+  estimateFromTargetMargin: boolean;
 }
 
 /**
@@ -1955,6 +2036,17 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
 
   const financials = computeJobFinancials(jobInput, ctx);
   const forecast = computeForecastAtCompletion(jobInput, financials, now);
+  // A progress invoice dated next week counted as billed here while the WIP
+  // report and Money Owed, as of today, showed the work as not billed yet; and
+  // a job entered as 20% complete with no cost estimate showed work done and
+  // not billed that both of them leave out. The same day and the same rules
+  // as the WIP report (wipReportDay, jobRowsAsOf, wipScheduleNeed, idle).
+  const wipFinancials = jobAsOfDay(jobInput, wipReportDay(now, connection.emailTimezone), ctx);
+  const wipAsOf = {
+    financials: wipFinancials,
+    need: wipFinancials.status === "open" ? wipScheduleNeed(wipFinancials) : null,
+    idle: isIdleOpenJob(wipFinancials, now),
+  };
   // The bridge for an open job ends on the forecast, so it follows the same
   // plan gate as the forecast panel. Otherwise a plan without forecasting
   // saw "Forecast at Completion is part of Profit Intelligence" beside a
@@ -2013,6 +2105,8 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
     peerCompletedCostByCategory,
     forecast: canForecast ? forecast : null,
     estimateFromTargetMargin: job.estimatedCostSource === "target_margin",
+    billingAsOf: wipFinancials,
+    now,
   });
 
   return {
@@ -2048,6 +2142,8 @@ export async function getJobProfitData(jobId: string, now: Date = new Date()): P
     percentCompleteOverride: percentOverrideOf(job),
     syncedStatus: job.status,
     possibleDuplicates: findPossibleDuplicateCostEntries([job]),
+    wipAsOf,
+    estimateFromTargetMargin: job.estimatedCostSource === "target_margin",
   };
 }
 
@@ -2136,7 +2232,10 @@ export async function computeConnectionMetrics(connectionId: string, weekStartin
     // has passed its estimate (capped at 100%, it reads as the whole contract
     // earned and under billed), and not an idle open job's old under billing.
     // The brief's "work done, not yet billed" tile and the AI both read these.
-    const wip = wipCountsInTotals(f, now) ? f.wip : null;
+    // As the WIP report has the job, nothing dated after today, so the brief
+    // says what the WIP report and Money Owed say (audit Oct 27 review).
+    const onWipDay = data.wipAsOf.get(f.jobId);
+    const wip = onWipDay && wipCountsInTotals(onWipDay, now) ? onWipDay.wip : null;
     return {
       jobId: f.jobId,
       jobName: f.jobName,

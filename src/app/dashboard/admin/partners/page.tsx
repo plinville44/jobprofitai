@@ -1,11 +1,13 @@
 import { notFound } from "next/navigation";
 import { getAdminSession } from "@/lib/adminAuth";
 import { prisma } from "@/lib/prisma";
-import { countPayingClients } from "@/lib/partners";
+import { countPayingClients, partnerPayout, payoutReferralStates } from "@/lib/partners";
+import { UNPROVEN_REFERRAL_NOTE_START } from "@/lib/referrals";
 import { partnerTierFor } from "@/lib/plans";
 import { NO_VALUE, formatDate, formatCents } from "@/lib/format";
 import { AdminSection, AdminTable, Pill, Td } from "@/components/dashboard/AdminTable";
 import { MarkPaidButton, PartnerStatusActions } from "./PartnerAdminActions";
+import { ReferralCheckActions } from "../referrals/ReferralCheckActions";
 
 export const dynamic = "force-dynamic";
 
@@ -31,9 +33,17 @@ export default async function AdminPartnersPage() {
           commissionCents: true,
           paidNote: true,
           stripeInvoiceId: true,
+          referralId: true,
         },
       },
       _count: { select: { referrals: true } },
+      // Referrals left with a note to check before paying (flagUnprovenReferral,
+      // audit Oct 27, B3), shown beside the Mark paid button where payouts
+      // are made, not only on the referrals page.
+      referrals: {
+        where: { disqualifiedReason: { startsWith: UNPROVEN_REFERRAL_NOTE_START }, status: { not: "disqualified" } },
+        select: { id: true, disqualifiedReason: true, referredUser: { select: { email: true } } },
+      },
     },
   });
 
@@ -43,6 +53,13 @@ export default async function AdminPartnersPage() {
     partners.map(async (p) => [p.id, await countPayingClients(p.id)] as const)
   );
   const payingById = new Map(payingCounts);
+
+  // Which referrals behind earned commission are held for a check or
+  // disqualified: that commission isn't owed and isn't offered to Mark paid
+  // (audit Oct 27, B3 review).
+  const referralStates = await payoutReferralStates(
+    partners.flatMap((p) => p.commissions.filter((c) => c.status === "earned").map((c) => c.referralId))
+  );
 
   return (
     <div className="space-y-4">
@@ -78,8 +95,10 @@ export default async function AdminPartnersPage() {
           {partners.map((p) => {
             const paying = payingById.get(p.id) ?? 0;
             const tier = partnerTierFor(paying);
-            const earned = p.commissions.filter((c) => c.status === "earned");
-            const owedCents = earned.reduce((t, c) => t + c.commissionCents, 0);
+            // Commission on a referral held for a check (the list below) stays
+            // out of Owed and Mark paid until someone decides, and commission
+            // on a disqualified referral isn't paid (audit Oct 27, B3 review).
+            const { owedCents, payableIds, heldCents } = partnerPayout(p.commissions, referralStates);
             const paidCents = p.commissions
               .filter((c) => c.status === "paid")
               .reduce((t, c) => t + c.commissionCents, 0);
@@ -122,7 +141,23 @@ export default async function AdminPartnersPage() {
                 <Td>{p._count.referrals}</Td>
                 <Td>{paying}</Td>
                 <Td>{tier.ratePct}%</Td>
-                <Td className="font-semibold text-navy">{money(owedCents)}</Td>
+                <Td className="font-semibold text-navy">
+                  {money(owedCents)}
+                  {p.referrals.length > 0 ? (
+                    <div className="mt-1 font-normal">
+                      <Pill tone="warn">
+                        {money(heldCents)} held: {p.referrals.length}{" "}
+                        {p.referrals.length === 1 ? "referral" : "referrals"} to check before paying
+                      </Pill>
+                      {p.referrals.map((r) => (
+                        <div key={r.id} className="mt-1 text-xs text-gray-600">
+                          {r.referredUser?.email ?? "account deleted"}: {r.disqualifiedReason}
+                          <ReferralCheckActions referralId={r.id} />
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </Td>
                 <Td>
                   {money(paidCents)}
                   {needsReview.length > 0 ? (
@@ -143,10 +178,7 @@ export default async function AdminPartnersPage() {
                   <div className="space-y-2">
                     <PartnerStatusActions partnerId={p.id} status={p.status} />
                     {owedCents > 0 ? (
-                      <MarkPaidButton
-                        commissionIds={earned.map((c) => c.id)}
-                        amountLabel={money(owedCents)}
-                      />
+                      <MarkPaidButton commissionIds={payableIds} amountLabel={money(owedCents)} />
                     ) : null}
                   </div>
                 </Td>

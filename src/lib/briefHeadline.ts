@@ -20,6 +20,13 @@ export interface BriefOpportunitySnapshot {
   openJobsAtRisk: number;
   estimatesShortfall: number;
   estimatesFlagged: number;
+  /**
+   * How many customers the flagged estimates are for, when fewer than the
+   * estimates: a customer's options are counted once in estimatesShortfall,
+   * at the largest (F10). Absent on older snapshots, and when each is for a
+   * different customer.
+   */
+  estimatesCustomers?: number;
   unbilledWork: number;
   /**
    * What could be checked. Optional because snapshots stored before these
@@ -71,6 +78,7 @@ export function snapshotFromFeed(feed: OpportunityFeed): BriefOpportunitySnapsho
     openJobsAtRisk: s.openJobsAtRisk,
     estimatesShortfall: round(s.estimatesShortfall),
     estimatesFlagged: s.estimatesFlagged,
+    ...((s.estimatesAlternatives ?? 0) > 0 ? { estimatesCustomers: s.estimatesFlagged - (s.estimatesAlternatives ?? 0) } : {}),
     unbilledWork: round(s.unbilledWork),
     jobsJudged: s.jobsJudged,
     openJobsChecked: s.openJobsChecked,
@@ -102,6 +110,20 @@ function priorRiskByJob(priorMetrics: unknown): Record<string, number> | null {
 
 const MIN_NEWS = 500;
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * "2 pending estimates look $3,100 light". When a customer's options were
+ * counted once (estimatesCustomers), it's said by customer, so the amount
+ * isn't read as every estimate's shortfall added up: "Pending estimates for
+ * 2 customers look $7,000 light" (audit Oct 27 review).
+ */
+function estimatesLight(s: BriefOpportunitySnapshot, also = ""): string {
+  const amount = formatCurrency(s.estimatesShortfall);
+  if (s.estimatesCustomers != null && s.estimatesCustomers < s.estimatesFlagged) {
+    return `Pending estimates for ${plural(s.estimatesCustomers, "customer")} ${also}look ${amount} light`;
+  }
+  return `${plural(s.estimatesFlagged, "pending estimate")} ${also}${s.estimatesFlagged === 1 ? "looks" : "look"} ${amount} light`;
+}
 
 export function computeBriefHeadline(
   snapshot: BriefOpportunitySnapshot,
@@ -142,7 +164,7 @@ export function computeBriefHeadline(
     return {
       snapshot,
       newRisk,
-      headline: `${plural(snapshot.estimatesFlagged, "pending estimate")} ${snapshot.estimatesFlagged === 1 ? "looks" : "look"} ${formatCurrency(snapshot.estimatesShortfall)} light against your target margin.`,
+      headline: `${estimatesLight(snapshot)} against your target margin.`,
       subject: `${companyName}: ${plural(snapshot.estimatesFlagged, "estimate")} priced below your target`,
     };
   }
@@ -156,7 +178,7 @@ export function computeBriefHeadline(
   if (snapshot.openJobRisk > 0) {
     const estimates =
       snapshot.estimatesFlagged > 0
-        ? ` ${plural(snapshot.estimatesFlagged, "pending estimate")} also ${snapshot.estimatesFlagged === 1 ? "looks" : "look"} ${formatCurrency(snapshot.estimatesShortfall)} light against your target margin.`
+        ? ` ${estimatesLight(snapshot, "also ")} against your target margin.`
         : "";
     return {
       snapshot,

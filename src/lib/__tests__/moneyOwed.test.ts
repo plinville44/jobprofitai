@@ -53,7 +53,7 @@ describe("money owed: work done, not billed (U5, C15g)", () => {
     ];
     const owed = computeMoneyOwed({ now: NOW, jobs, openInvoices: [] });
     expect(owed.unbilled.checked).toBe(0);
-    expect(owed.unbilled.notChecked).toEqual({ contract: 1, progress: 1, estimate_passed: 1 });
+    expect(owed.unbilled.notChecked).toEqual({ contract: 1, progress: 1, estimate_passed: 1, costs_behind: 0 });
     expect(owed.unbilled.jobs).toEqual([]);
     // The job past its estimate isn't counted as $40,000 under billed.
     expect(owed.unbilled.total).toBe(0);

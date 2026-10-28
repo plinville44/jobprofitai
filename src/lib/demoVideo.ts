@@ -9,7 +9,9 @@
  * exactly this; change both together.
  *
  * The same videos are on YouTube (unlisted) for links in emails and
- * outreach. GETTING_STARTED_VIDEO, below, is linked from the trial emails.
+ * outreach, and for the plain link the player shows if our file can't load.
+ * GETTING_STARTED_VIDEO, below, is linked from the trial emails and isn't
+ * on our website.
  *
  * The videos show the labelled sample company, Example Builders, with its
  * figures from src/lib/sampleCompany.ts. The bookkeeper video's portfolio
@@ -18,12 +20,12 @@
 export interface SiteVideo {
   /** The MP4 (H.264, 1080p) in our public Vercel Blob store. */
   src: string;
-  /** The same video on YouTube, for links in emails and outreach. */
+  /** The same video on YouTube, for links in emails and outreach, and the player's link if our file can't load. */
   youtubeId: string;
   title: string;
   /** Shown on the play button. */
   length: string;
-  /** Our own still picture in public/, shown until someone clicks play. */
+  /** Our own still picture in public/, shown until someone clicks play and while the first frame loads. */
   poster: string;
 }
 
@@ -62,7 +64,7 @@ export const GETTING_STARTED_VIDEO = {
   length: "1 min",
 } as const;
 
-/** A video's own page on YouTube, for links in emails. */
+/** A video's own page on YouTube, for links (never an embed). */
 export function youtubeWatchUrl(id: string): string {
   return `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
 }

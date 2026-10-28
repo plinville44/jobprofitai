@@ -4,6 +4,7 @@ import { LogoLink } from "@/components/marketing/Logo";
 import { findLoginByEmail } from "@/lib/loginThrottle";
 import { readPendingIntuitIdentity } from "@/lib/intuitSignIn";
 import IntuitLinkForm from "./IntuitLinkForm";
+import { TRADEMARK_NOTICE } from "@/components/marketing/trademark";
 
 export const metadata: Metadata = { title: "Finish signing in with Intuit", robots: { index: false, follow: false } };
 export const dynamic = "force-dynamic";
@@ -45,6 +46,8 @@ export default async function IntuitLinkPage() {
         </p>
       )}
       <IntuitLinkForm email={pending.email ?? ""} canCreate={!existing && Boolean(pending.email)} />
+      {/* This page names Intuit and QuickBooks, so it carries the notice the login page does (W2). */}
+      <p className="mb-8 mt-6 text-center text-xs text-gray-500">{TRADEMARK_NOTICE}</p>
     </main>
   );
 }

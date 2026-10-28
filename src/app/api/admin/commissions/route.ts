@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/adminAuth";
-import { markCommissionsPaid } from "@/lib/partners";
+import { markCommissionsPaid, payoutReferralStates } from "@/lib/partners";
 import { sendPartnerPayoutRecorded } from "@/lib/email/lifecycle";
 
 /**
@@ -19,6 +19,9 @@ import { sendPartnerPayoutRecorded } from "@/lib/email/lifecycle";
  * than implying commissions are paid automatically.
  */
 export const runtime = "nodejs";
+
+const CHANGED_SINCE_LOADED_MESSAGE =
+  "Some of this commission can't be paid now: since the page was loaded, a referral was flagged for a check or disqualified, or a commission was voided. Nothing was recorded. Refresh the page and pay the amount it shows.";
 
 const PaySchema = z.object({
   commissionIds: z.array(z.string().min(1)).min(1).max(500),
@@ -41,24 +44,41 @@ export async function POST(req: NextRequest) {
     // Load first so we know which partners to notify and for how much -
     // markCommissionsPaid only flips rows that are still "earned", so this
     // is naturally idempotent against a double-click.
-    const rows = await prisma.partnerCommission.findMany({
-      where: { id: { in: commissionIds }, status: "earned" },
-      select: { id: true, partnerId: true, commissionCents: true },
+    const requested = await prisma.partnerCommission.findMany({
+      where: { id: { in: commissionIds } },
+      select: { id: true, partnerId: true, commissionCents: true, referralId: true, status: true },
     });
+    const earned = requested.filter((r) => r.status === "earned");
 
-    if (rows.length === 0) {
+    // The button's amount is what the admin has just paid by other means.
+    // If any of it can't be paid now (its referral was flagged for a check
+    // or disqualified, or the commission was voided or is gone) since the
+    // page was drawn, recording only the rest left the ledger short of what
+    // was paid, and the page later offered the difference again: a partner
+    // paid twice. So nothing is recorded, and the page is refreshed to the
+    // right amount (audit Oct 27, B3 review).
+    const states = await payoutReferralStates(earned.map((r) => r.referralId));
+    const changed =
+      requested.length < new Set(commissionIds).size ||
+      requested.some((r) => r.status === "voided") ||
+      earned.some((r) => states.held.has(r.referralId) || states.disqualified.has(r.referralId));
+    if (changed) {
+      return NextResponse.json({ error: CHANGED_SINCE_LOADED_MESSAGE }, { status: 409 });
+    }
+
+    if (earned.length === 0) {
       return NextResponse.json({ ok: true, updated: 0, detail: "Nothing left to mark paid." });
     }
 
     const updated = await markCommissionsPaid(
-      rows.map((r) => r.id),
+      earned.map((r) => r.id),
       note ?? null
     );
 
     // One notification per partner covering their whole payout, rather than
     // an email per commission row.
     const byPartner = new Map<string, number>();
-    for (const row of rows) {
+    for (const row of earned) {
       byPartner.set(row.partnerId, (byPartner.get(row.partnerId) ?? 0) + row.commissionCents);
     }
 
@@ -74,7 +94,7 @@ export async function POST(req: NextRequest) {
         // genuinely separate later payout still notifies.
         const payoutRef = crypto
           .createHash("sha256")
-          .update(rows.filter((r) => r.partnerId === partnerId).map((r) => r.id).sort().join(","))
+          .update(earned.filter((r) => r.partnerId === partnerId).map((r) => r.id).sort().join(","))
           .digest("hex")
           .slice(0, 32);
 

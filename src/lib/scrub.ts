@@ -21,26 +21,91 @@ const MAX_TEXT = 500;
  * already logs it with QuickBooks errors so Intuit's support can trace them.
  */
 export function scrubText(input: unknown, maxLength: number = MAX_TEXT): string {
+  const full = typeof input === "string" ? input : String(input ?? "");
   // Cut before scrubbing as well as after, so a very long value (a request
-  // header, say) can't make the patterns below slow.
-  const text = (typeof input === "string" ? input : String(input ?? "")).slice(0, maxLength * 2);
-  // Odd-numbered parts are "intuit_tid: <id>", left as they are.
-  const parts = text.split(/(intuit_tid:\s*[A-Za-z0-9-]{1,64})/);
+  // header, say) can't make the patterns below slow. The cut goes back to
+  // the last space, so no half of a value is left that the patterns no
+  // longer recognise ("ow" of an email address, the start of a key): a cut
+  // through the middle let those through once the text before them shrank
+  // (audit Oct 27, SEC5).
+  let text = full.slice(0, maxLength * 4);
+  if (full.length > text.length) {
+    // Back to the last space near the end, else to the last character near
+    // the end that can't be part of an address or key. With neither, the
+    // whole run the cut landed in, 400 characters or more with no break,
+    // becomes [token]: the token rule below would leave the dotted end of
+    // one (".bob.smith" of an address cut before its domain). Only near the
+    // end (the last 400 characters, more than an address or key can be), so
+    // a long message with one early space, a compact JSON body say, isn't
+    // cut back to almost nothing.
+    const tail = text.slice(-400);
+    let at = tail.search(/\s\S*$/);
+    if (at < 0) at = tail.search(/[^A-Za-z0-9._%+@-][A-Za-z0-9._%+@-]*$/);
+    if (at >= 0) text = text.slice(0, text.length - tail.length + at);
+    else text = `${text.slice(0, text.search(/[A-Za-z0-9._%+@-]*$/))}[token]`;
+    text = withoutUnclosedQuote(text);
+  }
+  // A database error prints the query's values: only the call that failed
+  // is kept, as errorMessage below does when it has the error itself. Our
+  // routes log err.message as text, which used to get only the general rules.
+  // Prisma names the call as written, so inside a transaction it's
+  // tx.referral.update(), not prisma.referral.update().
+  const prismaCall = PRISMA_INVOCATION.exec(text);
+  if (prismaCall) text = `${text.slice(0, prismaCall.index)}Database error in ${prismaCall[1]}()`;
+  // Query strings and email addresses come out of the whole text first, so
+  // an ID kept below can't carry one through (sub_team@acme.com, or
+  // /customers/cus_.../?name=...).
+  text = withoutQueries(text).replace(EMAIL, "[email]");
+  // Odd-numbered parts are kept as they are: "intuit_tid: <id>", and Stripe's
+  // object IDs (an event, subscription, customer, invoice or charge), which
+  // are references, not secrets, and are what a failed webhook or a
+  // duplicate subscription needs to be traced (audit Oct 27, SEC4). Keys
+  // (sk_, rk_, pk_, whsec_) don't match and are still taken out, and so is
+  // re_, which is how Resend's API keys start as well as Stripe's refunds.
+  const parts = text.split(KEEP);
   const scrubbed = parts.map((part, i) => (i % 2 === 1 ? part : scrubPart(part))).join("");
   return scrubbed.length > maxLength ? `${scrubbed.slice(0, maxLength - 3)}...` : scrubbed;
 }
 
+const KEEP = /(intuit_tid:\s*[A-Za-z0-9-]{1,64}|\b(?:evt|sub|cus|in|ii|pi|ch|si|price|prod|cs)_(?:(?:live|test)_)?[A-Za-z0-9]{8,64}\b(?!@))/;
+
+/** `Invalid \`prisma.job.findMany()\` invocation`, or tx.job.findMany() inside a transaction. */
+const PRISMA_INVOCATION = /Invalid `([A-Za-z_$][\w$]{0,40}\.\w+\.\w+)\(\)` invocation/;
+const PRISMA_CALL = /`([A-Za-z_$][\w$]{0,40}\.\w+\.\w+)\(\)`/;
+
+// Bounded parts, so a long run of letters with an "@" can't backtrack for long.
+const EMAIL = /[A-Za-z0-9._%+-]{1,64}@(?:[A-Za-z0-9-]{1,63}\.){1,10}[A-Za-z]{2,24}\b/g;
+
+/** A URL's query string and fragment: codes, tokens, search terms. */
+function withoutQueries(s: string): string {
+  return s.replace(/\b((?:https?|wss?):\/\/[^\s?#"'<>]*)[?#][^\s"'<>]*/gi, "$1");
+}
+
+/**
+ * Text cut to length can end inside a quoted value, which the quote rules
+ * below then don't see as quoted: "Smith Kitc. The open quote and what
+ * follows it go.
+ */
+function withoutUnclosedQuote(t: string): string {
+  if (((t.match(/"/g) ?? []).length & 1) === 1) t = t.slice(0, t.lastIndexOf('"'));
+  const curly = t.lastIndexOf("\u201c");
+  if (curly > t.lastIndexOf("\u201d")) t = t.slice(0, curly);
+  // A single quote where the rule below would open one, with none after it.
+  const single = /(^|[\s(:,=[])'[^']*$/.exec(t);
+  if (single) t = t.slice(0, single.index + single[1].length);
+  return t;
+}
+
 function scrubPart(s: string): string {
   return (
-    s
-      // A URL's query string and fragment: codes, tokens, search terms.
-      .replace(/\b((?:https?|wss?):\/\/[^\s?#"'<>]*)[?#][^\s"'<>]*/gi, "$1")
-      // Bounded parts, so a long run of letters with an "@" can't backtrack for long.
-      .replace(/[A-Za-z0-9._%+-]{1,64}@(?:[A-Za-z0-9-]{1,63}\.){1,10}[A-Za-z]{2,24}\b/g, "[email]")
+    withoutQueries(s)
+      .replace(EMAIL, "[email]")
       .replace(/\b(Bearer|Basic)\s+[^\s"',;)]+/gi, "$1 [redacted]")
       .replace(/\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*)?/g, "[token]")
+      // Bounded on both sides of the word: unbounded, a long run such as
+      // "key-key-key-..." backtracked for seconds (audit Oct 27, SEC3).
       .replace(
-        /\b([\w.-]*(?:token|secret|password|passwd|session|cookie|auth|key|code|signature|sig)[\w.-]*)\s*=\s*[^\s&"',;)]+/gi,
+        /\b([\w.-]{0,40}(?:token|secret|password|passwd|session|cookie|auth|key|code|signature|sig)[\w.-]{0,40})\s*=\s*[^\s&"',;)]+/gi,
         "$1=[redacted]"
       )
       // Quoted text. Single quotes only when the text inside has a space,
@@ -67,7 +132,7 @@ function scrubPart(s: string): string {
 export function errorMessage(err: { name: string; message: string; code?: unknown }): string {
   if (err.name.startsWith("PrismaClient")) {
     const code = typeof err.code === "string" && /^P\d{4}$/.test(err.code) ? err.code : null;
-    const call = /`(prisma\.\w+\.\w+)\(\)`/.exec(err.message)?.[1];
+    const call = PRISMA_CALL.exec(err.message)?.[1];
     return ["Database error", code, call ? `in ${call}()` : null].filter(Boolean).join(" ");
   }
   return scrubText(err.message);
