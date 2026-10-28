@@ -5,6 +5,7 @@ import { runSyncForConnection, SyncAlreadyRunningError } from "@/lib/quickbooksS
 import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
 import { overLimitConnectionIds, pausedCompaniesMessage } from "@/lib/planLimits";
 import { syncCooldownMessage, syncCooldownSecondsLeft } from "@/lib/syncCooldown";
+import { publicErrorMessage } from "@/lib/publicError";
 
 /**
  * POST /api/quickbooks/sync  { connectionId }
@@ -34,7 +35,7 @@ export async function POST(req: NextRequest) {
     // in fields beyond `.message`.
     console.error("quickbooks/sync failed:", err instanceof Error ? err.message : "Unknown error");
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Sync failed." },
+      { error: publicErrorMessage(err, "Sync failed.") },
       { status: 500 }
     );
   }

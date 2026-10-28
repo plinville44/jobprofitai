@@ -1,4 +1,18 @@
 import { reportError } from "@/lib/monitoring";
+import { installLogScrubbing } from "@/lib/logScrub";
+
+/**
+ * Runs once when a server instance starts, before it handles a request:
+ * from then on every console log line is scrubbed of QuickBooks data,
+ * credentials and personal details (src/lib/logScrub.ts). Only in the
+ * running app, not during `next build` or on a developer's machine, so a
+ * build or local error still prints in full.
+ */
+export function register(): void {
+  if (process.env.NODE_ENV === "production" && process.env.NEXT_PHASE !== "phase-production-build") {
+    installLogScrubbing();
+  }
+}
 
 /**
  * Next.js calls onRequestError for an error that escapes a server component,
@@ -8,8 +22,6 @@ import { reportError } from "@/lib/monitoring";
  * its IDs and query string) and its headers (cookies, authorization) are
  * never read. An error a route catches itself and turns into a response
  * doesn't come through here.
- *
- * No register() export: nothing in the app needs setting up at start-up.
  *
  * Typed loosely here rather than with Next's own types, so a change in their
  * shape can't break the build; anything unexpected is simply left out.

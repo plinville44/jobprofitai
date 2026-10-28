@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAccount, refuseClient } from "@/lib/account";
 import { getJobTypes, isAssignableJobType } from "@/lib/jobTypesServer";
+import { publicErrorMessage } from "@/lib/publicError";
 
 /**
  * PATCH /api/jobs/bulk  { jobIds: string[], statusOverride?, category? }
@@ -94,7 +95,7 @@ export async function PATCH(req: NextRequest) {
   } catch (err) {
     console.error("jobs/bulk PATCH failed:", err instanceof Error ? err.message : "Unknown error");
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Couldn't update those jobs." },
+      { error: publicErrorMessage(err, "Couldn't update those jobs.") },
       { status: 500 }
     );
   }

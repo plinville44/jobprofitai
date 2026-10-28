@@ -11,6 +11,7 @@ import { generateProfitInsights } from "@/lib/intelligence";
 import { overLimitConnectionIds, pausedCompaniesMessage } from "@/lib/planLimits";
 import { aiFailureKind } from "@/lib/ai";
 import { reportError } from "@/lib/monitoring";
+import { publicErrorMessage } from "@/lib/publicError";
 
 /**
  * POST /api/analysis/refresh  { connectionId }
@@ -235,7 +236,7 @@ export async function POST(req: NextRequest) {
       await reportError(err, { route: "/api/analysis/refresh", method: "POST", feature: "profit-insights" });
     }
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Couldn't refresh analysis." },
+      { error: publicErrorMessage(err, "Couldn't refresh analysis.") },
       { status: 500 }
     );
   }

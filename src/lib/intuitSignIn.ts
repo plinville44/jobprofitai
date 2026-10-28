@@ -61,6 +61,8 @@ export const INTUIT_PENDING_COOKIE = "jpai_intuit";
 export const INTUIT_VERIFY_EMAIL_URL = "https://accounts.intuit.com/app/account-manager/security";
 
 const appUrl = (path: string) => new URL(path, process.env.APP_URL);
+/** A 302 redirect: the callback's answers never carry a page (see /api/quickbooks/callback). */
+const found = (url: URL) => NextResponse.redirect(url, 302);
 const secret = () => new TextEncoder().encode(process.env.AUTH_SECRET);
 const cookieBase = () => ({
   path: "/",
@@ -91,7 +93,7 @@ export async function startIntuitFlow(intent: IntuitIntent, opts: { realmId?: st
     .setExpirationTime("10m")
     .sign(secret());
 
-  const res = NextResponse.redirect(await buildAuthorizeUrl(state, connecting ? CONNECT_WITH_OPENID_SCOPES : OPENID_SCOPES));
+  const res = found(await buildAuthorizeUrl(state, connecting ? CONNECT_WITH_OPENID_SCOPES : OPENID_SCOPES));
   res.cookies.set(OIDC_NONCE_COOKIE, nonce, { ...cookieBase(), maxAge: 600 });
   return res;
 }
@@ -218,7 +220,7 @@ export async function handleIntuitFlow(
   requestHeaders?: Headers
 ): Promise<NextResponse> {
   if (flow !== "intuit_signin" && flow !== "intuit_appstore") {
-    return NextResponse.redirect(appUrl("/login?notice=invalid_state"));
+    return found(appUrl("/login?notice=invalid_state"));
   }
   const connecting = flow === "intuit_appstore";
   // Started from the button on /signup (startIntuitFlow), not the App Store.
@@ -230,9 +232,9 @@ export async function handleIntuitFlow(
   cookieStore.delete(OIDC_NONCE_COOKIE);
   if (!nonce || payload.nonce !== nonce) {
     // Not the browser that started this. Nothing is exchanged.
-    return NextResponse.redirect(appUrl("/login?notice=intuit_session"));
+    return found(appUrl("/login?notice=intuit_session"));
   }
-  if (connecting && !realmId) return NextResponse.redirect(appUrl("/login?notice=intuit_failed"));
+  if (connecting && !realmId) return found(appUrl("/login?notice=intuit_failed"));
 
   let tokens;
   let info: IntuitUserInfo;
@@ -241,14 +243,14 @@ export async function handleIntuitFlow(
     info = await fetchIntuitUserInfo(tokens.access_token);
   } catch (err) {
     console.error("intuit sign-in: token or userinfo failed:", err instanceof Error ? err.message : "Unknown error");
-    return NextResponse.redirect(appUrl("/login?notice=intuit_failed"));
+    return found(appUrl("/login?notice=intuit_failed"));
   }
 
   // Intuit's rule: no access unless Intuit has verified the address. Any
   // QuickBooks tokens from this attempt are discarded, not stored.
   if (!info.emailVerified || !info.email) {
     if (connecting) await discardGrant(realmId!, tokens.refresh_token);
-    return NextResponse.redirect(appUrl("/login?notice=intuit_unverified"));
+    return found(appUrl("/login?notice=intuit_unverified"));
   }
 
   let user = await prisma.user.findUnique({ where: { intuitSub: info.sub } });
@@ -273,7 +275,7 @@ export async function handleIntuitFlow(
         .setIssuedAt()
         .setExpirationTime("15m")
         .sign(secret());
-      const res = NextResponse.redirect(appUrl("/login/intuit"));
+      const res = found(appUrl("/login/intuit"));
       res.cookies.set(INTUIT_PENDING_COOKIE, pending, { ...cookieBase(), maxAge: 900 });
       return res;
     }
@@ -289,7 +291,7 @@ export async function handleIntuitFlow(
       newUser = true;
     } catch (err) {
       if ((err as { code?: string })?.code === "P2002") {
-        return NextResponse.redirect(appUrl("/login?notice=intuit_failed"));
+        return found(appUrl("/login?notice=intuit_failed"));
       }
       throw err;
     }
@@ -316,7 +318,7 @@ export async function handleIntuitFlow(
   // lose ?qbo_connected=1). Where they came from is on the account now, so
   // the browser's jpai_src goes, as after an email signup.
   const redirectTo = (path: string) => {
-    const res = NextResponse.redirect(appUrl(newUser ? `/accept-terms?next=${encodeURIComponent(path)}` : path));
+    const res = found(appUrl(newUser ? `/accept-terms?next=${encodeURIComponent(path)}` : path));
     if (measuredSignup) res.cookies.set(SOURCE_COOKIE, "", { path: "/", maxAge: 0 });
     return res;
   };
