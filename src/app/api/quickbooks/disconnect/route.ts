@@ -6,6 +6,7 @@ import { revokeToken } from "@/lib/quickbooks";
 import { decryptToken } from "@/lib/crypto";
 import { revokeAllSessions } from "@/lib/auth";
 import { removeClientLoginsForCompany } from "@/lib/teamRemoval";
+import { publicErrorMessage } from "@/lib/publicError";
 
 /**
  * POST /api/quickbooks/disconnect  { connectionId }
@@ -59,7 +60,7 @@ export async function POST(req: NextRequest) {
     // in api/quickbooks/sync/route.ts for why.
     console.error("quickbooks/disconnect failed:", err instanceof Error ? err.message : "Unknown error");
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Disconnect failed." },
+      { error: publicErrorMessage(err, "Disconnect failed.") },
       { status: 500 }
     );
   }

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { canSeeConnection, getAccount, refuseClient } from "@/lib/account";
 import { getJobTypes } from "@/lib/jobTypesServer";
 import { loadedEmailSettings, STALE_SETTINGS_MESSAGE, staleEmailSettings } from "@/lib/emailPreferences";
+import { publicErrorMessage } from "@/lib/publicError";
 
 const OVERHEAD_METHODS = new Set(["pct_of_revenue", "pct_of_direct_cost"]);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -241,7 +242,7 @@ export async function POST(req: NextRequest) {
     // other API routes (see api/quickbooks/sync/route.ts).
     console.error("settings/profile failed:", err instanceof Error ? err.message : "Unknown error");
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Couldn't save settings." },
+      { error: publicErrorMessage(err, "Couldn't save settings.") },
       { status: 500 }
     );
   }

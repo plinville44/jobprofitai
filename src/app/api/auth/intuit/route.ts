@@ -24,7 +24,8 @@ export async function GET(req: NextRequest) {
   const realmId = url.searchParams.get("realmId");
 
   if (intent === "signin" && (await getSession())) {
-    return NextResponse.redirect(new URL("/dashboard", process.env.APP_URL));
+    // 302: this is the Launch URL, and Intuit can put the realm ID in it.
+    return NextResponse.redirect(new URL("/dashboard", process.env.APP_URL), 302);
   }
   return startIntuitFlow(intent, { realmId });
 }

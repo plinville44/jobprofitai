@@ -6,6 +6,7 @@ import { qboProfitAndLossForCustomer } from "@/lib/quickbooks";
 import { withAccessToken } from "@/lib/quickbooksSync";
 import { compareWithQuickBooks, parseProfitAndLoss } from "@/lib/qboCheck";
 import { laborBurdenOf } from "@/lib/profitability";
+import { publicErrorMessage } from "@/lib/publicError";
 
 export const maxDuration = 30;
 
@@ -59,7 +60,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ job
         : qboProfitAndLossForCustomer(realmId, token, job.qboId, "2000-01-01", today)
     );
   } catch (err) {
-    const message = err instanceof Error ? err.message : "QuickBooks didn't answer.";
+    const message = publicErrorMessage(err, "QuickBooks didn't answer.");
     return NextResponse.json({ error: message }, { status: 502 });
   }
   const qb = parseProfitAndLoss(report);

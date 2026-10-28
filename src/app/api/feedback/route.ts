@@ -4,6 +4,7 @@ import { accountFor, getActiveConnection } from "@/lib/account";
 import { getSession } from "@/lib/auth";
 import { getEntitlements } from "@/lib/entitlements";
 import { sendEmail, SUPPORT_EMAIL } from "@/lib/email/client";
+import { publicErrorMessage } from "@/lib/publicError";
 
 const CATEGORIES = new Set(["Feature Request", "Report", "Integration", "Bug/Problem", "Other"]);
 
@@ -96,7 +97,7 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     console.error("feedback failed:", err instanceof Error ? err.message : "Unknown error");
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Couldn't submit feedback." },
+      { error: publicErrorMessage(err, "Couldn't submit feedback.") },
       { status: 500 }
     );
   }

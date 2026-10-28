@@ -11,6 +11,7 @@ import { overLimitConnectionIds, pausedCompaniesMessage } from "@/lib/planLimits
 import { fullSyncPartway } from "@/lib/syncProblem";
 import { aiFailureKind } from "@/lib/ai";
 import { reportError } from "@/lib/monitoring";
+import { publicErrorMessage } from "@/lib/publicError";
 
 /**
  * POST /api/digest/generate  { connectionId }
@@ -154,7 +155,7 @@ export async function POST(req: NextRequest) {
       await reportError(err, { route: "/api/digest/generate", method: "POST", feature: "brief-summary" });
     }
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Digest generation failed." },
+      { error: publicErrorMessage(err, "Digest generation failed.") },
       { status: 500 }
     );
   }
