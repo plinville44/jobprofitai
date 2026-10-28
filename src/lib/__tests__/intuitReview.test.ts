@@ -134,7 +134,7 @@ describe("the OAuth callback answers only with 302 redirects", () => {
 
   it("in the Sign in with Intuit and App Store flows it hands off to, and the Launch URL", () => {
     const flow = read("lib/intuitSignIn.ts");
-    expect(flow).toContain("const found = (url: URL) => NextResponse.redirect(url, 302);");
+    expect(flow).toContain("const found = (url: URL | string) => NextResponse.redirect(url, 302);");
     expect(flow.split("NextResponse.redirect(").length - 1).toBe(1);
     expect(read("app/api/auth/intuit/route.ts")).toContain('NextResponse.redirect(new URL("/dashboard", process.env.APP_URL), 302)');
     const handler = flow.slice(flow.indexOf("export async function handleIntuitFlow"));

@@ -62,7 +62,7 @@ export const INTUIT_VERIFY_EMAIL_URL = "https://accounts.intuit.com/app/account-
 
 const appUrl = (path: string) => new URL(path, process.env.APP_URL);
 /** A 302 redirect: the callback's answers never carry a page (see /api/quickbooks/callback). */
-const found = (url: URL) => NextResponse.redirect(url, 302);
+const found = (url: URL | string) => NextResponse.redirect(url, 302);
 const secret = () => new TextEncoder().encode(process.env.AUTH_SECRET);
 const cookieBase = () => ({
   path: "/",
