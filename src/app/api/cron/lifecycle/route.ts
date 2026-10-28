@@ -1,4 +1,8 @@
+import type Stripe from "stripe";
 import { syncAllFirmQuantities } from "@/lib/stripe/firmQuantity";
+import { getStripe } from "@/lib/stripe/client";
+import { processStripeEvent } from "@/lib/stripe/webhookHandlers";
+import { DUPLICATE_OF_METADATA_KEY, isLiveSubscriptionStatus } from "@/lib/stripe/duplicateSubscription";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { authorizeCron } from "@/lib/cronAuth";
@@ -18,7 +22,7 @@ import {
   sendTrialEndingSoon,
   sendTrialExpired,
 } from "@/lib/email/lifecycle";
-import { reportError, withCronMonitor } from "@/lib/monitoring";
+import { RunErrors, withCronMonitor } from "@/lib/monitoring";
 import {
   companiesDueForDeletionReminder,
   deletionDueAt,
@@ -60,6 +64,13 @@ const SETUP_REMINDER_AFTER_DAYS = 3;
  *  enough that they have an honest opinion worth hearing. */
 const TESTIMONIAL_AFTER_PAID_DAYS = 21;
 
+/** A live subscription whose period ended this long ago should have renewed or ended in Stripe by now. */
+const STALE_PERIOD_MS = 2 * 86_400_000;
+/** Subscriptions read back from Stripe per run, the longest overdue first. */
+const RECONCILE_PER_RUN = 25;
+/** How many overdue rows are looked at to find those not yet read back today. */
+const RECONCILE_CANDIDATES = 500;
+
 interface Counters {
   trialsExpired: number;
   setupReminders: number;
@@ -75,11 +86,18 @@ interface Counters {
   emailVerificationsPurged: number;
   loginAttemptsPurged: number;
   firmQuantitiesUpdated: number;
+  subscriptionsReconciled: number;
   lapsedCompaniesDisconnected: number;
   revokedCompaniesDisconnected: number;
   deletionReminders: number;
   companiesDeleted: number;
   errors: string[];
+  /**
+   * The run's unexpected errors, sent once it's done as one report for each
+   * kind with how many times it happened. One report per trial used up the
+   * 20 reports a minute on a fault that hit every row (audit Oct 27, E9).
+   */
+  faults: RunErrors;
 }
 
 export async function GET(req: NextRequest) {
@@ -108,11 +126,13 @@ async function runLifecycle() {
     emailVerificationsPurged: 0,
     loginAttemptsPurged: 0,
     firmQuantitiesUpdated: 0,
+    subscriptionsReconciled: 0,
     lapsedCompaniesDisconnected: 0,
     revokedCompaniesDisconnected: 0,
     deletionReminders: 0,
     companiesDeleted: 0,
     errors: [],
+    faults: new RunErrors(),
   };
 
   // Each stage is independently guarded: one failing stage must not stop the
@@ -131,6 +151,7 @@ async function runLifecycle() {
     counters.firmQuantitiesUpdated = r.updated;
     if (r.errors > 0) counters.errors.push(`firm-quantities: ${r.errors} failed`);
   });
+  await runStage(counters, "stripe-reconcile", () => reconcileStaleSubscriptions(counters, now));
   // Data retention (src/lib/dataRetention.ts): accounts with no trial or plan
   // for 90 days are disconnected from QuickBooks, so are companies QuickBooks
   // has refused us for 7 days (disconnected on Intuit's side), a disconnected company's
@@ -180,7 +201,9 @@ async function runLifecycle() {
     counters.loginAttemptsPurged = await purgeOldLoginAttempts(now);
   });
 
-  return NextResponse.json({ ok: true, checkedAt: now.toISOString(), ...counters });
+  await counters.faults.report({ cron: "lifecycle" });
+  const { faults: _faults, ...counts } = counters;
+  return NextResponse.json({ ok: true, checkedAt: now.toISOString(), ...counts });
 }
 
 async function runStage(counters: Counters, name: string, fn: () => Promise<void>): Promise<void> {
@@ -188,11 +211,13 @@ async function runStage(counters: Counters, name: string, fn: () => Promise<void
     await fn();
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    console.error(`cron/lifecycle: stage "${name}" failed: ${message}`);
+    // No quotes around the name: the log scrub hides quoted text, and took
+    // the stage's name with it (audit Oct 27, SEC4).
+    console.error(`cron/lifecycle: stage ${name} failed: ${message}`);
     counters.errors.push(`${name}: ${message}`);
     // A whole stage failing is a fault in our code or the database: each
     // stage handles the email provider's and Stripe's problems itself.
-    await reportError(err, { cron: "lifecycle" });
+    counters.faults.add(err);
   }
 }
 
@@ -208,11 +233,16 @@ async function processTrialEmails(counters: Counters, now: Date): Promise<void> 
   // set, so once there were 1,000 of them new trials stopped getting their
   // emails. Paged, so no count is too many.
   const recentlyExpired = new Date(now.getTime() - 3 * 86_400_000);
+  // Only accounts that have verified their address. A signup typo otherwise
+  // got a stranger's inbox two weeks of trial emails, and the bounces and
+  // complaints count against our sending domain (audit Oct 27, E11). The
+  // verification email itself is sent at signup, and the app asks for it.
   const where = {
     OR: [
       { status: "trialing" },
       { status: "trial_expired", trialEndsAt: { gte: recentlyExpired } },
     ],
+    user: { emailVerifiedAt: { not: null } },
   };
   const trials: Awaited<ReturnType<typeof prisma.subscription.findMany>> = [];
   let cursor: string | undefined;
@@ -288,7 +318,7 @@ async function processTrialEmails(counters: Counters, now: Date): Promise<void> 
       );
       // The sends return the email provider's refusals as results, so a
       // throw here is a fault in our code or the database.
-      await reportError(err, { cron: "lifecycle" });
+      counters.faults.add(err);
     }
   }
 }
@@ -311,7 +341,7 @@ async function processReferralQualification(counters: Counters): Promise<void> {
       counters.errors.push(
         `reward ${reward.rewardId}: ${err instanceof Error ? err.message : "Unknown error"}`
       );
-      await reportError(err, { cron: "lifecycle" });
+      counters.faults.add(err);
     }
   }
 
@@ -325,6 +355,133 @@ async function processReferralQualification(counters: Counters): Promise<void> {
 }
 
 /**
+ * Subscriptions still live on file well after their period ended, read back
+ * from Stripe and put right. Access comes from the stored status, which only
+ * Stripe's webhooks change, and an active one is never checked against its
+ * period end: when a "subscription deleted" (or the renewal's "updated")
+ * webhook was lost, after Stripe's own retries, access stayed on for good
+ * (audit Oct 27, B6). What Stripe says now goes through the webhook's own
+ * handling (processStripeEvent), as the event that went missing would have:
+ * a cancelled one ends access and the owner gets the usual email, a renewed
+ * one gets its new period. Its time is when Stripe was read, so a real event
+ * from before then can't put back what Stripe no longer says.
+ *
+ * Since the review of audit Oct 27:
+ *  - Before a cancellation is applied, the customer's other subscriptions
+ *    are listed, and a live one is applied instead. One that moved to a new
+ *    subscription (a plan change made as a new checkout, say) was otherwise
+ *    cut off, and emailed that it was cancelled, while paying.
+ *  - Each row is read back at most once a day. The event's id is the row's
+ *    subscription and the day, recorded by processStripeEvent, or here when
+ *    reading it back failed. It used to take the 25 longest overdue every
+ *    hour, so rows that never change (an id Stripe doesn't know, an event
+ *    the handling leaves alone) were read again every hour, and once there
+ *    were 25 of them nobody else was. A run's Stripe errors are reported
+ *    once, one report per kind (counters.faults).
+ */
+async function reconcileStaleSubscriptions(counters: Counters, now: Date): Promise<void> {
+  // No Stripe in this environment (development, a preview without billing).
+  if (!process.env.STRIPE_SECRET_KEY) return;
+  const stale = await prisma.subscription.findMany({
+    where: {
+      status: { in: ["active", "past_due"] },
+      stripeSubscriptionId: { not: null },
+      currentPeriodEnd: { lt: new Date(now.getTime() - STALE_PERIOD_MS) },
+    },
+    select: { userId: true, stripeSubscriptionId: true, stripeCustomerId: true },
+    orderBy: { currentPeriodEnd: "asc" },
+    take: RECONCILE_CANDIDATES,
+  });
+  if (stale.length === 0) return;
+  const day = now.toISOString().slice(0, 10);
+  const idFor = (subscriptionId: string) => `reconcile_${subscriptionId}_${day}`;
+  const doneToday = new Set(
+    (await prisma.stripeEvent.findMany({ where: { id: { in: stale.map((r) => idFor(r.stripeSubscriptionId!)) } }, select: { id: true } })).map((e) => e.id)
+  );
+  const due = stale.filter((r) => !doneToday.has(idFor(r.stripeSubscriptionId!))).slice(0, RECONCILE_PER_RUN);
+  if (due.length === 0) return;
+  const stripe = getStripe();
+  // The event the missing webhook would have been, timed when Stripe was read.
+  const eventFor = (subscription: Stripe.Subscription, eventId: string) =>
+    ({
+      id: eventId,
+      object: "event",
+      type: subscription.status === "canceled" ? "customer.subscription.deleted" : "customer.subscription.updated",
+      created: Math.floor(now.getTime() / 1000),
+      api_version: null,
+      livemode: subscription.livemode,
+      pending_webhooks: 0,
+      request: null,
+      data: { object: subscription },
+    }) as unknown as Stripe.Event;
+  for (const row of due) {
+    const id = idFor(row.stripeSubscriptionId!);
+    try {
+      const subscription: Stripe.Subscription = await stripe.subscriptions.retrieve(row.stripeSubscriptionId!);
+      if (subscription.status === "canceled") {
+        // Moved to another subscription that's paying (a plan change made
+        // as a new checkout, say)? That one is applied first, and the
+        // cancellation only if the row didn't move onto it: a past due or
+        // unpaid one, or one the duplicate rule set aside, isn't taken over
+        // by the webhook's handling, and the row then stayed "active" on a
+        // canceled subscription every day (review of audit Oct 27, B6).
+        const customer = row.stripeCustomerId ?? (typeof subscription.customer === "string" ? subscription.customer : subscription.customer?.id);
+        const others = customer ? (await stripe.subscriptions.list({ customer, status: "all", limit: 20 })).data : [];
+        const live = replacement(others, subscription.id, "active");
+        if (live) {
+          await processStripeEvent(eventFor(live, `${id}_moved`), now);
+          const after = await prisma.subscription.findUnique({ where: { userId: row.userId }, select: { stripeSubscriptionId: true } });
+          if (after?.stripeSubscriptionId && after.stripeSubscriptionId !== row.stripeSubscriptionId) {
+            counters.subscriptionsReconciled++;
+            // Read back today; not again until tomorrow.
+            await prisma.stripeEvent.create({ data: { id, type: "reconcile.moved", processedAt: now } }).catch(() => {});
+            continue;
+          }
+        }
+        // One still live but not active (past due, unpaid, in a Stripe
+        // trial) isn't taken over while the row says active, so the
+        // cancellation goes first and that one after it, which the webhook's
+        // handling then takes onto the canceled row. Otherwise access stayed
+        // off until its next change in Stripe, through a trial or the card
+        // retries (third review of audit Oct 27).
+        const waiting = replacement(others, subscription.id, "live");
+        if (waiting) {
+          await processStripeEvent(eventFor(subscription, id), now);
+          await processStripeEvent(eventFor(waiting, `${id}_moved`), now);
+          counters.subscriptionsReconciled++;
+          continue;
+        }
+      }
+      const result = await processStripeEvent(eventFor(subscription, id), now);
+      if (result.handled && !result.duplicate) counters.subscriptionsReconciled++;
+    } catch (err) {
+      counters.errors.push(`reconcile ${row.stripeSubscriptionId}: ${err instanceof Error ? err.message : "Unknown error"}`);
+      counters.faults.add(err);
+      // Not read back again until tomorrow, like one that worked.
+      await prisma.stripeEvent.create({ data: { id, type: "reconcile.failed", processedAt: now } }).catch(() => {});
+    }
+  }
+}
+
+/**
+ * The customer's subscription, other than `except`, that would be kept on
+ * file: active (or, with "live", any status that still bills: active,
+ * trialing, past due, unpaid), not one cancelled as a duplicate, and the
+ * oldest of those, as the duplicate rule keeps the oldest
+ * (duplicateSubscription.ts). Pure.
+ */
+function replacement(subscriptions: Stripe.Subscription[], except: string, which: "active" | "live"): Stripe.Subscription | null {
+  const kept = subscriptions.filter(
+    (s) =>
+      s.id !== except &&
+      (which === "active" ? s.status === "active" : isLiveSubscriptionStatus(s.status)) &&
+      !s.metadata?.[DUPLICATE_OF_METADATA_KEY]
+  );
+  kept.sort((a, b) => (a.created ?? 0) - (b.created ?? 0) || a.id.localeCompare(b.id));
+  return kept[0] ?? null;
+}
+
+/**
  * Testimonial requests. Entirely separate from the trial extension - this
  * asks a genuinely established customer whether they'd be willing to say
  * something, and nothing about their account depends on the answer.
@@ -335,6 +492,10 @@ async function processTestimonialRequests(counters: Counters, now: Date): Promis
   const candidates = await prisma.subscription.findMany({
     where: {
       status: "active",
+      // Not someone who has just cancelled: still active until the period
+      // ends, and asking them for a testimonial then reads badly (audit Oct
+      // 27, E12).
+      cancelAtPeriodEnd: false,
       firstPaidAt: { not: null, lte: cutoff },
       // Only people who actually use the product - asking someone who never
       // ran an analysis for a testimonial would be absurd.
@@ -361,7 +522,7 @@ async function processTestimonialRequests(counters: Counters, now: Date): Promis
       counters.errors.push(
         `testimonial ${candidate.userId}: ${err instanceof Error ? err.message : "Unknown error"}`
       );
-      await reportError(err, { cron: "lifecycle" });
+      counters.faults.add(err);
     }
   }
 }

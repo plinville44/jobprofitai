@@ -24,6 +24,10 @@ function notCheckedText(n: MoneyOwed["unbilled"]["notChecked"]): string {
     const k = n.estimate_passed;
     parts.push(`${jobs(k)} ${k === 1 ? "has" : "have"} costs past the estimate and ${need(k)} an updated cost estimate or percent complete`);
   }
+  if (n.costs_behind > 0) {
+    const k = n.costs_behind;
+    parts.push(`${jobs(k)} ${k === 1 ? "has" : "have"} costs well behind the percent complete entered and ${need(k)} an updated percent complete or cost estimate`);
+  }
   return parts.join("; ");
 }
 
@@ -93,7 +97,7 @@ export default async function MoneyOwedPage() {
   const ageLabel = byDue ? "days past due" : "days since invoice";
   const nothingChecked = owed.unbilled.checked === 0;
   const missing = notCheckedText(owed.unbilled.notChecked);
-  const couldntCheck = owed.unbilled.notChecked.contract + owed.unbilled.notChecked.progress + owed.unbilled.notChecked.estimate_passed;
+  const couldntCheck = Object.values(owed.unbilled.notChecked).reduce((s, k) => s + k, 0);
   const wipUnderBilled = owed.unbilled.total + owed.unbilled.smallTotal;
 
   const tiles: { label: string; value: number | null; detail: string }[] = [

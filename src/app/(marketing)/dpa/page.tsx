@@ -4,7 +4,7 @@ import {
   LegalList,
   LegalPage,
   LegalSection,
-  LEGAL_LAST_UPDATED,
+  LEGAL_UPDATED,
   MailingAddress,
   SupportEmail,
 } from "@/components/marketing/Legal";
@@ -51,7 +51,7 @@ export default function DpaPage() {
   return (
     <LegalPage
       title="Data Processing Addendum"
-      updated={LEGAL_LAST_UPDATED}
+      updated={LEGAL_UPDATED.dpa}
       intro={
         <>
           <p>

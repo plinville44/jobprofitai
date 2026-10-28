@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { connectionForAccount, getAccount } from "@/lib/account";
+import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
 import { OPEN_JOB_WHERE } from "@/lib/jobStatus";
 import { labelForJobType } from "@/lib/jobTypes";
 import { getJobTypes } from "@/lib/jobTypesServer";
@@ -16,6 +17,11 @@ import { toCsv } from "@/lib/csv";
 export async function GET(req: NextRequest) {
   const account = await getAccount();
   if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  // A download of the company's jobs, so it needs a live trial or plan like
+  // the WIP export does. It had no check, so a lapsed account could still
+  // pull its job list here (audit Oct 27, B9).
+  const entitlements = await getEntitlements(account.ownerId);
+  if (!entitlements.active) return NextResponse.json({ error: inactiveMessage(entitlements) }, { status: 402 });
   const connection = await connectionForAccount(account, req.nextUrl.searchParams.get("connectionId"));
   if (!connection) return NextResponse.json({ error: "Company not found" }, { status: 404 });
   const all = req.nextUrl.searchParams.get("all") === "1";

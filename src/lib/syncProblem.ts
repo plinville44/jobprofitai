@@ -1,5 +1,6 @@
 import { needsReconnect } from "./quickbooks";
 import { formatDateTime } from "./format";
+import { publicErrorMessage } from "./publicError";
 
 /**
  * The strip every dashboard page shows when the company on screen isn't
@@ -25,6 +26,26 @@ export interface SyncProblem {
 const NO_CLASSES_PREFIX = "Your jobs are set to come from QuickBooks Classes";
 /** The start of FULL_SYNC_TOO_LONG_MESSAGE in quickbooksSync.ts (not imported, to keep this file free of the sync's dependencies). */
 const TOO_LONG_PREFIX = "Reading this company's QuickBooks history keeps running out of time";
+
+/** In place of a stored sync error that isn't written for people. */
+export const SYNC_ERROR_FALLBACK = "The last sync didn't finish. It's tried again overnight, or use Sync now on the Dashboard.";
+
+/**
+ * A company's stored sync error as Settings may show it: the app's own
+ * messages as written (the reconnect notice, no classes, running out of
+ * time; the last two carry the support address, which the general screen
+ * would take for personal data), anything else only if it reads as a
+ * sentence for people (publicErrorMessage), otherwise a plain fallback. The
+ * sync stores whatever failed, so a database or library message ("Invalid
+ * `prisma...` invocation", a key-length error) used to reach the customer
+ * here (audit Oct 27, SEC1).
+ */
+export function syncErrorForPeople(message: string | null | undefined): string | null {
+  const m = message?.trim();
+  if (!m) return null;
+  if (needsReconnect(m) || m.startsWith(NO_CLASSES_PREFIX) || m.startsWith(TOO_LONG_PREFIX)) return m;
+  return publicErrorMessage(new Error(m), SYNC_ERROR_FALLBACK);
+}
 
 /**
  * Whether the company's full read of QuickBooks keeps running out of time and

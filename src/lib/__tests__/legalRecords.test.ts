@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
@@ -16,7 +16,15 @@ import { requestAdOptOut, signupAdOptOut } from "@/lib/adOptOut";
 import { serverReportsAllowed } from "@/lib/tracking";
 import { TIPS_EMAIL_TYPES, tipsUnsubscribeUrl, verifyTipsToken } from "@/lib/emailPreferences";
 import * as T from "@/lib/email/templates";
-import { ACCEPTANCE_VERSION, LEGAL_LAST_UPDATED, RETENTION_RULES_START } from "@/lib/legalVersion";
+import {
+  ACCEPTANCE_VERSION,
+  LEGAL_LAST_UPDATED,
+  LEGAL_UPDATED,
+  RETENTION_RULES_START,
+  legalDateKey,
+  newestLegalUpdate,
+  type LegalDocument,
+} from "@/lib/legalVersion";
 
 // What the October 2026 legal review asked for, held to the code: data
 // kept only while a company is in use (Intuit's developer terms, 12.2), a
@@ -163,6 +171,31 @@ describe("acceptance of the Terms", () => {
       }
     }
   });
+
+  it("prints each document's own date, the date on its newest archived copy", () => {
+    const archive = join(ROOT, "legal-archive");
+    const folders = readdirSync(archive).filter((f) => /^\d{4}-\d{2}-\d{2}$/.test(f)).sort();
+    // The newest folder is the newest date; nothing is archived ahead of the site.
+    expect(LEGAL_LAST_UPDATED).toBe(newestLegalUpdate());
+    expect(folders[folders.length - 1]).toBe(legalDateKey(LEGAL_LAST_UPDATED));
+    const prop: Record<LegalDocument, string> = {
+      terms: "updated={LEGAL_UPDATED.terms}",
+      privacy: "updated={LEGAL_UPDATED.privacy}",
+      dpa: "updated={LEGAL_UPDATED.dpa}",
+      "privacy-choices": 'updated={LEGAL_UPDATED["privacy-choices"]}',
+    };
+    for (const doc of Object.keys(LEGAL_UPDATED) as LegalDocument[]) {
+      const page = flat(`app/(marketing)/${doc}/page.tsx`);
+      expect({ doc, own: page.includes(prop[doc]), shared: page.includes("LEGAL_LAST_UPDATED") }).toEqual({ doc, own: true, shared: false });
+      const newest = [...folders].reverse().find((f) => existsSync(join(archive, f, `${doc}.md`)))!;
+      const copy = readFileSync(join(archive, newest, `${doc}.md`), "utf8");
+      expect({ doc, line: /^Last updated: .*$/m.exec(copy)?.[0] }).toEqual({ doc, line: `Last updated: ${LEGAL_UPDATED[doc]}` });
+      // Its words haven't changed since the date it prints: the copy archived that day is the same text.
+      const then = join(archive, legalDateKey(LEGAL_UPDATED[doc]), `${doc}.md`);
+      const body = (text: string) => text.slice(text.indexOf("\n"));
+      expect({ doc, sameSince: existsSync(then) && body(readFileSync(then, "utf8")) === body(copy) }).toEqual({ doc, sameSince: true });
+    }
+  });
 });
 
 describe("opt-outs on the account", () => {
@@ -266,7 +299,8 @@ describe("what the legal pages now say", () => {
     // Launched without these; each needs its paragraph back before it's turned on.
     expect(privacy).not.toContain("LinkedIn Insight Tag");
     expect(privacy).not.toContain("Enhanced conversions:");
-    // The demo videos' paragraph ("Videos"), from October 26; since October 27 they play from our own files.
+    // The demo videos' paragraph ("Videos"), from October 26; since October 27 they play from our own files,
+    // and since October 28 it says which videos our emails link to on YouTube.
     expect(privacy).toContain('<LegalSub title="Videos">');
   });
 

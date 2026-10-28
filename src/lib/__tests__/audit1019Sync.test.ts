@@ -220,7 +220,8 @@ describe("1. a transaction on a parent customer goes on its only job only if it 
   it("matches estimates the same way wherever they're put on jobs", () => {
     const src = (f: string) => readFileSync(join(__dirname, "..", f), "utf8");
     for (const f of ["quickbooksSync.ts", "opportunityData.ts", "jobTypeSuggestions.ts"]) {
-      expect({ f, dated: src(f).includes("resolveJob(index, e.customerQboId, e.txnDate, ESTIMATE_PARENT_FALLBACK_GRACE_DAYS)") }).toEqual({ f, dated: true });
+      // One shared rule since the Oct 27 audit (estimatesByJob, which dates parent matches with ESTIMATE_PARENT_FALLBACK_GRACE_DAYS).
+      expect({ f, dated: src(f).includes("estimatesByJob(index, ") }).toEqual({ f, dated: true });
     }
     // The creation date the grace counts from is read with the jobs.
     expect(src("opportunityData.ts")).toMatch(/missingSince: true, qboCreatedAt: true/);
@@ -251,7 +252,9 @@ describe("1. a transaction on a parent customer goes on its only job only if it 
   });
 
   it("moves the old rows off the project on the upgrade sync every company gets", async () => {
-    expect([SYNC_VERSION, COST_SYNC_VERSION]).toEqual([7, 7]);
+    // 7 on Oct 19; later versions keep the rule (8 on Oct 27).
+    expect(SYNC_VERSION).toBeGreaterThanOrEqual(7);
+    expect(COST_SYNC_VERSION).toBeGreaterThanOrEqual(7);
     repeatClient();
     // As version 6 left it: the client's history on the project.
     await addConnection({ syncVersion: 6 });

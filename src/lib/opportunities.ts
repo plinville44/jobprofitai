@@ -435,9 +435,11 @@ export interface FeedSummary {
   /** Profit short of target on open jobs (forecast), or already spent past estimate where there's no forecast. */
   openJobRisk: number;
   openJobsAtRisk: number;
-  /** Price missing from pending estimates the check flagged. */
+  /** Price missing from pending estimates the check flagged, counting the largest of a customer's alternatives once. */
   estimatesShortfall: number;
   estimatesFlagged: number;
+  /** Flagged estimates left out of estimatesShortfall as another option for the same customer (absent: none). */
+  estimatesAlternatives?: number;
   /** Pending estimates looked at, and how many of those could be checked. */
   estimatesPending: number;
   estimatesChecked: number;
@@ -467,11 +469,14 @@ export interface SetupHint {
  * about estimates that were actually checked: an estimate with no job type,
  * or too few finished jobs to compare with, hasn't been judged either way.
  */
-export function estimatesDetail(s: Pick<FeedSummary, "estimatesFlagged" | "estimatesPending" | "estimatesChecked">): string {
+export function estimatesDetail(
+  s: Pick<FeedSummary, "estimatesFlagged" | "estimatesPending" | "estimatesChecked" | "estimatesAlternatives">
+): string {
   const unchecked = Math.max(0, s.estimatesPending - s.estimatesChecked);
   const notChecked = unchecked > 0 ? ` ${unchecked} not checked yet.` : "";
   if (s.estimatesFlagged > 0) {
-    return `${s.estimatesFlagged} pending ${s.estimatesFlagged === 1 ? "estimate" : "estimates"}.${notChecked}`;
+    const once = (s.estimatesAlternatives ?? 0) > 0 ? " Options for the same customer are counted once, at the largest." : "";
+    return `${s.estimatesFlagged} pending ${s.estimatesFlagged === 1 ? "estimate" : "estimates"}.${once}${notChecked}`;
   }
   if (s.estimatesPending === 0) return "No pending estimates in QuickBooks to check.";
   if (s.estimatesChecked === 0) {
@@ -499,6 +504,8 @@ export interface OpportunityFeed {
 export interface EstimateFeedEntry {
   estimateId: string;
   label: string;
+  /** The QuickBooks customer it's for: a customer's pending estimates are alternatives (see estimatesShortfall). */
+  customerKey?: string | null;
   shortfall: number;
   predictedMarginPct: number;
   targetMarginPct: number;
@@ -1014,9 +1021,18 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
   }
 
   // ---- Act now: estimates -----------------------------------------------
-  let estimatesShortfall = 0;
+  // Pending estimates for the same customer are usually options (good,
+  // better, best) of which one gets signed, so the total takes the largest
+  // shortfall for each customer, not all of them added up (F10, audit Oct 27).
+  // Every flagged estimate still gets its own item.
+  const largestByCustomer = new Map<string, number>();
   for (const e of input.estimateFlags) {
-    estimatesShortfall += e.shortfall;
+    const key = e.customerKey ? `customer:${e.customerKey}` : `estimate:${e.estimateId}`;
+    largestByCustomer.set(key, Math.max(largestByCustomer.get(key) ?? 0, e.shortfall));
+  }
+  const estimatesShortfall = [...largestByCustomer.values()].reduce((s, v) => s + v, 0);
+  const estimatesAlternatives = input.estimateFlags.length - largestByCustomer.size;
+  for (const e of input.estimateFlags) {
     items.push({
       id: `estimate_below_target:${e.estimateId}`,
       kind: "estimate_below_target",
@@ -1144,6 +1160,7 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
       openJobsAtRisk: openAtRisk.size,
       estimatesShortfall,
       estimatesFlagged: input.estimateFlags.length,
+      ...(estimatesAlternatives > 0 ? { estimatesAlternatives } : {}),
       estimatesPending: input.estimateCounts?.pending ?? input.estimateFlags.length,
       estimatesChecked: input.estimateCounts?.checked ?? input.estimateFlags.length,
       unbilledWork,

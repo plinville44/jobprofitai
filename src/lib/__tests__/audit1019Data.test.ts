@@ -185,6 +185,8 @@ describe("3 and 4. a weekly run says what went wrong, once per kind", () => {
       senderRefused: 1,
       refusedCompanies: 2,
       endedUnsent: 2,
+      endedWaiting: 0,
+      partlySent: 0,
       minutesLate: null,
       failed: true,
     });
@@ -218,7 +220,7 @@ describe("3 and 4. a weekly run says what went wrong, once per kind", () => {
     expect(briefRunReports(p).map((r) => [r.name, r.message])).toEqual([
       [
         "BriefSummaryMissing",
-        '3 weekly briefs went out without the written summary in this run (other: 2, timed out: 1). The first "other" failure said: The brief\'s write-up came back cut off at the length limit twice; not sending a partial brief.',
+        "3 weekly briefs went out without the written summary in this run (other: 2, timed out: 1). The first failure of kind other said: The brief's write-up came back cut off at the length limit twice; not sending a partial brief.",
       ],
     ]);
     // A failure with no message recorded adds nothing rather than "undefined".

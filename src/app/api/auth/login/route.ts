@@ -18,7 +18,10 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const parsed = LoginSchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid input." }, { status: 400 });
+    // The same words as a wrong password. "Invalid input." meant nothing to
+    // someone typing an address our check doesn't accept (audit Oct 27, Z3).
+    // Nothing is looked up, so nothing is learned.
+    return NextResponse.json({ error: "Incorrect email or password." }, { status: 401 });
   }
   const { password } = parsed.data;
   const email = parsed.data.email.trim();
@@ -50,10 +53,11 @@ export async function POST(req: NextRequest) {
   // address's attempts, past the limit.
   const user = await findLoginByEmail(email);
 
-  // Already counted as a failed attempt; nothing more to record.
+  // Checked even with no such login, against a stand-in hash, so the reply
+  // takes as long either way (audit Oct 27, B7). An unknown address was
+  // already counted as a failed attempt; nothing more is recorded for it.
+  const valid = await verifyPassword(password, user?.passwordHash ?? null);
   if (!user) return genericError;
-
-  const valid = await verifyPassword(password, user.passwordHash);
   await finishLoginAttempt(attempt.attemptId, valid);
   if (!valid) return genericError;
 

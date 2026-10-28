@@ -49,6 +49,9 @@ vi.mock("@/lib/stripe/billing", () => ({
 }));
 
 vi.mock("@/lib/referrals", () => ({
+  // As the real one: held for a person's check (audit Oct 27, B3).
+  isHeldForCheck: (r: { status: string; disqualifiedReason: string | null }) =>
+    r.status !== "disqualified" && (r.disqualifiedReason ?? "").startsWith("Check by hand before paying:"),
   applyPendingRewardsForUser: vi.fn(async () => {
     calls.pendingRewardsApplied += 1;
     return 1;
@@ -467,6 +470,125 @@ describe("out-of-order delivery", () => {
     );
     const sub = await fake.client.subscription.findUnique({ where: { userId: "u1" } });
     expect(sub.status).toBe("active");
+  });
+
+  it("keeps the account's own trial when a first checkout's payment fails, until a payment goes through", async () => {
+    // Audit Oct 27, B1: a declined card or abandoned 3-D Secure step created
+    // an incomplete subscription that ended the trial with days left.
+    const trialEndsAt = new Date(Date.now() + 9 * 86_400_000);
+    await seedAccount({ trialEndsAt });
+    await processStripeEvent(
+      withCreated(subscriptionEvent({ status: "incomplete" }), at(60), "evt_c1", "customer.subscription.created") as never
+    );
+    await processStripeEvent(withCreated(subscriptionEvent({ status: "incomplete_expired" }), at(30), "evt_c2") as never);
+    let sub = await fake.client.subscription.findUnique({ where: { userId: "u1" } });
+    expect([sub.status, sub.stripeSubscriptionId ?? null, sub.trialEndsAt?.getTime()]).toEqual(["trialing", null, trialEndsAt.getTime()]);
+    // A later checkout that's paid is stored as usual.
+    await processStripeEvent(withCreated(subscriptionEvent({ id: "sub_paid", status: "active" }), at(5), "evt_c3") as never);
+    sub = await fake.client.subscription.findUnique({ where: { userId: "u1" } });
+    expect([sub.status, sub.stripeSubscriptionId]).toEqual(["active", "sub_paid"]);
+    expect(calls.emails).toContain("subscription_confirmed");
+  });
+
+  it("still records an incomplete subscription for an account that isn't on its own trial", async () => {
+    await seedAccount({ status: "canceled", stripeSubscriptionId: "sub_old" });
+    await processStripeEvent(withCreated(subscriptionEvent({ id: "sub_new", status: "incomplete" }), at(5), "evt_i1") as never);
+    const sub = await fake.client.subscription.findUnique({ where: { userId: "u1" } });
+    expect([sub.status, sub.stripeSubscriptionId]).toEqual(["incomplete", "sub_new"]);
+  });
+
+  it("keeps the trial when the abandoned checkout's subscription is deleted in Stripe", async () => {
+    // Review of audit Oct 27, B1: the deleted event still ended the trial
+    // and sent "Your subscription has been canceled".
+    const trialEndsAt = new Date(Date.now() + 9 * 86_400_000);
+    await seedAccount({ trialEndsAt });
+    await processStripeEvent(
+      withCreated(subscriptionEvent({ status: "incomplete" }), at(60), "evt_d1", "customer.subscription.created") as never
+    );
+    const result = await processStripeEvent({
+      id: "evt_d2",
+      type: "customer.subscription.deleted",
+      created: at(30),
+      data: { object: { id: "sub_abc", customer: "cus_1", status: "incomplete_expired", metadata: { jobprofitaiUserId: "u1" } } },
+    } as never);
+    const sub = await fake.client.subscription.findUnique({ where: { userId: "u1" } });
+    expect([sub.status, sub.stripeSubscriptionId ?? null, sub.trialEndsAt?.getTime()]).toEqual(["trialing", null, trialEndsAt.getTime()]);
+    expect(calls.emails).not.toContain("subscription_canceled");
+    expect(result.detail).toMatch(/own trial stays/);
+    // An expired trial stays expired, not canceled.
+    await fake.client.subscription.update({ where: { userId: "u1" }, data: { status: "trial_expired" } });
+    await processStripeEvent({
+      id: "evt_d3",
+      type: "customer.subscription.deleted",
+      created: at(10),
+      data: { object: { id: "sub_abc", customer: "cus_1", status: "canceled", metadata: { jobprofitaiUserId: "u1" } } },
+    } as never);
+    expect((await fake.client.subscription.findUnique({ where: { userId: "u1" } })).status).toBe("trial_expired");
+  });
+
+  it("still ends a paid subscription that's deleted", async () => {
+    await seedAccount({ status: "active", stripeSubscriptionId: "sub_abc" });
+    await processStripeEvent({
+      id: "evt_d4",
+      type: "customer.subscription.deleted",
+      created: at(10),
+      data: { object: { id: "sub_abc", customer: "cus_1", status: "canceled", metadata: { jobprofitaiUserId: "u1" } } },
+    } as never);
+    expect((await fake.client.subscription.findUnique({ where: { userId: "u1" } })).status).toBe("canceled");
+    expect(calls.emails).toContain("subscription_canceled");
+  });
+
+  it("doesn't promise retries when a new subscription's first payment is declined at checkout", async () => {
+    await seedAccount();
+    const failed = (id: string, billing_reason: string) =>
+      processStripeEvent({
+        id,
+        type: "invoice.payment_failed",
+        created: at(5),
+        data: { object: { id: `in_${id}`, customer: "cus_1", subscription: "sub_abc", billing_reason, metadata: { jobprofitaiUserId: "u1" } } },
+      } as never);
+    await failed("evt_f1", "subscription_create");
+    expect(calls.emails).not.toContain("payment_failed");
+    // A declined renewal still gets the email.
+    await failed("evt_f2", "subscription_cycle");
+    expect(calls.emails).toContain("payment_failed");
+  });
+
+  it("still emails a first payment that fails once the subscription is running (a bounced bank debit)", async () => {
+    await seedAccount({ status: "active", stripeSubscriptionId: "sub_abc" });
+    await processStripeEvent({
+      id: "evt_f3",
+      type: "invoice.payment_failed",
+      created: at(5),
+      data: { object: { id: "in_f3", customer: "cus_1", subscription: "sub_abc", billing_reason: "subscription_create", metadata: { jobprofitaiUserId: "u1" } } },
+    } as never);
+    expect(calls.emails).toContain("payment_failed");
+  });
+
+  it("doesn't promise retries on a late first-payment failure after the never-started subscription ended", async () => {
+    // Third review: the deletion set the row to canceled on that same subscription.
+    await seedAccount({ status: "canceled", stripeSubscriptionId: "sub_abc" });
+    await processStripeEvent({
+      id: "evt_f4",
+      type: "invoice.payment_failed",
+      created: at(5),
+      data: { object: { id: "in_f4", customer: "cus_1", subscription: "sub_abc", billing_reason: "subscription_create", metadata: { jobprofitaiUserId: "u1" } } },
+    } as never);
+    expect(calls.emails).not.toContain("payment_failed");
+  });
+
+  it("sends no cancellation email for a subscription that ended before its first payment", async () => {
+    // A former customer coming back whose card was declined: the incomplete
+    // subscription is on file, then ends.
+    await seedAccount({ status: "incomplete", stripeSubscriptionId: "sub_abc" });
+    await processStripeEvent({
+      id: "evt_d5",
+      type: "customer.subscription.deleted",
+      created: at(5),
+      data: { object: { id: "sub_abc", customer: "cus_1", status: "incomplete_expired", metadata: { jobprofitaiUserId: "u1" } } },
+    } as never);
+    expect((await fake.client.subscription.findUnique({ where: { userId: "u1" } })).status).toBe("canceled");
+    expect(calls.emails).not.toContain("subscription_canceled");
   });
 
   it("never revives a canceled subscription from a late update", async () => {

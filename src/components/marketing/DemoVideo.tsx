@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import Image from "next/image";
-import { DEMO_VIDEO, type SiteVideo } from "@/lib/demoVideo";
+import { DEMO_VIDEO, youtubeWatchUrl, type SiteVideo } from "@/lib/demoVideo";
 
 /**
  * Tells Google Tag Manager that a video started or finished. Only where our
@@ -21,59 +21,103 @@ function videoEvent(event: "video_start" | "video_complete", video: SiteVideo) {
  *
  * Until someone clicks play it's our still picture and a play button, and
  * preload="none" means the file isn't downloaded until then. The click
- * starts the video with sound and shows the browser's own controls.
+ * starts the video with sound and shows the browser's own controls; the
+ * same picture is the video's poster, so there's no black box while the
+ * first frame arrives.
+ *
+ * If the file can't load, the picture and button come back with a short
+ * message: try again, or watch the same video on YouTube. That's a plain
+ * link to YouTube's own page, not an embed, so nothing on our website loads
+ * from YouTube (the Privacy Policy's "Videos" section).
  */
 export default function DemoVideo({ video = DEMO_VIDEO }: { video?: SiteVideo }) {
   const [playing, setPlaying] = useState(false);
+  const [failed, setFailed] = useState(false);
   const player = useRef<HTMLVideoElement>(null);
   const started = useRef(false);
 
+  function couldNotPlay() {
+    setPlaying(false);
+    setFailed(true);
+  }
+
   function play() {
+    const el = player.current;
+    setFailed(false);
     setPlaying(true);
+    // After a failed load the element keeps its error until it's reset.
+    if (el?.error) el.load();
     // Inside the click itself, so browsers (Safari on iPhone included) let it play with sound.
-    const attempt = player.current?.play();
-    // If the browser refuses or the file can't load, show the picture and button again.
-    if (attempt) attempt.catch(() => setPlaying(false));
+    const attempt = el?.play();
+    // A pause before the first frame rejects with AbortError, which isn't a failure.
+    if (attempt) attempt.catch((err: unknown) => {
+      if ((err as { name?: string } | null)?.name !== "AbortError") couldNotPlay();
+    });
   }
 
   return (
-    <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-jp-line bg-jp-ink shadow-[0_18px_40px_-24px_rgba(15,31,75,0.35)]">
-      <video
-        ref={player}
-        src={video.src}
-        preload="none"
-        playsInline
-        controls={playing}
-        aria-label={video.title}
-        onPlay={() => {
-          if (started.current) return;
-          started.current = true;
-          videoEvent("video_start", video);
-        }}
-        onEnded={() => videoEvent("video_complete", video)}
-        className="absolute inset-0 h-full w-full"
-      />
-      {!playing && (
-        <button
-          type="button"
-          onClick={play}
-          aria-label={`Play the demo video (${video.length})`}
-          className="group absolute inset-0 h-full w-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-jp-blue"
-        >
-          <Image src={video.poster} alt="" fill sizes="(min-width: 1024px) 896px, 100vw" className="object-cover" />
-          <span className="absolute inset-0 flex items-center justify-center bg-jp-ink/10 transition group-hover:bg-jp-ink/20">
-            {/* Smaller on phones, so it stays clear of the poster's headline. */}
-            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-jp-blue text-white shadow-lg transition group-hover:scale-105 sm:h-20 sm:w-20">
-              <svg viewBox="0 0 24 24" aria-hidden="true" className="ml-0.5 h-6 w-6 fill-current sm:ml-1 sm:h-9 sm:w-9">
-                <path d="M8 5.5v13l10.5-6.5z" />
-              </svg>
+    <div>
+      <div className="relative aspect-video w-full overflow-hidden rounded-xl border border-jp-line bg-jp-ink shadow-[0_18px_40px_-24px_rgba(15,31,75,0.35)]">
+        <video
+          ref={player}
+          src={video.src}
+          preload="none"
+          playsInline
+          poster={video.poster}
+          controls={playing}
+          aria-label={video.title}
+          onPlay={() => {
+            if (started.current) return;
+            started.current = true;
+            videoEvent("video_start", video);
+          }}
+          onEnded={() => videoEvent("video_complete", video)}
+          onError={couldNotPlay}
+          className="absolute inset-0 h-full w-full"
+        />
+        {!playing && (
+          <button
+            type="button"
+            onClick={play}
+            aria-label={`Play the demo video (${video.length})`}
+            className="group absolute inset-0 h-full w-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-jp-blue"
+          >
+            <Image src={video.poster} alt="" fill sizes="(min-width: 1024px) 896px, 100vw" className="object-cover" />
+            <span className="absolute inset-0 flex items-center justify-center bg-jp-ink/10 transition group-hover:bg-jp-ink/20">
+              {/* Smaller on phones, so it stays clear of the poster's headline. */}
+              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-jp-blue text-white shadow-lg transition group-hover:scale-105 sm:h-20 sm:w-20">
+                <svg viewBox="0 0 24 24" aria-hidden="true" className="ml-0.5 h-6 w-6 fill-current sm:ml-1 sm:h-9 sm:w-9">
+                  <path d="M8 5.5v13l10.5-6.5z" />
+                </svg>
+              </span>
             </span>
-          </span>
-          <span className="absolute bottom-3 left-3 rounded-md bg-jp-ink/75 px-2.5 py-1 text-xs font-semibold text-white">
-            Watch the demo &middot; {video.length}
-          </span>
-        </button>
-      )}
+            <span className="absolute bottom-3 left-3 rounded-md bg-jp-ink/75 px-2.5 py-1 text-xs font-semibold text-white">
+              Watch the demo &middot; {video.length}
+            </span>
+          </button>
+        )}
+      </div>
+      {/* Always in the page, so screen readers announce the message when it appears. */}
+      <div aria-live="polite">
+        {failed && (
+          <p className="mt-3 text-center text-sm text-jp-slate">
+            The video couldn&apos;t load.{" "}
+            <button type="button" onClick={play} className="font-medium text-jp-blue underline hover:no-underline">
+              Try again
+            </button>
+            , or{" "}
+            <a
+              href={youtubeWatchUrl(video.youtubeId)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-jp-blue underline hover:no-underline"
+            >
+              watch it on YouTube<span className="sr-only"> (opens in a new tab)</span>
+            </a>
+            .
+          </p>
+        )}
+      </div>
     </div>
   );
 }

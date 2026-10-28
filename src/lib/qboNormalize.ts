@@ -242,6 +242,10 @@ const WIP_ASSET_NAME = /\b(construction in progress|work in progress|work in pro
 const NOT_WIP_ASSET_NAME = /\b(billing|billings|in excess|retainage|retention|inventory|prepaid)\b/;
 const NOT_WIP_ASSET_SUBTYPE = /^(inventory|prepaidexpenses)/i;
 
+/** An account's name and full name as lower-case words, space-padded, for whole-word tests. */
+const accountWords = (account: AccountInfo): string =>
+  ` ${`${account.name} ${account.fullName}`.toLowerCase().replace(/[^a-z0-9]+/g, " ")} `;
+
 /**
  * Whether an Other Current Asset account holds job costs while the job is
  * under way (Construction in Progress, Work in Progress, CIP, WIP). Journal
@@ -252,8 +256,54 @@ const NOT_WIP_ASSET_SUBTYPE = /^(inventory|prepaidexpenses)/i;
 export function isWorkInProgressAccount(account: AccountInfo | undefined): boolean {
   if (!account) return false;
   if (NOT_WIP_ASSET_SUBTYPE.test(account.subType ?? "")) return false;
-  const name = ` ${`${account.name} ${account.fullName}`.toLowerCase().replace(/[^a-z0-9]+/g, " ")} `;
+  const name = accountWords(account);
   return WIP_ASSET_NAME.test(name) && !NOT_WIP_ASSET_NAME.test(name);
+}
+
+// The balance sheet accounts a CPA's over and under billing adjustment posts
+// to: "Billings in excess of costs", "Costs and estimated earnings in excess
+// of billings", Overbillings, Underbillings, Unbilled receivables, and the
+// ASC 606 names, Contract liabilities and Contract assets. The words that
+// already keep them out of job cost (NOT_WIP_ASSET_NAME: billing, in
+// excess), with the over and under billing spellings added.
+const WIP_ADJUSTMENT_NAME =
+  /\b(billing|billings|billed|unbilled|overbilled|underbilled|overbilling|overbillings|underbilling|underbillings|in excess|contract liability|contract liabilities|contract asset|contract assets)\b/;
+// Retainage is money billed and held back, not over or under billing:
+// "Retainage billed" isn't one of these accounts, whatever its last word.
+const RETAINAGE_NAME = /\b(retainage|retention)\b/;
+// An Accounts Receivable account is one only when its name says so
+// ("Unbilled receivables" set up as A/R); otherwise it's a sale's other side.
+const RECEIVABLE_ADJUSTMENT_NAME = /\b(unbilled|contract asset|contract assets)\b/;
+const BALANCE_SHEET_HOLDING_TYPES = new Set(["other current asset", "other current liability", "other asset", "long term liability"]);
+
+/**
+ * Whether an account holds over or under billing (F4, audit Oct 27). A
+ * journal entry between Income and one of these is a WIP adjustment, not a
+ * sale: the work was billed, or not, on the invoices.
+ */
+export function isWipAdjustmentAccount(account: AccountInfo | undefined): boolean {
+  if (!account) return false;
+  const type = (account.type ?? "").toLowerCase();
+  const words = accountWords(account);
+  if (RETAINAGE_NAME.test(words)) return false;
+  if (type === "accounts receivable") return RECEIVABLE_ADJUSTMENT_NAME.test(words);
+  return BALANCE_SHEET_HOLDING_TYPES.has(type) && WIP_ADJUSTMENT_NAME.test(words);
+}
+
+/**
+ * Whether a journal entry line on this account records the other side of a
+ * sale to the customer it names: Accounts Receivable (an invoice in all but
+ * name), or money received, in the bank or Undeposited Funds. Income such a
+ * line balances is billing, whatever over or under billing lines share the
+ * entry. Cost, Construction in Progress, accrual and retainage lines naming
+ * the job say nothing about its income, so they don't count (audit Oct 27
+ * review).
+ */
+function isSaleCounterpart(account: AccountInfo | undefined): boolean {
+  if (!account || isWipAdjustmentAccount(account)) return false;
+  const type = (account.type ?? "").toLowerCase();
+  if (type === "accounts receivable" || type === "bank") return true;
+  return type === "other current asset" && (/^undepositedfunds$/i.test(account.subType ?? "") || /\bundeposited\b/.test(accountWords(account)));
 }
 
 export interface NormalizedCostLine {
@@ -609,6 +659,30 @@ export function depositRevenueLines(
  * Journal entry lines to an income account that name a customer: a credit
  * adds income, a debit takes it away. (Cost lines on the same entry are
  * read by expenseLines.)
+ *
+ * Income balanced by an over or under billing line (isWipAdjustmentAccount)
+ * is left out: that's the CPA's month-end WIP adjustment, debit Income for
+ * the job and credit Billings in excess of costs, say, not a sale. Counted
+ * as billing, it took the over billing it corrects off billed to date: a job
+ * $8,000 over billed read $0 on the bank-ready report (F4, audit Oct 27).
+ * Only that income goes, so real income recorded on the same month-end
+ * entry (debit A/R, credit Income for another job) still counts.
+ *
+ *  - Each direction on its own: a credit to an over billing account offsets
+ *    income debited, a debit to an under billing account income credited.
+ *  - A job's adjustment lines are netted against each other first, so a
+ *    reclass between the two accounts offsets nothing.
+ *  - An adjustment line naming a job offsets that job's income first; what
+ *    finds none of its income joins the lines naming no job, which are
+ *    shared by amount within their direction.
+ *  - Income a sale line naming its customer balances (A/R, the bank,
+ *    Undeposited Funds: isSaleCounterpart) is kept out of that sharing.
+ *  - A line names a job as an income line does: by Class when jobs are
+ *    classes, otherwise by customer.
+ *
+ * Known limits: income balanced by a bank line that names no customer, or by
+ * an A/R line naming the parent customer, can take a share of an unnamed
+ * adjustment; an adjustment balanced by a cost line still offsets income.
  */
 export function journalRevenueLines(
   txn: any,
@@ -617,9 +691,21 @@ export function journalRevenueLines(
   /** As for depositRevenueLines. */
   withUnclassed = false
 ): NormalizedRevenueLine[] {
-  const out: NormalizedRevenueLine[] = [];
   const lines: any[] = Array.isArray(txn?.Line) ? txn.Line : [];
   const rate = exchangeRate(txn);
+  type Income = NormalizedRevenueLine & { job: string | null; raw: number; offset: boolean };
+  const income: Income[] = [];
+  // Over and under billing lines, by the job they name (null: none), each
+  // direction on its own: a credit (over billing) balances income debited, a
+  // debit (under billing) balances income credited. Netted, one job's over
+  // billing and another's under billing on the same entry cancelled out, and
+  // both were read as billing (audit Oct 27 review).
+  const adjustments = { credit: new Map<string | null, number>(), debit: new Map<string | null, number>() };
+  // The other side of a sale (isSaleCounterpart), by the customer it names
+  // and direction. Matched by customer whatever the job setup: an A/R line
+  // carries the customer, and in class mode usually no class.
+  const sales = { credit: new Map<string, number>(), debit: new Map<string, number>() };
+  const add = <K,>(m: Map<K, number>, key: K, amount: number) => m.set(key, (m.get(key) ?? 0) + amount);
   for (const [i, line] of lines.entries()) {
     const d = line?.JournalEntryLineDetail;
     if (!d) continue;
@@ -627,17 +713,93 @@ export function journalRevenueLines(
     const entityType = String(entity?.Type ?? "").toLowerCase();
     const customerQboId = entityType === "customer" ? str(entity?.EntityRef?.value) : null;
     const classQboId = str(d.ClassRef?.value);
-    if (byClass ? (!classQboId && !withUnclassed) || (entityType !== "" && entityType !== "customer") : !customerQboId) continue;
-    if (!isIncomeAccount(str(d.AccountRef?.value), lookups)) continue;
-    const raw = num(line.Amount);
+    const raw = (d.PostingType === "Credit" ? 1 : -1) * num(line.Amount);
     if (raw === 0) continue;
-    out.push({
-      lineId: str(line.Id) ?? String(i),
-      customerQboId,
-      classQboId,
-      amount: round2((d.PostingType === "Credit" ? 1 : -1) * raw * rate),
-      txnDate: qboDate(txn?.TxnDate),
-    });
+    const accountId = str(d.AccountRef?.value);
+    const account = accountId ? lookups.accounts.get(accountId) : undefined;
+    const job = byClass ? classQboId : customerQboId;
+    const side = raw > 0 ? "credit" : "debit";
+    if (isWipAdjustmentAccount(account)) {
+      add(adjustments[side], job, Math.abs(raw));
+      continue;
+    }
+    if (!isIncomeAccount(accountId, lookups)) {
+      if (customerQboId && isSaleCounterpart(account)) add(sales[side], customerQboId, Math.abs(raw));
+      continue;
+    }
+    if (byClass ? (!classQboId && !withUnclassed) || (entityType !== "" && entityType !== "customer") : !customerQboId) continue;
+    income.push({ lineId: str(line.Id) ?? String(i), customerQboId, classQboId, amount: 0, txnDate: qboDate(txn?.TxnDate), job, raw, offset: false });
+  }
+  // A reclass between the two adjustment accounts on one job (debit
+  // Billings in excess, credit Costs in excess) balances no income, so each
+  // job's lines are netted first. Lines naming no job aren't netted.
+  for (const [job, credit] of adjustments.credit) {
+    if (job == null) continue;
+    const both = Math.min(credit, adjustments.debit.get(job) ?? 0);
+    if (both <= 0) continue;
+    adjustments.credit.set(job, credit - both);
+    adjustments.debit.set(job, (adjustments.debit.get(job) ?? 0) - both);
+  }
+  const size = (pool: Income[]) => pool.reduce((s, l) => s + Math.abs(l.raw), 0);
+  // Takes `amount` off a line's size, never past nothing.
+  const reduce = (l: Income, amount: number) => {
+    if (amount <= 0) return;
+    l.raw = Math.sign(l.raw) * Math.max(0, Math.abs(l.raw) - amount);
+    l.offset = true;
+  };
+  for (const side of ["credit", "debit"] as const) {
+    const balanced = (l: Income) => (side === "credit" ? l.raw < 0 : l.raw > 0);
+    // An adjustment naming a job takes off that job's income first. What
+    // finds none of its income (one naming the parent customer, or one
+    // job's line covering two jobs' income) is shared like an unnamed one.
+    let unnamed = adjustments[side].get(null) ?? 0;
+    for (const [job, amount] of adjustments[side]) {
+      if (job == null || amount <= 0) continue;
+      const pool = income.filter((l) => l.job === job && balanced(l));
+      const have = size(pool);
+      const share = have > 0 ? Math.min(1, amount / have) : 0;
+      for (const l of pool) reduce(l, Math.abs(l.raw) * share);
+      unnamed += Math.max(0, amount - have);
+    }
+    if (unnamed <= 0) continue;
+    // Shared by amount over what each line has left that no sale line
+    // naming its customer balances; that part is billing.
+    const pool = income.filter(balanced);
+    const free = new Map<Income, number>();
+    for (const customer of new Set(pool.map((l) => l.customerQboId))) {
+      const own = pool.filter((l) => l.customerQboId === customer);
+      const ownSize = size(own);
+      const covered = customer == null ? 0 : Math.min(ownSize, sales[side].get(customer) ?? 0);
+      for (const l of own) free.set(l, Math.abs(l.raw) - (ownSize > 0 ? (covered * Math.abs(l.raw)) / ownSize : 0));
+    }
+    const total = [...free.values()].reduce((s, v) => s + v, 0);
+    if (total <= 0) continue;
+    for (const [l, f] of free) reduce(l, Math.min(f, (unnamed * f) / total));
+  }
+  // In cents. A job's lines an adjustment changed are rounded together, so
+  // their cents add up to the job's part: three $100 lines less a $100
+  // adjustment are $200, not $200.01. Other lines are rounded as before.
+  const cents = new Map<Income, number>();
+  const groups = new Map<string, Income[]>();
+  for (const l of income) {
+    if (!l.offset) cents.set(l, Math.round(l.raw * rate * 100));
+    else groups.set(l.job ?? `line ${l.lineId}`, [...(groups.get(l.job ?? `line ${l.lineId}`) ?? []), l]);
+  }
+  for (const group of groups.values()) {
+    const exact = group.map((l) => l.raw * rate * 100);
+    const rounded = exact.map((v) => Math.round(v));
+    let diff = Math.round(exact.reduce((s, v) => s + v, 0)) - rounded.reduce((s, v) => s + v, 0);
+    const order = exact.map((v, i) => i).sort((a, b) => (diff > 0 ? exact[b] - rounded[b] - (exact[a] - rounded[a]) : exact[a] - rounded[a] - (exact[b] - rounded[b])));
+    for (let k = 0; diff !== 0 && k < order.length; k++) {
+      rounded[order[k]] += Math.sign(diff);
+      diff -= Math.sign(diff);
+    }
+    group.forEach((l, i) => cents.set(l, rounded[i]));
+  }
+  const out: NormalizedRevenueLine[] = [];
+  for (const l of income) {
+    const c = cents.get(l) ?? 0;
+    if (c !== 0) out.push({ lineId: l.lineId, customerQboId: l.customerQboId, classQboId: l.classQboId, amount: c / 100, txnDate: l.txnDate });
   }
   return out;
 }
@@ -1079,6 +1241,65 @@ export function parentFallbackCovers(
   if (!jobCreatedAt) return true;
   const createdDay = Date.UTC(jobCreatedAt.getUTCFullYear(), jobCreatedAt.getUTCMonth(), jobCreatedAt.getUTCDate());
   return txnDate.getTime() >= createdDay - graceDays * 86_400_000;
+}
+
+/**
+ * Estimates onto jobs, for contract value, the estimate's price split and
+ * job type suggestions. A job's own estimates always count. One on the
+ * parent customer (or parent class) counts for its only job (see
+ * resolveJob, with ESTIMATE_PARENT_FALLBACK_GRACE_DAYS) only when:
+ *
+ *  - the job has no live estimate of its own (one not rejected, above
+ *    zero). Otherwise a bid for other work on the same customer was added
+ *    to the project's accepted contract, or a newer pending one replaced it
+ *    (audit Oct 27, F1: an $85,000 contract for a $60,000 project, with
+ *    $12,500 of unbilled work that wasn't there);
+ *  - it isn't an accepted-and-invoiced (closed or converted) estimate from
+ *    more than PARENT_FALLBACK_GRACE_DAYS before the job existed. Its
+ *    invoices are an earlier job's and stay off this one by that rule, so
+ *    its amount must too, or the job reads as work done and never billed.
+ */
+export function estimatesByJob<T extends { customerQboId: string; txnDate: Date; status: string; amount: unknown }>(
+  index: JobIndex,
+  estimates: T[]
+): Map<string, T[]> {
+  const live = (e: T) => e.status.toLowerCase() !== "rejected" && Number(e.amount) > 0;
+  const own = new Map<string, T[]>();
+  const fromParent = new Map<string, T[]>();
+  for (const e of estimates) {
+    const r = resolveJob(index, e.customerQboId, e.txnDate, ESTIMATE_PARENT_FALLBACK_GRACE_DAYS);
+    if (!r) continue;
+    if (r.method === "parent_customer_fallback") {
+      const invoiced = ["closed", "converted"].includes(e.status.toLowerCase());
+      if (invoiced && !parentFallbackCovers(index.createdAt?.get(r.jobId), e.txnDate, PARENT_FALLBACK_GRACE_DAYS)) continue;
+    }
+    const into = r.method === "direct" ? own : fromParent;
+    into.set(r.jobId, [...(into.get(r.jobId) ?? []), e]);
+  }
+  const out = new Map(own);
+  for (const [jobId, list] of fromParent) {
+    const mine = own.get(jobId) ?? [];
+    if (!mine.some(live)) {
+      out.set(jobId, [...mine, ...list]);
+      continue;
+    }
+    // The job has a live estimate of its own (its bid, or a change order on
+    // it). A parent estimate is then the job's only when it was signed and
+    // dated from 60 days before the job was created, as for invoices: the
+    // bid written on the customer before the project was set up, which the
+    // project's own change order adds to. A pending parent estimate is a
+    // bid for other work, and one signed earlier is an earlier job's.
+    // Dropping every parent estimate here left a $60,000 bid on the
+    // customer out when the project had a $5,000 change order of its own
+    // (review of audit Oct 27, F1).
+    const signed = list.filter(
+      (e) =>
+        ["accepted", "closed", "converted"].includes(e.status.toLowerCase()) &&
+        parentFallbackCovers(index.createdAt?.get(jobId), e.txnDate, PARENT_FALLBACK_GRACE_DAYS)
+    );
+    if (signed.length > 0) out.set(jobId, [...mine, ...signed]);
+  }
+  return out;
 }
 
 /**

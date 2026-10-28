@@ -32,10 +32,10 @@ export default function PlanGuide() {
           <caption className="sr-only">Which plan fits, by open jobs and companies</caption>
           <thead>
             <tr className="border-b border-jp-line bg-jp-surface">
-              <th scope="col" className="px-5 py-3 font-semibold text-jp-ink">
+              <th scope="col" className="px-3 py-3 font-semibold text-jp-ink sm:px-5">
                 If you have
               </th>
-              <th scope="col" className="px-5 py-3 font-semibold text-jp-ink">
+              <th scope="col" className="px-3 py-3 font-semibold text-jp-ink sm:px-5">
                 Choose
               </th>
             </tr>
@@ -43,18 +43,19 @@ export default function PlanGuide() {
           <tbody className="divide-y divide-jp-line">
             {rows.map((r) => (
               <tr key={r.plan}>
-                <td className="px-5 py-4 align-top">
+                <td className="px-3 py-4 align-top sm:px-5">
                   <p className="font-medium text-jp-ink">{r.who}</p>
                   <p className="mt-1 text-jp-muted">{r.examples}</p>
                 </td>
-                <td className="whitespace-nowrap px-5 py-4 align-top">
-                  <p className="font-semibold text-jp-ink">{r.plan}</p>
+                {/* The plan name stays on one line; the price may wrap, so nothing is cut off on a phone. */}
+                <td className="px-3 py-4 align-top sm:px-5">
+                  <p className="whitespace-nowrap font-semibold text-jp-ink">{r.plan}</p>
                   <p className="text-jp-muted">{r.price}/month</p>
                 </td>
               </tr>
             ))}
             <tr>
-              <td className="px-5 py-4 align-top">
+              <td className="px-3 py-4 align-top sm:px-5">
                 <p className="font-medium text-jp-ink">
                   {firm.perCompany!.minCompanies} or more companies, such as a bookkeeping or accounting firm with{" "}
                   {firm.perCompany!.minCompanies} or more contractor clients
@@ -66,11 +67,10 @@ export default function PlanGuide() {
                   </Link>
                 </p>
               </td>
-              <td className="whitespace-nowrap px-5 py-4 align-top">
-                <p className="font-semibold text-jp-ink">{firm.name}</p>
-                <p className="text-jp-muted">
-                  {firm.priceLabel} per company/month, {firm.perCompany!.minCompanies} minimum
-                </p>
+              <td className="px-3 py-4 align-top sm:px-5">
+                <p className="whitespace-nowrap font-semibold text-jp-ink">{firm.name}</p>
+                <p className="text-jp-muted">{firm.priceLabel} per company/month</p>
+                <p className="text-jp-muted">{firm.perCompany!.minCompanies}-company minimum</p>
               </td>
             </tr>
           </tbody>

@@ -9,6 +9,7 @@ import { priceIdFromSubscription } from "./billing";
 import {
   applyPendingRewardsForUser,
   disqualifyReferral,
+  isHeldForCheck,
   markReferralPaid,
 } from "@/lib/referrals";
 import {
@@ -622,6 +623,19 @@ async function handleSubscriptionUpsert(subscription: Stripe.Subscription, event
   ) {
     return `Out-of-order ${subscription.status} for active ${subscription.id} ignored`;
   }
+  // A first checkout whose payment didn't go through (a declined card, an
+  // abandoned 3-D Secure step) still creates an incomplete subscription on
+  // the API version Checkout runs on (2024-06-20). Written over the
+  // account's own trial row, it ended the trial with days left, and the
+  // trial never came back. Nothing is stored until a payment goes through:
+  // the next "active" event for this or a later checkout is.
+  const ownTrial =
+    existing != null &&
+    !existing.stripeSubscriptionId &&
+    (existing.status === "trialing" || existing.status === "trial_expired");
+  if (ownTrial && (subscription.status === "incomplete" || subscription.status === "incomplete_expired")) {
+    return `${subscription.status} ${subscription.id} not stored: the account's own trial stays until a payment goes through`;
+  }
   // A canceled Stripe subscription never comes back: Stripe starts a new
   // one instead. A late or retried update for the same id must not revive
   // it (and send "subscription confirmed" again).
@@ -727,9 +741,18 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription, _eve
 
   // Only the subscription on file ends access. A deleted event for another
   // one (an old subscription, a duplicate checkout) changes nothing.
-  const current = await prisma.subscription.findUnique({ where: { userId }, select: { stripeSubscriptionId: true } });
+  const current = await prisma.subscription.findUnique({ where: { userId }, select: { stripeSubscriptionId: true, status: true } });
   if (current?.stripeSubscriptionId && current.stripeSubscriptionId !== subscription.id) {
     return `Deleted event for ${subscription.id} ignored: ${current.stripeSubscriptionId} is the subscription on file`;
+  }
+  // The account's own trial, with no subscription on file: the one deleted
+  // was never stored (a declined or abandoned checkout, which
+  // handleSubscriptionUpsert leaves out). Ending it here ended the trial and
+  // emailed "Your subscription has been canceled" to someone who never had
+  // one, for example when an abandoned checkout's subscription was cancelled
+  // in Stripe (review of audit Oct 27, B1).
+  if (!current?.stripeSubscriptionId && (current?.status === "trialing" || current?.status === "trial_expired")) {
+    return `Deleted event for ${subscription.id} ignored: never stored, and the account's own trial stays`;
   }
 
   const endedAt = subscription.ended_at ? new Date(subscription.ended_at * 1000) : new Date();
@@ -751,6 +774,14 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription, _eve
     create: { userId, stripeCustomerId: idOf(subscription.customer), ...ended },
     update: ended,
   });
+
+  // One that never started (its first payment wasn't made in time) ended
+  // nothing the customer had: no "Your subscription has been canceled"
+  // email, for a former customer whose card was declined on coming back,
+  // say (review of audit Oct 27, B1).
+  if (subscription.status === "incomplete_expired") {
+    return `Subscription ${subscription.id} for user ${userId} ended before its first payment: recorded, no email`;
+  }
 
   await sendSubscriptionCanceled(userId, subscription.id, null);
 
@@ -936,7 +967,10 @@ async function payingClientsIncluding(partnerId: string, userId: string): Promis
   const sub = await prisma.subscription.findUnique({ where: { userId }, select: { status: true, firstPaidAt: true } });
   // The same test countPayingClients uses: live, and a payment on record.
   const alreadyCounted = (sub?.status === "active" || sub?.status === "past_due") && sub.firstPaidAt != null;
-  return alreadyCounted ? counted : counted + 1;
+  // Nor held for a check, which countPayingClients leaves out until cleared.
+  const referral = await prisma.referral.findUnique({ where: { referredUserId: userId }, select: { status: true, disqualifiedReason: true } });
+  const held = referral != null && isHeldForCheck(referral);
+  return alreadyCounted || held ? counted : counted + 1;
 }
 
 async function handleInvoicePaymentFailed(invoice: Stripe.Invoice): Promise<string> {
@@ -947,6 +981,22 @@ async function handleInvoicePaymentFailed(invoice: Stripe.Invoice): Promise<stri
   if (!userId) return "No matching account for failed invoice";
 
   const sub = await prisma.subscription.findUnique({ where: { userId } });
+
+  // The first payment of a new subscription, declined at checkout: the
+  // customer saw it there, and Stripe doesn't retry an incomplete
+  // subscription's first invoice, so "We'll keep retrying for a couple of
+  // weeks" wasn't true (review of audit Oct 27). A declined renewal still
+  // gets the email.
+  // Only while that subscription hasn't started: a first payment that fails
+  // later (a bank debit that bounces after checkout, or a subscription made
+  // outside Checkout that is running) still gets the email.
+  const invoiceSub = invoiceSubscriptionId(invoice);
+  // Running means stored as live: a late redelivery after the never-started
+  // subscription was deleted (row "canceled") isn't (third review).
+  const started = sub?.stripeSubscriptionId != null && sub.stripeSubscriptionId === invoiceSub && isLiveSubscriptionStatus(sub.status);
+  if (invoice.billing_reason === "subscription_create" && !started) {
+    return `First payment failed for user ${userId} (invoice ${invoice.id}): no email, checkout showed the decline`;
+  }
 
   // Don't force the status - Stripe's own subscription.updated event is
   // authoritative about whether this moved the subscription to past_due.

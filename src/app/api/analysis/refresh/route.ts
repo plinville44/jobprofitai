@@ -9,7 +9,7 @@ import { type ProfitOpportunity } from "@/lib/profitability";
 import { getOpportunityData } from "@/lib/opportunityData";
 import { generateProfitInsights } from "@/lib/intelligence";
 import { overLimitConnectionIds, pausedCompaniesMessage } from "@/lib/planLimits";
-import { aiFailureKind } from "@/lib/ai";
+import { aiErrorForReport, aiErrorText, aiFailureKind } from "@/lib/ai";
 import { reportError } from "@/lib/monitoring";
 import { publicErrorMessage } from "@/lib/publicError";
 
@@ -229,11 +229,13 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, refreshed: true, count: drafts.length });
   } catch (err) {
-    console.error("analysis/refresh failed:", err instanceof Error ? err.message : "Unknown error");
+    // aiErrorText: the SDK's message is JSON, whose quoted values the log scrub
+    // removes, reason and all (audit Oct 27, SEC2).
+    console.error("analysis/refresh failed:", aiErrorText(err));
     // A refused AI request (an old ANTHROPIC_MODEL, a revoked key) would
     // otherwise fail every refresh with nobody told. A timeout isn't a fault.
     if (aiFailureKind(err) !== "timeout") {
-      await reportError(err, { route: "/api/analysis/refresh", method: "POST", feature: "profit-insights" });
+      await reportError(aiErrorForReport(err), { route: "/api/analysis/refresh", method: "POST", feature: "profit-insights" });
     }
     return NextResponse.json(
       { error: publicErrorMessage(err, "Couldn't refresh analysis.") },

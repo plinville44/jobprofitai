@@ -190,7 +190,10 @@ describe("what the pages promise", () => {
     expect(privacy).not.toContain("YouTube may store its own cookies");
     const player = flat("components/marketing/DemoVideo.tsx");
     expect(player).toContain('preload="none"');
-    expect(player).not.toMatch(/iframe|youtube/i);
+    // No embed. The only YouTube in the player is a plain link, shown if our file can't load.
+    expect(player).not.toMatch(/iframe|youtube-nocookie|youtube\.com/i);
+    expect(player.match(/youtube[A-Za-z]*\(/gi)).toEqual(["youtubeWatchUrl("]);
+    expect(player).toContain("href={youtubeWatchUrl(video.youtubeId)}");
     expect(flat("lib/demoVideo.ts")).not.toMatch(/youtube-nocookie|youtube\.com\/embed/);
   });
 

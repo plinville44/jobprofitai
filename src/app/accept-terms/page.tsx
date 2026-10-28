@@ -4,7 +4,7 @@ import { LogoLink } from "@/components/marketing/Logo";
 import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { hasAcceptedCurrentTerms, safeReturnPath } from "@/lib/termsAcceptance";
-import { LEGAL_LAST_UPDATED } from "@/lib/legalVersion";
+import { ACCEPTANCE_VERSION, legalDatePrinted } from "@/lib/legalVersion";
 import AcceptTermsForm from "./AcceptTermsForm";
 
 export const metadata: Metadata = { title: "Terms of Service", robots: { index: false, follow: false } };
@@ -34,7 +34,10 @@ export default async function AcceptTermsPage({ searchParams }: { searchParams: 
       </h1>
       <p className="mt-3 text-sm leading-relaxed text-gray-600">
         {earlier > 0
-          ? `Our Terms of Service and Privacy Policy changed on ${LEGAL_LAST_UPDATED}. Please read them and agree to keep using JobProfitAI.`
+          ? // The date of the version being agreed to (ACCEPTANCE_VERSION). A
+            // later change that didn't need agreeing to again (the Privacy
+            // Policy's of October 28, say) isn't the one asked about here.
+            `Our Terms of Service and Privacy Policy changed on ${legalDatePrinted(ACCEPTANCE_VERSION)}. Please read them and agree to keep using JobProfitAI.`
           : "Please read and agree to our Terms of Service and Privacy Policy to use JobProfitAI."}
       </p>
       <AcceptTermsForm next={next} />

@@ -98,6 +98,41 @@ export function newTrialSubscriptionData(now: Date = new Date()): Prisma.Subscri
   };
 }
 
+/**
+ * Starts an account's own trial again from `now`, when its address has just
+ * been proven for the first time by a password reset and the trial so far
+ * was never used: no QuickBooks company ever connected and no Stripe
+ * subscription (audit Oct 27, B3). Called from completePasswordReset,
+ * inside its transaction, so `db` is that transaction.
+ *
+ * Anyone can sign up with an address they don't own, which starts that
+ * address's trial. When the owner later took the account back with a
+ * reset, they found the 14 days long gone and had to pay at once. A trial
+ * that never connected a company gave nobody anything, so starting it
+ * again costs nothing; the per-company trial record (RealmTrial,
+ * connectCompany.ts) still stops a company having a second trial. Only the
+ * own trial track is touched ("trialing" or "trial_expired"), never a paid
+ * plan or a "no plan" team login. Returns whether it restarted.
+ */
+export async function restartUnusedTrial(
+  db: Prisma.TransactionClient,
+  userId: string,
+  now: Date = new Date()
+): Promise<boolean> {
+  const everConnected = await db.quickBooksConnection.count({ where: { userId } });
+  if (everConnected > 0) return false;
+  const restarted = await db.subscription.updateMany({
+    where: {
+      userId,
+      status: { in: ["trialing", "trial_expired"] },
+      stripeSubscriptionId: null,
+      quickbooksConnectedAt: null,
+    },
+    data: newTrialSubscriptionData(now),
+  });
+  return restarted.count > 0;
+}
+
 // --- Activation ----------------------------------------------------------
 
 /**

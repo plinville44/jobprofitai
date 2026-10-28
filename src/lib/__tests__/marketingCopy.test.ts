@@ -134,10 +134,12 @@ describe("legal pages", () => {
 
   it("carries the new date, and keeps the version people accepted", () => {
     const version = read("lib/legalVersion.ts");
-    // The Videos section (October 26, then October 27 for our own video files) didn't need a new acceptance.
-    expect(version).toContain('LEGAL_LAST_UPDATED = "October 27, 2026"');
+    // The Videos section (October 26, 27 and 28) didn't need a new acceptance. Each page prints its own
+    // date, and only the Privacy Policy's text has changed since October 14.
+    expect(version).toContain('privacy: "October 28, 2026"');
+    expect(version).toContain('terms: "October 14, 2026"');
     expect(version).toContain('ACCEPTANCE_VERSION = "2026-10-14"');
-    expect(read("components/marketing/Legal.tsx")).toContain('export { LEGAL_LAST_UPDATED } from "@/lib/legalVersion"');
+    expect(read("components/marketing/Legal.tsx")).toContain('export { LEGAL_UPDATED } from "@/lib/legalVersion"');
   });
 
   it("lists the QuickBooks data the sync keeps, and covers Firm accounts", () => {

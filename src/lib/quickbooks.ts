@@ -20,6 +20,35 @@ function apiBaseUrl() {
 }
 
 /**
+ * How long one request to Intuit may take. fetch has no time limit of its
+ * own, so a request Intuit never answered held the sync, and the scheduled
+ * run around it, until the platform cut the run off at 300 seconds, with
+ * every brief and alert email it was sending (audit Oct 27, E1). A page of
+ * 1,000 rows normally comes back in a few seconds.
+ */
+const API_TIMEOUT_MS = 30_000;
+/** The one more try a request with no answer gets (see fetchWithRetry). */
+const API_RETRY_TIMEOUT_MS = 15_000;
+/**
+ * Every try of one request, and the waits between them. About one full
+ * try, the wait and the shorter one more. With it, a step started inside a
+ * sync's deadline ends at most this long past what it was expected to take.
+ */
+const API_CALL_BUDGET_MS = 46_000;
+/** A try isn't started with less time than this left in the budget. */
+const MIN_TRY_MS = 5_000;
+const NO_ANSWER = "no answer in time";
+/** Token, sign-in and revoke requests: small, and normally answered in about a second. */
+const AUTH_TIMEOUT_MS = 30_000;
+/** The discovery document, which falls back to the documented endpoints when it can't be read. */
+const DISCOVERY_TIMEOUT_MS = 10_000;
+
+/** A request that gave up for want of an answer (AbortSignal.timeout). */
+function timedOut(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+}
+
+/**
  * Thrown whenever QuickBooks tells us a token is no longer usable and the
  * only fix is the customer reconnecting (refresh token expired/revoked, or
  * an access token rejected outright). Its `.message` is written to be shown
@@ -90,7 +119,7 @@ async function getDiscoveryDocument(): Promise<DiscoveryDocument> {
     : "https://developer.api.intuit.com/.well-known/openid_configuration";
 
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS) });
     if (!res.ok) throw new Error(`discovery document fetch failed: ${res.status}`);
     const doc = await res.json();
     if (!doc.authorization_endpoint || !doc.token_endpoint) {
@@ -157,6 +186,7 @@ export async function fetchIntuitUserInfo(accessToken: string): Promise<IntuitUs
   const { userinfo_endpoint } = await getDiscoveryDocument();
   const res = await fetch(userinfo_endpoint, {
     headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`Intuit userinfo failed with status ${res.status} (intuit_tid: ${intuitTid(res)})`);
@@ -220,6 +250,7 @@ export async function exchangeCodeForTokens(
       code,
       redirect_uri: process.env.QBO_REDIRECT_URI ?? "",
     }),
+    signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -254,6 +285,7 @@ export async function refreshTokens(refreshToken: string): Promise<QboTokenRespo
       grant_type: "refresh_token",
       refresh_token: refreshToken,
     }),
+    signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -288,26 +320,53 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * An authenticated GET that tries again on a throttle (429) or a passing
  * server error, waiting a little longer each time (and never more than 10
  * seconds, whatever Retry-After says). Anything else comes straight back.
+ *
+ * One with no answer in API_TIMEOUT_MS is tried once more, with the shorter
+ * API_RETRY_TIMEOUT_MS: a slow page usually comes back the second time, and
+ * without that try the data type it belongs to was left unread. All the
+ * tries of one request, and the waits between them, fit in
+ * API_CALL_BUDGET_MS, so a request that never answers costs about 46
+ * seconds, whatever mix of timeouts and throttles it gets. Two full 30
+ * second tries, with a throttle between, took up to 73, past what the
+ * syncs' time margins allow for one request (review of audit Oct 27).
  */
 async function fetchWithRetry(url: string, accessToken: string): Promise<Response> {
+  const started = Date.now();
+  const left = () => started + API_CALL_BUDGET_MS - Date.now();
+  let timeouts = 0;
   for (let attempt = 0; ; attempt++) {
     let res: Response | null = null;
     try {
-      res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" } });
+      res = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+        signal: AbortSignal.timeout(Math.max(1, Math.min(timeouts > 0 ? API_RETRY_TIMEOUT_MS : API_TIMEOUT_MS, left()))),
+      });
     } catch (err) {
-      if (attempt >= RETRY_DELAYS_MS.length) {
-        throw new QboTemporarilyUnavailableError(err instanceof Error ? err.message : "network error");
+      const noAnswer = timedOut(err);
+      if (noAnswer) timeouts++;
+      if (timeouts > 1 || attempt >= RETRY_DELAYS_MS.length || left() < RETRY_DELAYS_MS[attempt] + MIN_TRY_MS) {
+        throw new QboTemporarilyUnavailableError(noAnswer ? NO_ANSWER : err instanceof Error ? err.message : "network error");
       }
       await sleep(RETRY_DELAYS_MS[attempt]);
       continue;
     }
     if (!RETRYABLE_STATUS.has(res.status)) return res;
-    if (attempt >= RETRY_DELAYS_MS.length) {
+    const retryAfter = Number(res.headers.get("retry-after"));
+    const wait = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 10_000) : RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)];
+    if (attempt >= RETRY_DELAYS_MS.length || left() < wait + MIN_TRY_MS) {
       throw new QboTemporarilyUnavailableError(`status ${res.status}, intuit_tid: ${intuitTid(res)}`);
     }
-    const retryAfter = Number(res.headers.get("retry-after"));
-    const wait = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 10_000) : RETRY_DELAYS_MS[attempt];
     await sleep(wait);
+  }
+}
+
+/** The reply's JSON. Its time limit covers reading the body too: one that runs out is QuickBooks being slow, like a request with no answer. */
+async function readJson(res: Response): Promise<any> {
+  try {
+    return await res.json();
+  } catch (err) {
+    if (timedOut(err)) throw new QboTemporarilyUnavailableError(NO_ANSWER);
+    throw err;
   }
 }
 
@@ -333,7 +392,7 @@ export async function qboQuery(
     }
     throw new Error(`QuickBooks API query failed with status ${res.status} (intuit_tid: ${intuitTid(res)})`);
   }
-  return res.json();
+  return readJson(res);
 }
 
 /** QuickBooks' own cap on rows per query response. */
@@ -394,7 +453,7 @@ async function qboGet(realmId: string, accessToken: string, pathAndQuery: string
     }
     throw new Error(`QuickBooks API request failed with status ${res.status} (intuit_tid: ${intuitTid(res)})`);
   }
-  return res.json();
+  return readJson(res);
 }
 
 /**
@@ -466,6 +525,7 @@ export async function revokeToken(token: string): Promise<void> {
       Accept: "application/json",
     },
     body: JSON.stringify({ token }),
+    signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
   });
 
   if (!res.ok) {

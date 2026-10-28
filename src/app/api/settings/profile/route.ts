@@ -171,6 +171,14 @@ export async function POST(req: NextRequest) {
     const timeEntriesChanged = laborFromTimeEntries !== undefined && laborFromTimeEntries !== connection.laborFromTimeEntries;
     const burdenChanged = laborBurdenPct !== undefined && (laborBurdenPct ?? 0) !== Number(connection.laborBurdenPct ?? 0);
     const rebuild = jobSourceChanged || timeEntriesChanged;
+    // Alert emails go only with alerts and the brief on and someone to send
+    // them to; while they can't, the nightly job doesn't check the alerts at
+    // all. Switched back on, the next check would find everything that
+    // happened meanwhile and send it all as new. So that check records what
+    // is true without emailing it, as a newly connected company's first one
+    // does (alertsNeedBaseline; audit Oct 27, E10). The brief covers it.
+    const alertsWereOn = connection.alertsEnabled && connection.emailEnabled && connection.emailRecipients.length > 0;
+    const alertsComeOn = !alertsWereOn && (alertsEnabled ?? connection.alertsEnabled) && emailEnabled && emailRecipients.length > 0;
     const now = new Date();
 
     // The recipient list and the switches as stored now, as read above.
@@ -217,7 +225,7 @@ export async function POST(req: NextRequest) {
         // job a new id), so the next alert check records conditions without
         // emailing them. Otherwise the owner got a pile of "new" alerts
         // the next night with nothing changed on the jobs.
-        ...(rebuild || burdenChanged ? { alertsBaselinedAt: null } : {}),
+        ...(rebuild || burdenChanged || alertsComeOn ? { alertsBaselinedAt: null } : {}),
       },
     });
     if (saved.count === 0) {

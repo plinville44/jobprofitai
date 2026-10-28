@@ -18,6 +18,7 @@ vi.mock("@/lib/ai", () => ({
   inUs: (params: any) => params,
   // The real one reads the SDK's error shape (src/lib/ai.ts); these tests only throw plain errors.
   aiFailureKind: (err: any) => (/timed out/i.test(err?.message ?? "") ? "timeout" : [400, 401, 403, 404, 413, 422].includes(err?.status) ? "refused" : "other"),
+  aiErrorText: (err: any) => String(err?.message ?? err),
   aiClient: (timeoutMs: number, retries: number) => ({
     messages: {
       create: async (params: any) => {
@@ -203,8 +204,9 @@ describe("the weekly-email route", () => {
   });
 
   it("stores the summary it wrote and reuses it on a retry", () => {
-    // With the time it was emailed, so a second brief in the same week (the send day moved) writes its own.
-    expect(route).toContain("summaryToReuse(existing?.metrics, existing?.emailedAt)");
+    // With the time it was emailed, so a second brief in the same week (the send day moved) writes its own,
+    // and the last sync, so a retry after one writes a new summary for the new figures (audit Oct 27, E5).
+    expect(route).toContain("summaryToReuse(existing?.metrics, partly ? null : existing?.emailedAt, connection.lastSyncedAt)");
     expect(route).toContain("storedSummary,");
     expect(route).toContain("withSummaryForRetry(metrics, { kind, body, summaryMissing })");
     expect(route).toMatch(/metrics: toStore as any/);

@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { canSeeConnection, getAccount } from "@/lib/account";
-import { getEntitlements } from "@/lib/entitlements";
+import { getEntitlements, inactiveMessage } from "@/lib/entitlements";
+import { overLimitConnectionIds, pausedCompaniesMessage } from "@/lib/planLimits";
 import { qboProfitAndLossForCustomer } from "@/lib/quickbooks";
 import { withAccessToken } from "@/lib/quickbooksSync";
 import { compareWithQuickBooks, parseProfitAndLoss } from "@/lib/qboCheck";
 import { laborBurdenOf } from "@/lib/profitability";
 import { publicErrorMessage } from "@/lib/publicError";
 
-export const maxDuration = 30;
+// A token refresh and a QuickBooks report, each with its own time limit
+// (src/lib/quickbooks.ts: up to 30 and 46 seconds), fit inside this.
+export const maxDuration = 90;
 
 /**
  * GET /api/jobs/:jobId/quickbooks-check
@@ -22,11 +25,26 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ job
   const account = await getAccount();
   if (!account) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const entitlements = await getEntitlements(account.ownerId);
-  if (!entitlements.active) return NextResponse.json({ error: "Choose a plan to use this." }, { status: 402 });
+  if (!entitlements.active) {
+    return NextResponse.json({ error: inactiveMessage(entitlements), code: "entitlement_required" }, { status: 402 });
+  }
 
   const job = await prisma.job.findUnique({ where: { id: jobId }, include: { connection: true } });
   if (!job || !canSeeConnection(account, job.connection) || job.connection.disconnectedAt) {
     return NextResponse.json({ error: "Job not found" }, { status: 404 });
+  }
+  // A company past the plan's company limit keeps the figures it has, but
+  // QuickBooks isn't read for it (src/lib/planLimits.ts), as with sync.
+  // This read it live anyway (audit Oct 27, B9).
+  if ((await overLimitConnectionIds(account.ownerId)).has(job.connectionId)) {
+    const name = job.connection.companyName?.trim() || "This company";
+    return NextResponse.json(
+      {
+        error: `${pausedCompaniesMessage([name], entitlements.limits.maxConnections)} A paused company keeps its figures but isn't checked against QuickBooks. Billing shows what to do.`,
+        code: "company_paused",
+      },
+      { status: 403 }
+    );
   }
 
   const [revenue, costs] = await Promise.all([

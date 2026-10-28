@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { PLAN_LIST, PLANS } from "@/lib/plans";
+import { PLAN_LIST, PLANS, RECOMMENDED_PLAN_BADGE } from "@/lib/plans";
 import { isPlanOffered } from "@/lib/stripe/client";
 import type { AccessState } from "@/lib/entitlements";
 import { getAccount } from "@/lib/account";
@@ -82,11 +82,11 @@ export default async function UpgradeRequired({
                 plan.mostPopular ? "border-brand" : "border-gray-200"
               }`}
             >
-              <div className="flex items-baseline justify-between gap-2">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <h2 className="font-semibold text-navy">{plan.name}</h2>
                 {plan.mostPopular ? (
-                  <span className="rounded-full bg-brand-light px-2.5 py-0.5 text-[11px] font-semibold text-brand">
-                    Most Popular
+                  <span className="whitespace-nowrap rounded-full bg-brand-light px-2.5 py-0.5 text-[11px] font-semibold text-brand">
+                    {RECOMMENDED_PLAN_BADGE}
                   </span>
                 ) : null}
               </div>

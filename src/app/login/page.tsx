@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { LogoLink } from "@/components/marketing/Logo";
 import { SignInWithIntuitButton } from "@/components/IntuitButtons";
+import { TRADEMARK_NOTICE } from "@/components/marketing/trademark";
 
 const INTUIT_VERIFY_EMAIL_URL = "https://accounts.intuit.com/app/account-manager/security";
 
@@ -169,6 +170,9 @@ export default function LoginPage() {
           Back to jobprofitai.com
         </Link>
       </p>
+
+      {/* The page names Intuit and QuickBooks (the sign-in button, the qbo_session notice). */}
+      <p className="mb-8 mt-6 text-center text-xs text-gray-500">{TRADEMARK_NOTICE}</p>
     </main>
   );
 }

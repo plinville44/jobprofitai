@@ -139,6 +139,12 @@ export function computeMoneyOwed(input: {
   asOf?: Date;
 }): MoneyOwed {
   const { now, asOf } = input;
+  // Invoices are aged in whole days from the company's own day (asOf), not
+  // the moment the page loads: due and invoice dates are calendar dates, and
+  // at 7:30 pm in Chicago (after midnight UTC) an invoice due tomorrow read
+  // "0 days past due" (F9, audit Oct 27). Without asOf, today in UTC.
+  const dayOf = (d: Date) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const today = dayOf(asOf ?? now);
 
   // Unpaid invoices, by job. Aged from the due date only when every invoice
   // has one, so the buckets never mix two meanings.
@@ -149,8 +155,8 @@ export function computeMoneyOwed(input: {
   let unnamedInvoices = 0;
   let over60 = 0;
   for (const inv of open) {
-    const from = agedFrom === "due_date" ? inv.dueDate! : inv.txnDate;
-    const age = Math.max(0, Math.floor((now.getTime() - from.getTime()) / DAY));
+    const from = dayOf(agedFrom === "due_date" ? inv.dueDate! : inv.txnDate);
+    const age = Math.max(0, Math.round((today - from) / DAY));
     const row =
       byJob.get(inv.jobId) ??
       {
@@ -175,7 +181,7 @@ export function computeMoneyOwed(input: {
       dueDate: inv.dueDate ?? null,
       openBalance: inv.openBalance,
       ageDays: age,
-      notYetDue: agedFrom === "due_date" && from.getTime() > now.getTime(),
+      notYetDue: agedFrom === "due_date" && from > today,
     });
     if (age > 60) over60 += inv.openBalance;
     if (inv.qboInvoiceId) invoiceIds.add(inv.qboInvoiceId);
@@ -214,7 +220,7 @@ export function computeMoneyOwed(input: {
     }
   }
   unbilled.sort((a, b) => b.amount - a.amount);
-  const notChecked: Record<NotScheduledNeed, number> = { contract: 0, progress: 0, estimate_passed: 0 };
+  const notChecked: Record<NotScheduledNeed, number> = { contract: 0, progress: 0, estimate_passed: 0, costs_behind: 0 };
   for (const j of schedule.notScheduled) notChecked[j.needs]++;
 
   // Costs well past the estimate, billing not past the contract.

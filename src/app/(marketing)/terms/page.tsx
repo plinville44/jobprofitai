@@ -6,7 +6,7 @@ import {
   LegalPage,
   LegalSection,
   LegalSub,
-  LEGAL_LAST_UPDATED,
+  LEGAL_UPDATED,
   MailingAddress,
   SupportEmail,
 } from "@/components/marketing/Legal";
@@ -47,7 +47,7 @@ export default function TermsPage() {
   return (
     <LegalPage
       title="Terms of Service"
-      updated={LEGAL_LAST_UPDATED}
+      updated={LEGAL_UPDATED.terms}
       intro={
         <>
           <p>

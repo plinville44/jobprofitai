@@ -17,6 +17,7 @@ vi.mock("@/lib/ai", () => ({
   inUs: (params: any) => params,
   // The real one reads the SDK's error shape (src/lib/ai.ts); these tests only throw plain errors.
   aiFailureKind: (err: any) => (/timed out/i.test(err?.message ?? "") ? "timeout" : [400, 401, 403, 404, 413, 422].includes(err?.status) ? "refused" : "other"),
+  aiErrorText: (err: any) => String(err?.message ?? err),
   aiClient: () => ({
     messages: {
       create: async (params: any) => {

@@ -1,4 +1,5 @@
 import { randomBytes } from "crypto";
+import { z } from "zod";
 import { prisma } from "./prisma";
 import { hashToken } from "./passwordReset";
 import { getEntitlements, PAUSED_LOGIN_MESSAGE, pausedTeamLoginFor, teamLoginLimitState } from "./entitlements";
@@ -7,6 +8,7 @@ import { REMOVED_ROLE } from "./teamRemoval";
 import { NO_PLAN_STATUS } from "./trial";
 import { getStripe } from "./stripe/client";
 import { checkoutDecisionFor } from "./stripe/billing";
+import { isLiveSubscriptionStatus } from "./stripe/duplicateSubscription";
 
 /**
  * Team logins.
@@ -44,6 +46,26 @@ const RESEND_COOLDOWN_MS = 5 * 60_000;
  */
 export const MAX_INVITE_EMAILS_PER_HOUR = 10;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/**
+ * The address check signup, login and forgot-password use. An invitation
+ * only passed EMAIL_RE above, so an address like sam&co@ortizbuilders.com
+ * could be invited and accepted, then never signed in again or reset once
+ * the session ended (audit Oct 27, Z3).
+ */
+const LoginEmailSchema = z.object({ email: z.string().email().max(320) });
+export const UNUSABLE_INVITE_EMAIL_MESSAGE =
+  "That address can't be used to sign in to JobProfitAI, so it can't be invited. Check it for typos, or invite this person at a different address (addresses with characters such as & or accented letters don't work).";
+
+/** Whether login and forgot-password accept this address. */
+export function canSignInWith(email: string): boolean {
+  return LoginEmailSchema.safeParse({ email }).success;
+}
+
+/** What accepting an invitation sent to such an address (before that check) says. */
+export function inviteAddressCantSignInMessage(invite: { email: string; ownerName: string | null; ownerEmail: string }): string {
+  const who = invite.ownerName ?? invite.ownerEmail;
+  return `This invitation is for ${invite.email}, an address JobProfitAI can't sign in with (addresses with characters such as & or accented letters don't work), so accepting it would leave you locked out. Ask ${who} to invite you at a different address.`;
+}
 
 /**
  * Team logins an account is using: accepted ones plus invitations still
@@ -75,6 +97,9 @@ export async function createInvite(
   const email = typeof rawEmail === "string" ? rawEmail.trim().toLowerCase() : "";
   if (!email || email.length > 320 || !EMAIL_RE.test(email)) {
     return { ok: false, error: "Enter a valid email address.", status: 400 };
+  }
+  if (!canSignInWith(email)) {
+    return { ok: false, error: UNUSABLE_INVITE_EMAIL_MESSAGE, status: 400 };
   }
 
   const owner = await prisma.user.findUnique({ where: { id: ownerId }, select: { email: true, emailVerifiedAt: true } });
@@ -224,6 +249,9 @@ export async function findUsableInvite(token: unknown, now = new Date()): Promis
   };
 }
 
+const BILLING_CHECK_FAILED_MESSAGE =
+  "We couldn't check your login's billing just now, so the invitation wasn't accepted. Please try again in a few minutes.";
+
 export const OWN_PLAN_JOIN_MESSAGE =
   "Your login has paid for a JobProfitAI plan of its own (or a payment for one is going through), so it can't join another account. Ask to be invited at a different address, or email support@jobprofitai.com and we'll help.";
 
@@ -238,6 +266,12 @@ export async function acceptInvite(token: unknown, userId: string, now = new Dat
   const invite = await findUsableInvite(token, now);
   if (!invite) {
     return { ok: false, error: "This invitation has expired or was already used. Ask for a new one.", status: 410 };
+  }
+  // Invitations sent before createInvite checked the address can still be
+  // at one login refuses, and accepting one left the person locked out once
+  // the session ended (audit Oct 27, Z3).
+  if (!canSignInWith(invite.email)) {
+    return { ok: false, error: inviteAddressCantSignInMessage(invite), status: 409 };
   }
 
   const user = await prisma.user.findUnique({
@@ -291,7 +325,13 @@ export async function acceptInvite(token: unknown, userId: string, now = new Dat
       status: 409,
     };
   }
-  if (connections > 0 || subscription?.stripeSubscriptionId || ownTeam > 0) {
+  // A subscription id stays on file after the subscription ends (kept for
+  // reconciliation, see handleSubscriptionDeleted), so on its own it says
+  // nothing. Only one whose stored status says it is still billing refuses
+  // here. Refusing on the id alone meant anyone who had once subscribed and
+  // then cancelled could never be invited by anyone (audit Oct 27, B2).
+  const ownPlan = ownPlanStanding(subscription);
+  if (connections > 0 || ownPlan === "live" || ownTeam > 0) {
     return {
       ok: false,
       error:
@@ -299,21 +339,41 @@ export async function acceptInvite(token: unknown, userId: string, now = new Dat
       status: 409,
     };
   }
+  // Not billing yet, but not over either: a paused one can resume, and an
+  // incomplete one can still be paid within its 23 hours. Stripe's check
+  // below only refuses a live one, so either would let the join go ahead
+  // and start billing later. Once it ends (canceled, incomplete_expired),
+  // the person can join. Our row can be stale, though: an "incomplete"
+  // whose expiry webhook was lost refused forever, since the nightly
+  // reconcile only reads active and past due rows. So Stripe is asked about
+  // that subscription itself, and one ended there goes on to the customer
+  // check below like any ended one.
+  if (ownPlan === "uncertain") {
+    if (!subscription?.stripeSubscriptionId || !subscription.stripeCustomerId) {
+      return { ok: false, error: OWN_PLAN_JOIN_MESSAGE, status: 409 };
+    }
+    let ended: boolean;
+    try {
+      ended = await endedInStripe(subscription.stripeSubscriptionId);
+    } catch (err) {
+      console.error("team: could not check the login's own subscription:", err instanceof Error ? err.message : "Unknown error");
+      return { ok: false, error: BILLING_CHECK_FAILED_MESSAGE, status: 503 };
+    }
+    if (!ended) return { ok: false, error: OWN_PLAN_JOIN_MESSAGE, status: 409 };
+  }
   // A login that started a checkout of its own may have paid for it moments
   // ago: our row only hears of it from Stripe's webhook. Stripe is asked the
   // same way a new checkout asks (billing.ts), so a payment can't be left
-  // charging a login that has joined someone else's account.
+  // charging a login that has joined someone else's account. Also asked for
+  // a subscription on file that has ended or may have: Stripe says whether
+  // anything on the customer still bills.
   if (subscription?.stripeCustomerId) {
     let decision: Awaited<ReturnType<typeof checkoutDecisionFor>>;
     try {
       decision = await checkoutDecisionFor(subscription.stripeCustomerId, now);
     } catch (err) {
       console.error("team: could not check the login's own billing:", err instanceof Error ? err.message : "Unknown error");
-      return {
-        ok: false,
-        error: "We couldn't check your login's billing just now, so the invitation wasn't accepted. Please try again in a few minutes.",
-        status: 503,
-      };
+      return { ok: false, error: BILLING_CHECK_FAILED_MESSAGE, status: 503 };
     }
     if (decision.block) {
       return { ok: false, error: OWN_PLAN_JOIN_MESSAGE, status: 409 };
@@ -362,6 +422,12 @@ export async function acceptInvite(token: unknown, userId: string, now = new Dat
     } else {
       await prisma.subscription.delete({ where: { userId: user.id } });
     }
+  } else if (subscription?.stripeCustomerId) {
+    // An ended subscription of its own (B2 above). The row stays as it is,
+    // its history and how the webhook finds this login, but a checkout left
+    // open from resubscribing is closed, as for a checkout with no
+    // subscription.
+    await expireOpenCheckouts(subscription.stripeCustomerId);
   }
   if (!user.emailVerifiedAt) {
     await prisma.user.update({ where: { id: user.id }, data: { emailVerifiedAt: now } });
@@ -372,6 +438,48 @@ export async function acceptInvite(token: unknown, userId: string, now = new Dat
   await prisma.teamMember.deleteMany({ where: { ownerUserId: user.id, acceptedAt: null } });
 
   return { ok: true, ownerUserId: invite.ownerUserId };
+}
+
+/** Stripe statuses after which a subscription never charges again. */
+const ENDED_SUBSCRIPTION_STATUSES = ["canceled", "incomplete_expired"];
+
+/**
+ * What the stored row says about a login's own Stripe subscription, for
+ * acceptInvite (audit Oct 27, B2):
+ *   - "none": no subscription on file.
+ *   - "live": still billing. Active, past due or unpaid, and "trialing" or
+ *     "trial_expired" beside a subscription id, which is an older row's
+ *     trial set in Stripe on a paid plan (as getEntitlements reads it).
+ *   - "ended": canceled or incomplete_expired, which never charge again.
+ *     Stripe is still asked whether anything else on the customer bills.
+ *   - "uncertain": anything else (incomplete, paused, a status Stripe adds
+ *     later), which may yet bill, so it refuses unless Stripe says it has
+ *     ended (the stored status can be stale).
+ * Pure, for tests.
+ */
+export function ownPlanStanding(
+  subscription: { stripeSubscriptionId: string | null; status: string } | null
+): "none" | "live" | "ended" | "uncertain" {
+  if (!subscription?.stripeSubscriptionId) return "none";
+  if (isLiveSubscriptionStatus(subscription.status) || subscription.status === "trial_expired") return "live";
+  if (ENDED_SUBSCRIPTION_STATUSES.includes(subscription.status)) return "ended";
+  return "uncertain";
+}
+
+/**
+ * Whether Stripe says a subscription has ended (canceled or
+ * incomplete_expired). One Stripe has no record of counts as ended, since
+ * it can't bill, as stripeSubscriptionEnded in billing.ts treats it. Throws
+ * when Stripe can't be asked, so the caller can say try again.
+ */
+async function endedInStripe(subscriptionId: string): Promise<boolean> {
+  try {
+    const subscription = await getStripe().subscriptions.retrieve(subscriptionId);
+    return ENDED_SUBSCRIPTION_STATUSES.includes(subscription.status);
+  } catch (err) {
+    if ((err as { code?: unknown } | null)?.code === "resource_missing") return true;
+    throw err;
+  }
 }
 
 /**

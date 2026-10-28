@@ -16,6 +16,7 @@ import {
   computeDataHealth,
   computeJobFinancials,
   computeNeedsAttentionForJob,
+  isInScope,
   type ConnectionMetrics,
   type DashboardTotals,
   type FinancialContext,
@@ -466,7 +467,14 @@ export function getSampleCompany(): SampleCompany {
       { ...ctx, costsAreWindowed: true }
     )
   );
-  const needsAttention = jobs.flatMap((f) => computeNeedsAttentionForJob(f));
+  // Judge the jobs the real dashboard judges (getConnectionProfitData): open
+  // and recent ones, and completed jobs with money in the period. Every job
+  // made 22 items, four from 2025 jobs in Jobs Below Target and Profit At
+  // Risk (audit Oct 27 review).
+  const activeInPeriod = new Set(windowed.filter((f) => f.status === "closed" && (f.revenue !== 0 || f.costs !== 0)).map((f) => f.jobId));
+  const needsAttention = jobs
+    .filter((f) => isInScope(f, SAMPLE_NOW) || activeInPeriod.has(f.jobId))
+    .flatMap((f) => computeNeedsAttentionForJob(f, { now: SAMPLE_NOW }));
   const totals = computeDashboardTotals(windowed, needsAttention, computeDataHealth(jobs, SAMPLE_NOW, null, null), SAMPLE_TARGET_PCT);
 
   // The Jobs page preview: every open job, then the latest finished job of each type.

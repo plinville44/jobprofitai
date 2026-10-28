@@ -1,8 +1,9 @@
 import { prisma } from "@/lib/prisma";
-import { PLANS, isPlanId, planPriceText } from "@/lib/plans";
+import { PLANS, isPlanId } from "@/lib/plans";
 import { isPlanOffered } from "@/lib/stripe/client";
 import { companyOpenPath } from "@/lib/companyLinks";
 import {
+  hasSentLifecycleEmail,
   sendEmail,
   sendLifecycleEmail,
   sendLifecycleEmailOncePerKey,
@@ -305,6 +306,15 @@ export async function sendWeeklyBrief(input: {
  * company's last successful sync, so it's one email per problem: nothing
  * more while the syncs keep failing, and a new email only if a later
  * problem starts after a sync has worked again.
+ *
+ * The "nothing you need to do" notice, for a re-read that's only queued or
+ * partway (`failing` false), has a key of its own. Sharing one, it used up
+ * the key when the re-read failed afterwards (the last successful sync
+ * doesn't move), so the owner never got the notice saying what was wrong
+ * (review of audit Oct 27). At most one of each per problem, and the
+ * waiting one not at all once the failing one went for the same problem:
+ * an owner told the re-read was failing, then that there was nothing to do
+ * when it resumed, got two notices that each said it was the only one.
  */
 export async function sendBriefOnHold(input: {
   ownerId: string;
@@ -312,14 +322,20 @@ export async function sendBriefOnHold(input: {
   companyName: string;
   lastSyncedAt: Date | null;
   reason: string | null;
+  /** False when the re-read is only queued or partway, not failing (see briefOnHoldEmail). */
+  failing?: boolean;
 }): Promise<SendEmailResult> {
+  const failingKey = `brief_on_hold:${input.connectionId}:${input.lastSyncedAt?.toISOString() ?? "never"}`;
+  if (input.failing === false && (await hasSentLifecycleEmail(failingKey))) return { ok: true, skipped: true };
   const contact = await contactFor(input.ownerId);
   if (!contact) return { ok: false, error: "User not found" };
-  const email = T.briefOnHoldEmail(input.companyName, input.reason, T.appUrl(companyOpenPath(input.connectionId, "/dashboard/settings")));
+  const email = T.briefOnHoldEmail(input.companyName, input.reason, T.appUrl(companyOpenPath(input.connectionId, "/dashboard/settings")), {
+    failing: input.failing,
+  });
   return sendLifecycleEmail({
     userId: input.ownerId,
     emailType: "brief_on_hold",
-    dedupeKey: `brief_on_hold:${input.connectionId}:${input.lastSyncedAt?.toISOString() ?? "never"}`,
+    dedupeKey: input.failing === false ? `${failingKey}:waiting` : failingKey,
     to: contact.email,
     ...email,
   });
@@ -369,7 +385,8 @@ export async function sendSubscriptionConfirmed(
   if (!contact) return { ok: false, error: "User not found" };
 
   const id = isPlanId(plan) ? plan : "profit_intelligence";
-  const email = T.subscriptionConfirmedEmail(PLANS[id].name, planPriceText(id));
+  // Firm's price names its minimum and the least it costs (the renewal terms checkout showed).
+  const email = T.subscriptionConfirmedEmail(PLANS[id].name, T.subscriptionPriceText(id), { perCompany: id === "firm" });
 
   return sendLifecycleEmail({
     userId,

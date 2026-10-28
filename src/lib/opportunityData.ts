@@ -2,7 +2,8 @@ import { prisma } from "./prisma";
 import { getConnectionProfitData, laborBurdenOf, type ConnectionProfitData, type JobFinancials } from "./profitability";
 import { getJobTypes } from "./jobTypesServer";
 import { labelForJobType, suggestJobType, suggestJobTypeFromEstimateLines, type CompanyJobType } from "./jobTypes";
-import { buildJobIndex, ESTIMATE_PARENT_FALLBACK_GRACE_DAYS, resolveJob, type EstimateLine } from "./qboNormalize";
+import { buildJobIndex, estimatesByJob, type EstimateLine } from "./qboNormalize";
+import { wipReportDay } from "./wipSchedule";
 import {
   computeActionOutcome,
   computeEstimateCheck,
@@ -36,6 +37,8 @@ export interface CheckedEstimate {
   qboEstimateId: string;
   docNumber: string | null;
   customerName: string | null;
+  /** The QuickBooks customer the estimate is for. */
+  customerQboId: string;
   amount: number;
   txnDate: Date;
   expirationDate: Date | null;
@@ -68,19 +71,25 @@ export interface OpportunityData {
  * figures across every job, whatever the dashboard's tab or period.
  */
 export async function getOpportunityData(connectionId: string, now: Date = new Date()): Promise<OpportunityData> {
-  const [profitData, jobTypes, connection, jobRows, estimateRows, timeTotals] = await Promise.all([
-    getConnectionProfitData(connectionId, now),
+  const connection = await prisma.quickBooksConnection.findUniqueOrThrow({
+    where: { id: connectionId },
+    select: {
+      jobSource: true,
+      targetMarginPct: true,
+      laborBurdenPct: true,
+      laborFromTimeEntries: true,
+      emailTimezone: true,
+      marginTargets: { select: { category: true, targetPct: true } },
+    },
+  });
+  const [profitData, jobTypes, jobRows, estimateRows, timeTotals] = await Promise.all([
+    // As of today in the company's time zone, the WIP report's day: the
+    // feed's "finished work not billed" says it's the WIP report's figure,
+    // and a progress invoice dated next week counted here as billed while
+    // the WIP report and Money Owed showed the work as not billed yet (F7,
+    // audit Oct 27).
+    getConnectionProfitData(connectionId, now, { asOf: wipReportDay(now, connection.emailTimezone) }),
     getJobTypes(connectionId),
-    prisma.quickBooksConnection.findUniqueOrThrow({
-      where: { id: connectionId },
-      select: {
-        jobSource: true,
-        targetMarginPct: true,
-        laborBurdenPct: true,
-        laborFromTimeEntries: true,
-        marginTargets: { select: { category: true, targetPct: true } },
-      },
-    }),
     prisma.job.findMany({
       where: { connectionId },
       select: { id: true, qboId: true, parentQboId: true, name: true, category: true, estimatedCostSource: true, missingSince: true, qboCreatedAt: true },
@@ -114,17 +123,14 @@ export async function getOpportunityData(connectionId: string, now: Date = new D
   const jobs = profitData.lifetimeJobs;
   const typeLabel = (key: string) => labelForJobType(jobTypes, key);
 
-  // Estimates onto jobs, by the same rule the sync uses for contract value:
-  // one on the parent customer counts for its only job unless it's from more
-  // than a year before that job was created (see resolveJob).
-  const index = buildJobIndex(jobRows);
-  const estimatesByJob = new Map<string, typeof estimateRows>();
-  for (const e of estimateRows) {
-    const r = resolveJob(index, e.customerQboId, e.txnDate, ESTIMATE_PARENT_FALLBACK_GRACE_DAYS);
-    if (r) estimatesByJob.set(r.jobId, [...(estimatesByJob.get(r.jobId) ?? []), e]);
-  }
+  // Estimates onto jobs, by the same rule the sync uses for contract value
+  // (see estimatesByJob): a job's own, or its parent customer's when it has
+  // none of its own. Live jobs only, as the sync's index has them: a job
+  // gone from QuickBooks counted as a parent's second job and took the
+  // parent's estimates off its only live one (audit Oct 27 review).
+  const index = buildJobIndex(jobRows.filter((j) => j.missingSince == null));
   const mixes = new Map<string, PricedMix>();
-  for (const [jobId, list] of estimatesByJob) {
+  for (const [jobId, list] of estimatesByJob(index, estimateRows)) {
     const mix = pricedMixForJob(
       list.map((e) => ({ amount: Number(e.amount), status: e.status, txnDate: e.txnDate, lines: asLines(e.lines) }))
     );
@@ -199,6 +205,7 @@ export async function getOpportunityData(connectionId: string, now: Date = new D
       qboEstimateId: e.qboEstimateId,
       docNumber: e.docNumber,
       customerName: e.customerName,
+      customerQboId: e.customerQboId,
       amount: Number(e.amount),
       txnDate: e.txnDate,
       expirationDate: e.expirationDate,
@@ -230,6 +237,8 @@ export async function getOpportunityData(connectionId: string, now: Date = new D
     .map((e) => ({
       estimateId: e.id,
       label: estimateLabel(e),
+      // Options for one customer count once in the total (F10, audit Oct 27).
+      customerKey: e.customerQboId,
       shortfall: e.check.shortfall ?? 0,
       predictedMarginPct: e.check.expectedMarginPct ?? 0,
       targetMarginPct: e.check.targetMarginPct ?? 0,

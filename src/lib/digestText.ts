@@ -453,11 +453,68 @@ function sentenceSubject(text: string, clauses: Clause[], names: NameSpan[]): Ti
   return null;
 }
 
-/** Whether a negating word sits in the same clause just before position `at`. */
+/**
+ * Where a negation stops reaching: punctuation, and a word that starts a
+ * statement of its own ("has no invoices yet and is losing money"). Not the
+ * "yet" of "not yet" or "isn't yet", which is part of the negation, nor of
+ * "no evidence yet that" (NEGATING_LEAD).
+ */
+const NEGATION_STOP = /(?<!\d),|,(?!\d)|[;:()]|\b(?:and|but|or|so|while)\b|(?<!\b(?:not|never)\s+|n['\u2019]t\s+)\byet\b(?!\s+that\b)/i;
+/** How many words before a phrase a negation can sit and still be about it ("no firm forecast", "didn't lose money"). */
+const NEGATION_REACH = 3;
+const ARTICLE = /^(?:a|an|the)$/i;
+const NEGATION_ALL = new RegExp(NEGATION.source, "gi");
+/**
+ * Words that put the rest of their clause in doubt, however far it runs:
+ * "There's no sign that X is losing money", "X isn't far enough along to
+ * forecast", "We can't tell whether X is losing money". Too far from the
+ * phrase for NEGATION_REACH, they made true sentences read as false ones
+ * (review of audit Oct 27). Not "whether" after "regardless of",
+ * "irrespective of", "no matter" or "no longer", which assert what follows
+ * ("The question is no longer whether X is losing money"), and see
+ * DOUBT_UNDONE.
+ */
+const NEGATING_LEAD =
+  /\bno (?:sign|indication|evidence)s? (?:yet |so far )?that\b|(?:n['\u2019]t|\bnot) (?:yet )?far enough along to\b|(?<!\b(?:regardless|irrespective) of\s+|\bno (?:matter|longer)\s+)\bwhether\b/i;
+/**
+ * After the doubt, a phrase that makes the claim anyway: "no sign that X
+ * will stop losing money", "isn't far enough along to stop losing money"
+ * both say it is losing money (second review of audit Oct 27). Only right
+ * before the claim: "whether the crew will stop work before X is losing
+ * money" is still doubt (third review).
+ */
+const DOUBT_UNDONE = /\b(?:will|to) stop\s*$/i;
+/**
+ * A negating word that doesn't negate what follows, so the claim after it
+ * is still made: "can't avoid losing money", "is no doubt losing money",
+ * "won't stop losing money". These passed the check before and after the
+ * audit's fix (review of audit Oct 27).
+ */
+const NOT_A_NEGATION = /\b(?:can['\u2019]?t|cannot|can not) avoid\b|\bno doubt\b|\b(?:won['\u2019]t|doesn['\u2019]t|didn['\u2019]t|don['\u2019]t|never) stop(?:s|ped)?\b/gi;
+
+/**
+ * Whether a negating word sits just before position `at`: within
+ * NEGATION_REACH words (not counting a, an and the), with no clause break or
+ * "and", "but", "or", "so", "yet" or "while" between. It used to be anything
+ * in the 30 characters before, through "and" and "but", so "Harbor Deck has
+ * no invoices yet and is losing money" passed the check (audit Oct 27, E3).
+ * Also when the clause opens with words that put it in doubt
+ * (NEGATING_LEAD), and not for an idiom whose negating word doesn't negate
+ * (NOT_A_NEGATION).
+ */
 function negatedBefore(sentence: string, at: number): boolean {
-  const before = sentence.slice(Math.max(0, at - 30), at);
-  const clause = before.split(/(?<!\d),|,(?!\d)|[;:]/).pop() ?? "";
-  return NEGATION.test(clause);
+  const before = sentence.slice(Math.max(0, at - 80), at).split(NEGATION_STOP).pop() ?? "";
+  const lead = NEGATING_LEAD.exec(before);
+  if (lead && !DOUBT_UNDONE.test(before.slice(lead.index))) return true;
+  // Each word of an idiom kept as a word, so the count of words is the same.
+  const clause = before.replace(NOT_A_NEGATION, (m) => m.replace(/\S+/g, "x"));
+  const words = clause.split(/\s+/).filter((w) => w && !ARTICLE.test(w));
+  // One word more than the reach, so a two-word negation ("too early") counts when it ends inside it.
+  const near = words.slice(-(NEGATION_REACH + 1));
+  const reachFrom = near.length > NEGATION_REACH ? near[0].length + 1 : 0;
+  const text = near.join(" ");
+  for (const m of text.matchAll(NEGATION_ALL)) if (m.index + m[0].length > reachFrom) return true;
+  return false;
 }
 
 /** Links, email addresses and phone numbers in a piece of text, written the same way for comparing. */
@@ -467,6 +524,31 @@ function contactDetails(text: string): string[] {
   for (const m of text.replace(EMAIL_PATTERN, " ").matchAll(URL_PATTERN)) found.push(m[0].toLowerCase().replace(/[.,;:!?]+$/, ""));
   for (const m of text.matchAll(PHONE_PATTERN)) found.push(m[0].replace(/\D/g, "").replace(/^1(?=\d{10}$)/, ""));
   return found;
+}
+
+/**
+ * A test for the contact details in a piece of text that aren't in `input`
+ * (what the model was given): made up, or planted in a QuickBooks name to
+ * steer the model. A link or address is allowed when it's anywhere in the
+ * input as written.
+ */
+function contactsNotIn(input: string): (text: string) => string[] {
+  const known = new Set(contactDetails(input));
+  const inputLower = input.toLowerCase();
+  return (text) => contactDetails(text).filter((d) => !known.has(d) && !(/\D/.test(d) && inputLower.includes(d)));
+}
+
+/**
+ * The text without any sentence that has a link, email address or phone
+ * number that isn't in `input`, the same check the brief's summary gets
+ * (contact_not_in_data in findSummaryProblems). For AI-written text that
+ * isn't a summary of jobs, such as the Profit Insight cards. Text with none
+ * comes back unchanged. Pure.
+ */
+export function withoutUnknownContacts(text: string, input: string): string {
+  const unknown = contactsNotIn(input);
+  const bad = summarySentences(text).flat().filter((s) => unknown(s).length > 0);
+  return bad.length ? withoutSentences(text, bad) : text;
 }
 
 const isOpen = (j: SummaryJobFacts) => j.status === "open";
@@ -487,9 +569,7 @@ const isOpen = (j: SummaryJobFacts) => j.status === "open";
  */
 export function findSummaryProblems(text: string, facts: SummaryFacts): SummaryProblem[] {
   const problems: SummaryProblem[] = [];
-  const input = facts.input ?? "";
-  const inputLower = input.toLowerCase();
-  const knownContacts = new Set(contactDetails(input));
+  const unknownContacts = contactsNotIn(facts.input ?? "");
   for (const paragraph of readParagraphs(text, nameFinder(facts.jobs))) {
     let paragraphSubject: Tie = null;
     for (const s of paragraph) {
@@ -570,8 +650,7 @@ export function findSummaryProblems(text: string, facts: SummaryFacts): SummaryP
         });
       }
 
-      const unknown = contactDetails(s.text).filter((d) => !knownContacts.has(d) && !(/\D/.test(d) && inputLower.includes(d)));
-      if (unknown.length > 0) {
+      if (unknownContacts(s.text).length > 0) {
         add({
           rule: "contact_not_in_data",
           sentence: s.text,

@@ -1,14 +1,19 @@
 import { AI_MODEL, anthropic, inUs } from "./ai";
-import { cleanDigestText } from "./digestText";
+import { cleanDigestText, withoutUnknownContacts } from "./digestText";
 import type { ProfitOpportunity } from "./profitability";
 
 // Same grounding discipline as digest.ts: Claude only ever writes prose
-// around numbers app code already computed. It never invents, rounds
-// persuasively, or restates a dollar figure differently than it was given -
-// and even so, every number in the model's response is discarded and
-// replaced with the original deterministic value before anything is stored
-// (see generateProfitInsights below) rather than trusted from the model's
-// own output.
+// around numbers app code already computed, and is told never to state a
+// figure that isn't in its input. The figures stored with each card (its
+// impact, confidence and jobs) are copied from app code, never from the
+// model (see generateProfitInsights below). The prose itself, evidence and
+// recommended action, is the model's: a number in it is kept as written,
+// not replaced (this comment used to say it was). A link, email address or
+// phone number in it that isn't in the input is taken out, as in the brief
+// (audit Oct 27, E13).
+
+/** In place of a recommended action the contact check left nothing of. Claims nothing. */
+const ACTION_FALLBACK = "Look through the jobs behind this note to decide what to change.";
 const SYSTEM_PROMPT = `You write "Profit Insight" cards for a contractor profitability app, one per input opportunity.
 
 Rules, no exceptions:
@@ -56,17 +61,13 @@ export async function generateProfitInsights(
     jobCount: o.supportingJobIds.length,
   }));
 
+  const content = `Here are this company's profit opportunities:\n\n${JSON.stringify(input, null, 2)}`;
   const message = await anthropic.messages.create(inUs({
     model: AI_MODEL,
     // Roughly 150 tokens per card; the caller sends at most eight.
     max_tokens: 3000,
     system: SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: `Here are this company's profit opportunities:\n\n${JSON.stringify(input, null, 2)}`,
-      },
-    ],
+    messages: [{ role: "user", content }],
   }));
 
   const textBlock = message.content.find((b) => b.type === "text");
@@ -95,13 +96,17 @@ export async function generateProfitInsights(
   // All dimensions produced by computeProfitOpportunities today are
   // category-level rollups (see profitability.ts) - "customer"/"cost_category"
   // dimensions are reserved in the schema for opportunity types not built yet.
+  // Same house style as the brief: no dashes, whatever the model wrote. And
+  // no contact detail the input didn't have: a QuickBooks name can carry one
+  // to steer the model, and the cards are shown to everyone on the account.
+  const checked = (text: unknown) => withoutUnknownContacts(cleanDigestText(String(text ?? "")), content).trim();
   return opportunities.map((o, i) => ({
     dimension,
     finding: o.title,
-    // Same house style as the brief: no dashes, whatever the model wrote.
-    evidence: cleanDigestText(String(drafts[i].evidence ?? "")),
+    // The opportunity's own description, from app code, when nothing of the model's is left.
+    evidence: checked(drafts[i].evidence) || o.description,
     financialImpact: o.financialImpact,
-    recommendedAction: cleanDigestText(String(drafts[i].recommendedAction ?? "")),
+    recommendedAction: checked(drafts[i].recommendedAction) || ACTION_FALLBACK,
     confidence: o.confidence,
     sourceJobIds: o.supportingJobIds,
   }));

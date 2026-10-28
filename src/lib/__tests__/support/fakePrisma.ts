@@ -89,6 +89,11 @@ function matches(row: Row, where: Row | undefined): boolean {
       if (!(condition as Row[]).some((c) => matches(row, c))) return false;
       continue;
     }
+    if (key === "NOT") {
+      const list = Array.isArray(condition) ? (condition as Row[]) : [condition as Row];
+      if (list.some((c) => matches(row, c))) return false;
+      continue;
+    }
     if (!matchValue(row[key], condition)) return false;
   }
   return true;

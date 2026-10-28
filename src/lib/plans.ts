@@ -51,6 +51,7 @@ export interface PlanDefinition {
   tagline: string;
   /** Shown on the pricing page under the price. */
   bestFor: string;
+  /** The plan we point most contractors to; it carries RECOMMENDED_PLAN_BADGE. */
   mostPopular: boolean;
   limits: PlanLimits;
   /**
@@ -180,6 +181,12 @@ export const PLANS: Record<PlanId, PlanDefinition> = {
     stripePriceEnvVar: "STRIPE_PRICE_FIRM_MONTHLY",
   },
 };
+
+/**
+ * The badge on the plan marked mostPopular, wherever the plans are shown.
+ * Not "Most Popular": before launch there are no sales to say so.
+ */
+export const RECOMMENDED_PLAN_BADGE = "Best for most contractors";
 
 /** Every plan that can be bought. */
 export const PLAN_IDS: PlanId[] = ["profit_intelligence", "profit_intelligence_pro", "firm"];

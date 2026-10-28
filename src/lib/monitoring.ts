@@ -326,12 +326,13 @@ export function resetReportLimit(): void {
 /**
  * Sends an error to Sentry. Does nothing without SENTRY_DSN, or on a Vercel
  * deployment other than production unless `anyEnvironment` (the admin test
- * route) says so. Never throws.
+ * route) says so. Never throws. With `occurrences` above 1, the report says
+ * how many times the error happened (see RunErrors).
  */
 export async function reportError(
   err: unknown,
   context: ErrorContext = {},
-  options: { anyEnvironment?: boolean } = {}
+  options: { anyEnvironment?: boolean; occurrences?: number } = {}
 ): Promise<ReportResult> {
   try {
     const env: Env = process.env;
@@ -339,10 +340,60 @@ export async function reportError(
     if (!dsn) return { sent: false, reason: "no_dsn" };
     if (!options.anyEnvironment && !productionOnly(env)) return { sent: false, reason: "not_production" };
     if (!takeReportSlot(Date.now())) return { sent: false, reason: "rate_limited" };
-    const status = await sendEnvelope(dsn, errorEnvelope(buildErrorEvent(err, context, { env })));
+    const event = withOccurrences(buildErrorEvent(err, context, { env }), options.occurrences);
+    const status = await sendEnvelope(dsn, errorEnvelope(event));
     return { sent: true, status };
   } catch {
     return { sent: false, reason: "failed" };
+  }
+}
+
+/** The event with how many times it happened put in front of its message, when more than once. Pure. */
+export function withOccurrences(event: SentryEvent, occurrences: number | undefined): SentryEvent {
+  if (occurrences == null || !(occurrences > 1)) return event;
+  const [first, ...rest] = event.exception.values;
+  const value = `${Math.round(occurrences)} times in this run, one report for all of them. The first: ${first.value}`;
+  return { ...event, exception: { values: [{ ...first, value }, ...rest] } };
+}
+
+/**
+ * A scheduled run's unexpected errors, sent as one report per kind of error
+ * with how many times it happened, once the run is done, the way the weekly
+ * brief run reports its problems (briefRunReports). Each company's error
+ * used to be its own report, so a fault that hit every company in a run
+ * used up the 20 reports a minute on one instance, and other faults in that
+ * minute weren't reported (audit Oct 27, E9). A kind is the error's class
+ * and its scrubbed message, which takes out what differs from one company
+ * to the next (IDs, amounts), and without the Stripe IDs the scrub keeps,
+ * so "No such subscription" for two subscriptions is one kind. Each kind's
+ * first error is the one sent, so the report keeps its stack. At most
+ * MAX_KINDS reports, the commonest.
+ */
+/** A Stripe object ID (sub_..., cus_..., evt_...), which the scrub keeps as a reference. */
+const STRIPE_ID = /\b[a-z]{2,5}_(?:(?:live|test)_)?[A-Za-z0-9]{6,64}\b/g;
+
+export class RunErrors {
+  static readonly MAX_KINDS = 10;
+  private readonly kinds = new Map<string, { err: unknown; count: number }>();
+
+  add(err: unknown): void {
+    const { type, value } = describeError(err);
+    const key = `${type}\n${value.replace(STRIPE_ID, "[id]")}`;
+    const seen = this.kinds.get(key);
+    if (seen) seen.count++;
+    else this.kinds.set(key, { err, count: 1 });
+  }
+
+  get count(): number {
+    let n = 0;
+    for (const k of this.kinds.values()) n += k.count;
+    return n;
+  }
+
+  /** Sends the reports. Never throws. */
+  async report(context: ErrorContext): Promise<void> {
+    const commonest = [...this.kinds.values()].sort((a, b) => b.count - a.count).slice(0, RunErrors.MAX_KINDS);
+    await Promise.all(commonest.map(({ err, count }) => reportError(err, context, { occurrences: count })));
   }
 }
 

@@ -57,12 +57,16 @@ export default function SignupForm() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         // The API returns either a plain string error or a Zod flatten() shape.
+        // Any field's message is shown, not only these three: a too-long name
+        // used to show "We couldn't create your account" (audit Oct 27, Z2).
+        const fieldErrors: Record<string, string[] | undefined> = data.error?.fieldErrors ?? {};
         const message =
           typeof data.error === "string"
             ? data.error
-            : (data.error?.fieldErrors?.acceptTerms?.[0] ??
-              data.error?.fieldErrors?.password?.[0] ??
-              data.error?.fieldErrors?.email?.[0] ??
+            : (fieldErrors.acceptTerms?.[0] ??
+              fieldErrors.password?.[0] ??
+              fieldErrors.email?.[0] ??
+              Object.values(fieldErrors).find((errors) => errors?.[0])?.[0] ??
               data.error?.formErrors?.[0] ??
               "We couldn't create your account. Please try again.");
         throw new Error(message);
@@ -122,6 +126,7 @@ export default function SignupForm() {
             id="signup-name"
             type="text"
             autoComplete="name"
+            maxLength={120}
             value={name}
             onChange={(e) => setName(e.target.value)}
             className={inputClass}
@@ -137,6 +142,7 @@ export default function SignupForm() {
             type="email"
             required
             autoComplete="email"
+            maxLength={320}
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             className={inputClass}
@@ -152,6 +158,7 @@ export default function SignupForm() {
             type="password"
             required
             minLength={8}
+            maxLength={200}
             autoComplete="new-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}

@@ -69,6 +69,16 @@ vi.mock("@/lib/monitoring", () => ({
     reports.push({ err, ctx });
     return { sent: false, reason: "no_dsn" };
   },
+  // The real one groups a run's errors into one report per kind (its own test covers that); this reports each.
+  RunErrors: class {
+    errs: unknown[] = [];
+    add(err: unknown) {
+      this.errs.push(err);
+    }
+    async report(ctx: unknown) {
+      for (const err of this.errs) reports.push({ err, ctx });
+    }
+  },
   withCronMonitor: async (_slug: string, _schedule: string, run: () => Promise<unknown>) => {
     const result = await run();
     checkIns.push(result);
@@ -89,6 +99,9 @@ vi.mock("@/lib/digest", () => ({
   SummaryOutOfTimeError,
   summaryToReuse: () => null,
   withSummaryForRetry: (m: unknown) => m,
+  // Nothing partly sent in these tests (audit1027Emails.test.ts covers it).
+  partlySentFor: () => null,
+  withPartlySent: (m: unknown) => m,
   generateWeeklyDigestForConnection: async (connectionId: string, _week: Date, _name: string, opts: any) => {
     brief.calls.push({ connectionId, opts });
     if (brief.fail) throw brief.fail;

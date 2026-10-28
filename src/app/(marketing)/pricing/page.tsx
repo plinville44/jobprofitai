@@ -318,7 +318,7 @@ export default function PricingPage() {
             </p>
             <p>
               The value of JobProfitAI is in identifying a margin problem early enough to do
-              something about it. A single job running 15% over on a $80,000 contract is $12,000. If
+              something about it. A single job running 15% over on an $80,000 contract is $12,000. If
               the product does its job even once a year, the arithmetic isn&rsquo;t close.
             </p>
             <p>

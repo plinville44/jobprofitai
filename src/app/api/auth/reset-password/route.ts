@@ -59,14 +59,17 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const parsed = ResetSchema.safeParse(body);
     if (!parsed.success) {
-      const tooShort = parsed.error.issues.some(
-        (i) => i.path[0] === "password" && i.code === "too_small"
-      );
+      const passwordIssue = (code: string) =>
+        parsed.error.issues.some((i) => i.path[0] === "password" && i.code === code);
+      // A pasted password over the limit used to be told the link was wrong
+      // (audit Oct 27, Z2).
       return NextResponse.json(
         {
-          error: tooShort
+          error: passwordIssue("too_small")
             ? "Choose a password of at least 8 characters."
-            : "That reset link doesn't look right. Request a new one.",
+            : passwordIssue("too_big")
+              ? "Passwords can be at most 200 characters."
+              : "That reset link doesn't look right. Request a new one.",
         },
         { status: 400 }
       );

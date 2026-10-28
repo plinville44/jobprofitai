@@ -3,15 +3,19 @@ import { refuseCrossSite } from "@/lib/sameOrigin";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { createSession, getSession, hashPassword } from "@/lib/auth";
-import { acceptInvite, findUsableInvite } from "@/lib/team";
+import { acceptInvite, canSignInWith, findUsableInvite, inviteAddressCantSignInMessage } from "@/lib/team";
 import { findLoginByEmail } from "@/lib/loginThrottle";
 
 export const runtime = "nodejs";
 
+// The first problem's message is shown to the person as is, so every rule
+// has our own words: zod's ("Too big: expected string to have <=200
+// characters") reached the form for a pasted long password (audit Oct 27, Z2).
+const BAD_LINK = "This invitation link doesn't look right. Open it again from the email.";
 const NewLoginSchema = z.object({
-  token: z.string().min(20).max(200),
-  name: z.string().trim().max(120).optional(),
-  password: z.string().min(8, "Password must be at least 8 characters").max(200),
+  token: z.string(BAD_LINK).min(20, BAD_LINK).max(200, BAD_LINK),
+  name: z.string().trim().max(120, "Names can be at most 120 characters.").optional(),
+  password: z.string().min(8, "Password must be at least 8 characters").max(200, "Passwords can be at most 200 characters."),
 });
 
 /**
@@ -46,6 +50,12 @@ export async function POST(req: NextRequest) {
       { error: "This invitation has expired or was already used. Ask for a new one." },
       { status: 410 }
     );
+  }
+  // Before a login is made for it: one with an address login refuses would
+  // be locked out once this session ended (audit Oct 27, Z3). acceptInvite
+  // checks the same for a signed-in login.
+  if (!canSignInWith(invite.email)) {
+    return NextResponse.json({ error: inviteAddressCantSignInMessage(invite) }, { status: 409 });
   }
   // Exact, ignoring case, never a wildcard match (findLoginByEmail).
   const existing = await findLoginByEmail(invite.email);

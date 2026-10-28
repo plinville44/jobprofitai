@@ -79,6 +79,9 @@ vi.mock("@/lib/stripe/billing", () => ({
 
 const calls = { disqualified: [] as string[], emails: [] as string[] };
 vi.mock("@/lib/referrals", () => ({
+  // As the real one: held for a person's check (audit Oct 27, B3).
+  isHeldForCheck: (r: { status: string; disqualifiedReason: string | null }) =>
+    r.status !== "disqualified" && (r.disqualifiedReason ?? "").startsWith("Check by hand before paying:"),
   applyPendingRewardsForUser: vi.fn(async () => 0),
   disqualifyReferral: vi.fn(async (userId: string) => {
     calls.disqualified.push(userId);

@@ -190,16 +190,31 @@ export default async function ReferralsPage() {
                   // refund) is a different story from one that never
                   // qualified, and used to be told "refunded before
                   // qualifying" beside the credit amount it had earned.
-                  const status =
-                    row.status === "qualified"
-                      ? { ...base, help: rewardHelp(row.rewardStatus) }
-                      : row.status === "disqualified" && row.rewardStatus === "voided"
-                        ? {
-                            ...base,
-                            help: "The customer's payment was refunded after the credit was earned, so the credit was reversed.",
-                          }
-                        : base;
-                  const reversed = row.rewardStatus === "voided";
+                  // Two cases are worded for themselves, without saying why:
+                  // a referral disqualified after a check (nothing was
+                  // refunded or reversed), and one still being checked, whose
+                  // credit doesn't go on at the next invoice yet (audit Oct
+                  // 27, B3 review).
+                  const status = row.disqualifiedAfterCheck
+                    ? { ...base, help: "Not eligible for a referral credit." }
+                    : row.beingChecked && row.rewardStatus !== "applied"
+                      ? {
+                          ...base,
+                          help:
+                            row.rewardStatus === "pending"
+                              ? "Being checked before it's applied."
+                              : "Being checked before a credit can be earned.",
+                        }
+                      : row.status === "qualified"
+                        ? { ...base, help: rewardHelp(row.rewardStatus) }
+                        : row.status === "disqualified" && row.rewardStatus === "voided"
+                          ? {
+                              ...base,
+                              help: "The customer's payment was refunded after the credit was earned, so the credit was reversed.",
+                            }
+                          : base;
+                  const reversed = row.rewardStatus === "voided" && !row.disqualifiedAfterCheck;
+                  const hideReward = row.disqualifiedAfterCheck;
                   return (
                     <tr key={row.id}>
                       <td className="px-6 py-3.5 text-gray-600">{formatDate(row.signedUpAt)}</td>
@@ -214,7 +229,7 @@ export default async function ReferralsPage() {
                         ) : null}
                       </td>
                       <td className="px-6 py-3.5 font-medium text-navy">
-                        {row.rewardAmountCents != null ? (
+                        {row.rewardAmountCents != null && !hideReward ? (
                           reversed ? (
                             <span className="text-gray-400 line-through">{money(row.rewardAmountCents)}</span>
                           ) : (
@@ -225,13 +240,17 @@ export default async function ReferralsPage() {
                         )}
                       </td>
                       <td className="px-6 py-3.5 text-gray-600">
-                        {reversed
-                          ? "Reversed"
-                          : row.rewardAppliedAt
-                            ? formatDate(row.rewardAppliedAt)
-                            : row.rewardStatus === "pending"
-                              ? "Pending"
-                              : NO_VALUE}
+                        {hideReward
+                          ? NO_VALUE
+                          : reversed
+                            ? "Reversed"
+                            : row.rewardAppliedAt
+                              ? formatDate(row.rewardAppliedAt)
+                              : row.rewardStatus === "pending"
+                                ? row.beingChecked
+                                  ? "Being checked"
+                                  : "Pending"
+                                : NO_VALUE}
                       </td>
                     </tr>
                   );

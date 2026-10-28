@@ -1,8 +1,9 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { z } from "zod";
 import { createPasswordReset, RESET_TOKEN_TTL_MINUTES } from "@/lib/passwordReset";
 import { sendPasswordReset } from "@/lib/email/lifecycle";
 import { findLoginByEmail } from "@/lib/loginThrottle";
+import { safeErrorText, scrubText } from "@/lib/scrub";
 
 export const runtime = "nodejs";
 
@@ -22,6 +23,12 @@ const ForgotSchema = z.object({
  * leak, and it is also the reconnaissance step before a credential-stuffing
  * run. So an unknown address, a rate-limited address and a successful send
  * are indistinguishable from outside.
+ *
+ * Indistinguishable in time too. The lookup, the reset and the email all
+ * run after the reply has gone (`after`; on Vercel that's waitUntil), so
+ * the reply takes as long for an address with an account as for one
+ * without. It used to wait for the reset and the send only for a real
+ * account, which a stopwatch could tell apart (audit Oct 27, B7).
  *
  * A malformed address is the one exception: that is a client bug, not a
  * probe, and returning 400 lets the form say "check the address" rather than
@@ -43,15 +50,31 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Enter a valid email address." }, { status: 400 });
     }
 
+    const typed = parsed.data.email;
+    after(() => sendResetIfAccountExists(typed));
+    return uniformResponse;
+  } catch (err) {
+    // Even an unexpected failure returns the uniform response.
+    console.error("forgot-password failed:", safeErrorText(err));
+    return uniformResponse;
+  }
+}
+
+/**
+ * The part that depends on whether the address has an account, run after
+ * the reply. Never throws: nobody is waiting for it, and an error here must
+ * not surface anywhere the caller could see. Logs carry no address or token.
+ */
+async function sendResetIfAccountExists(typed: string): Promise<void> {
+  try {
     // Only the login whose address is exactly the one typed, ignoring case
     // (findLoginByEmail). Its stored address is then what the reset looks up,
     // so a wildcard in what was typed can't pick a different account.
-    const login = await findLoginByEmail(parsed.data.email);
+    const login = await findLoginByEmail(typed);
     const reset = login ? await createPasswordReset(login.email) : null;
 
-    // Null means no such account, or too many recent requests. Both end here,
-    // silently and successfully, from the caller's point of view.
-    if (!reset) return uniformResponse;
+    // Null means no such account, or too many recent requests. Both end here.
+    if (!reset) return;
 
     const sent = await sendPasswordReset({
       userId: reset.userId,
@@ -62,20 +85,9 @@ export async function POST(req: NextRequest) {
     });
 
     if (!sent.ok && !sent.skipped) {
-      // Logged, not surfaced. Telling the caller the send failed would leak
-      // that the account exists just as loudly as a "no such user" would.
-      console.error(`password reset email failed for user ${reset.userId}: ${sent.error}`);
+      console.error(`password reset email failed for user ${reset.userId}: ${scrubText(sent.error)}`);
     }
-
-    return uniformResponse;
   } catch (err) {
-    // Even an unexpected failure returns the uniform response. A 500 here
-    // would be observably different for a real account versus an unknown
-    // one, which is exactly the signal this endpoint exists to hide.
-    console.error(
-      "forgot-password failed:",
-      err instanceof Error ? err.message : "Unknown error"
-    );
-    return uniformResponse;
+    console.error("forgot-password: the reset couldn't be made or sent:", safeErrorText(err));
   }
 }
