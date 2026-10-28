@@ -23,7 +23,7 @@ const SignupSchema = z.object({
   timeZone: z.string().max(64).optional(),
   // The unchecked "I agree to the Terms of Service and Privacy Policy" box.
   acceptTerms: z.literal(true, {
-    errorMap: () => ({ message: "Please check the box to agree to the Terms of Service and Privacy Policy." }),
+    error: "Please check the box to agree to the Terms of Service and Privacy Policy.",
   }),
 });
 

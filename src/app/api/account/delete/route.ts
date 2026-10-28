@@ -39,7 +39,7 @@ export const runtime = "nodejs";
 const DeleteSchema = z.object({
   password: z.string().min(1, "Enter your password to confirm."),
   confirm: z.literal("DELETE", {
-    errorMap: () => ({ message: 'Type DELETE to confirm.' }),
+    error: "Type DELETE to confirm.",
   }),
 });
 
