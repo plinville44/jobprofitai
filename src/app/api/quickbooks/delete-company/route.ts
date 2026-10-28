@@ -20,7 +20,7 @@ export const runtime = "nodejs";
 const Schema = z.object({
   connectionId: z.string().min(1),
   password: z.string().min(1, "Enter your password to confirm."),
-  confirm: z.literal("DELETE", { errorMap: () => ({ message: "Type DELETE to confirm." }) }),
+  confirm: z.literal("DELETE", { error: "Type DELETE to confirm." }),
 });
 
 export async function POST(req: NextRequest) {

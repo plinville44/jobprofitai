@@ -24,7 +24,7 @@ const ContactSchema = z.object({
   company: z.string().trim().max(160).optional().or(z.literal("")),
   email: z.string().trim().email("Please enter a valid email address.").max(320),
   phone: z.string().trim().max(40).optional().or(z.literal("")),
-  reason: z.enum(CONTACT_REASONS, { errorMap: () => ({ message: "Choose a reason for contacting us." }) }),
+  reason: z.enum(CONTACT_REASONS, { error: "Choose a reason for contacting us." }),
   message: z.string().trim().min(10, "Please tell us a little more.").max(5000),
   /**
    * Honeypot. A real person never sees or fills this field; most naive bots

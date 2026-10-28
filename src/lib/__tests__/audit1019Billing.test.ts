@@ -128,8 +128,8 @@ vi.mock("zod", () => {
   }
   const z = {
     string: () => new ZType((v) => (typeof v === "string" ? pass(v) : fail("Expected string", "invalid_type"))),
-    literal: (lit: unknown, opts?: { errorMap?: () => { message: string } }) =>
-      new ZType((v) => (v === lit ? pass(v) : fail(opts?.errorMap?.().message ?? "Invalid literal", "invalid_literal"))),
+    literal: (lit: unknown, opts?: { error?: string }) =>
+      new ZType((v) => (v === lit ? pass(v) : fail(opts?.error ?? "Invalid literal", "invalid_literal"))),
     object: (shape: Record<string, ZType>) => ({
       safeParse: (input: unknown) => {
         const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
