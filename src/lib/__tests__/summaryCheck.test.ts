@@ -151,6 +151,183 @@ describe("checking the written summary", () => {
 // Found in the audit of Oct 19, 2026: correct sentences taken out, and the
 // sentence after one taken out left describing the wrong job. More in
 // audit1019Brief.test.ts.
+// The test company's preview of Oct 29, 2026, word for word, after thinking
+// was turned off. Every figure in it was right, but it called MX04 "not a
+// projected loss" (its cost estimate is $10,000 above its contract; its
+// forecast was held back because nothing had been entered on it for 38
+// days), said MX05 through MX17 had no estimates (MX06 has one), and told
+// the owner to "Give the owner the plain numbers".
+const OCT_29 = `MX02 Past Estimate needs a look first. It's billed $24,000 against $34,000 in actual costs, which is $4,000 over its $30,000 estimate. Give the owner the plain numbers: $34,000 spent, $24,000 billed, and it's worth checking why billing hasn't caught up to the costs on the job.
+
+MX01 Early Materials is also one to watch: it's 40% complete with $18,000 spent of a $45,000 estimate, but only $6,000 has been billed against $60,000 in contract value, putting it $18,000 behind on billing. Worth confirming invoices are going out as work progresses.
+
+On the closed side, Torres Kitchen Remodel finished at a 27.6% margin, so it stayed profitable overall, but it ran $6,600 over its $23,800 estimate (about 28% over). Torres Bath Remodel, the other Torres job, is 66% complete with $7,596 spent of its $11,500 estimate and is currently $2,890 behind on billing relative to work done.
+
+MX04 Expected Loss is halfway through its estimate, with $30,000 spent of $60,000 and billing matching work done so far (no over or under billing). Its -20% margin to date reflects billing timing at this stage, not a projected loss, since there's no forecast available for this job.
+
+The rest of the Oakridge test jobs (MX05 through MX17) have no estimates on file, so spend and billing on each can only be reported as raw dollars: for example MX05 Overdue Invoice has $3,000 in costs against $8,000 billed.`;
+
+const OCT_29_JOBS: SummaryJobFacts[] = [
+  ...JOBS.map((j) => (j.jobName === "MX04 Expected Loss" ? { ...j, forecastMarginPct: null } : j)),
+  ...["MX05 Overdue Invoice", "MX07 Parent Match", "MX08 Refund Check", "MX09 Supplier Refund", "MX10 Construction in Progress", "MX11 Inventory Relief", "MX12 Deposit Income", "MX13 Journal Income", "MX14 Vendor Credit", "MX15 Discount Invoice", "MX16 Duplicate Expenses", "MX17 Crew Time"].map(
+    (jobName): SummaryJobFacts => ({ jobName, status: "open", marginPct: 0.2, forecastMarginPct: null })
+  ),
+];
+const oct29: SummaryFacts = { jobs: OCT_29_JOBS, comparison: "skipped" };
+
+describe("the preview of Oct 29: how a job will finish, ranges of jobs, and who it's written to", () => {
+  it("finds the three mistakes in the Oct 29 preview, and nothing else", () => {
+    expect(brief(oct29, OCT_29)).toEqual([
+      ["owner_in_third_person", null, "Give the owner the plain numbers: $34,00"],
+      ["outcome_without_forecast", "MX04 Expected Loss", "Its -20% margin to date reflects billing"],
+      ["range_of_jobs", null, "The rest of the Oakridge test jobs (MX05"],
+    ]);
+  });
+
+  it("says why, naming the jobs a range takes in", () => {
+    const range = findSummaryProblems(OCT_29, oct29).find((p) => p.rule === "range_of_jobs")!;
+    expect(range.reason).toBe(
+      "It describes jobs as a range (MX05 to MX17), which takes in MX06 Idle Job, MX07 Parent Match, MX08 Refund Check and 8 more as well, and what it says may not be true of them. Name each job you mean."
+    );
+  });
+
+  it("catches a claim about how an open job without a forecast will finish, said either way", () => {
+    for (const text of [
+      "MX02 Past Estimate is not a projected loss.",
+      "MX02 Past Estimate isn't heading for a loss.",
+      "MX02 Past Estimate won't lose money.",
+      "MX02 Past Estimate will still finish profitable.",
+      "MX02 Past Estimate is on course for a profit.",
+      "MX02 Past Estimate is set to lose $4,000.",
+      "MX02 Past Estimate has an expected loss of $4,000.",
+      "MX02 Past Estimate isn't expected to lose money.",
+      "MX02 Past Estimate is not projected to finish in the red.",
+    ]) {
+      // Caught by this rule, or by the forecast or loss rule when those words are in it.
+      const rules = brief(oct29, text).map((p) => p[0]);
+      expect({ text, caught: rules.some((r) => ["outcome_without_forecast", "forecast_without_forecast", "loss_without_loss"].includes(String(r))) }).toEqual({ text, caught: true });
+    }
+  });
+
+  it("allows it on a job with a firm forecast, about a finished job, and the present tense the prompt asks for", () => {
+    for (const text of [
+      "MX03 Billed Past Contract is on track to finish profitable.",
+      "MX03 Billed Past Contract won't lose money on its 28.4% forecast.",
+      "Torres Kitchen Remodel stayed profitable.",
+      "MX02 Past Estimate isn't losing money: it has $34,000 spent and $24,000 billed.",
+      "There's no forecast for MX04 Expected Loss yet.",
+      "MX04 Expected Loss has $30,000 spent of a $60,000 estimate.",
+    ]) {
+      expect({ text, problems: brief(oct29, text) }).toEqual({ text, problems: [] });
+    }
+  });
+
+  it("catches a range only when it takes in a job it doesn't name", () => {
+    expect(brief(oct29, "MX05 Overdue Invoice through MX17 Crew Time have no estimates.").map((p) => p[0])).toEqual(["range_of_jobs"]);
+    expect(brief(oct29, "MX05 to MX07 have no estimates.").map((p) => p[0])).toEqual(["range_of_jobs"]);
+    expect(brief(oct29, "MX01 Early Materials and MX02 Past Estimate are both behind on billing.")).toEqual([]);
+    expect(brief(oct29, "MX01 to MX02 both need invoices.")).toEqual([]);
+  });
+
+  it("catches the owner talked about as someone else, not a homeowner or a property owner", () => {
+    expect(brief(oct29, "Tell the owner that MX02 Past Estimate needs a look.").map((p) => p[0])).toEqual(["owner_in_third_person"]);
+    expect(brief(oct29, "The homeowner on MX02 Past Estimate hasn't been billed since September.")).toEqual([]);
+    expect(brief(oct29, "The property owner on MX02 Past Estimate hasn't been billed since September.")).toEqual([]);
+  });
+
+  // From an independent review of the rules above: sentences a good summary
+  // has that a first version took out, and claims it let through.
+  it("leaves doubt, a missing forecast margin, and plain talk about invoices and costs alone", () => {
+    for (const text of [
+      "It's too early to say whether MX01 Early Materials will make a profit.",
+      "We can't tell yet whether MX02 Past Estimate will finish profitable.",
+      "MX01 Early Materials isn't far enough along to say whether it will lose money.",
+      "There's no forecast for MX04 Expected Loss yet, so it's too early to say whether it will finish at a loss or a profit.",
+      "MX04 Expected Loss doesn't have a forecast margin yet.",
+      "There's no forecast margin for MX02 Past Estimate yet.",
+      "Getting the next invoice out on MX01 Early Materials would make a big dent in the $18,000 billing gap.",
+      "Torres Bath Remodel is $2,890 behind on billing, which will close with the next progress invoice.",
+      "MX02 Past Estimate will finish above its $30,000 estimate, since $34,000 is already spent.",
+      "Costs were moved from MX05 Overdue Invoice to MX07 Parent Match.",
+      "MX02 Past Estimate is waiting on the owner's approval of a change order.",
+      "MX02 Past Estimate is with the owner of the building for sign-off.",
+    ]) {
+      expect({ text, problems: brief(oct29, text) }).toEqual({ text, problems: [] });
+    }
+  });
+
+  it("catches other ways of saying how an open job without a forecast will finish", () => {
+    for (const text of [
+      "MX02 Past Estimate should still finish profitable.",
+      "MX02 Past Estimate could lose $4,000.",
+      "MX02 Past Estimate stands to lose $4,000.",
+      "MX02 Past Estimate'll still turn a profit.",
+      "MX02 Past Estimate will not lose money.",
+      "MX02 Past Estimate will be in the black.",
+      "MX02 Past Estimate will show a profit.",
+      "MX02 Past Estimate will probably break even.",
+      "MX02 Past Estimate is on pace to lose money.",
+      "MX02 Past Estimate is trending toward a loss.",
+      "MX02 Past Estimate is unlikely to finish profitable.",
+      "MX02 Past Estimate has expected profits of $4,000.",
+    ]) {
+      const rules = brief(oct29, text).map((p) => String(p[0]));
+      expect({ text, caught: rules.some((r) => ["outcome_without_forecast", "forecast_without_forecast", "loss_without_loss"].includes(r)) }).toEqual({ text, caught: true });
+    }
+  });
+
+  it("says a job it names has no estimate only when that job has none", () => {
+    const ESTIMATES: Record<string, number> = { "MX01 Early Materials": 45000, "MX02 Past Estimate": 30000, "MX04 Expected Loss": 60000, "MX06 Idle Job": 16000 };
+    const withEstimates: SummaryFacts = {
+      jobs: [
+        ...OCT_29_JOBS.map((j) => ({ ...j, estimatedCost: ESTIMATES[j.jobName] ?? null })),
+        { jobName: "Lakeside Bath", status: "open", marginPct: 0.1, estimatedCost: 9000, estimateSetFromTargetMargin: true },
+      ],
+      comparison: "skipped",
+    };
+    for (const text of [
+      "MX06 Idle Job has no estimate on file.",
+      "MX06 Idle Job doesn't have an estimate on file.",
+      "MX06 Idle Job does not have a cost estimate.",
+      "MX06 Idle Job lacks an estimate.",
+      "MX06 Idle Job has no estimated cost.",
+      "MX06 Idle Job's estimate isn't on file.",
+    ]) {
+      expect({ text, rules: brief(withEstimates, text).map((p) => p[0]) }).toEqual({ text, rules: ["estimate_said_missing"] });
+    }
+    // True, or not about a job that has one: from the second review.
+    for (const text of [
+      "MX05 Overdue Invoice has no estimate on file.",
+      "MX01 Early Materials has no estimate problems.",
+      "There have been no estimate changes on MX06 Idle Job since the last brief.",
+      "MX06 Idle Job had no estimate last week; a $16,000 one was added since.",
+      "MX06 Idle Job's missing estimate has now been entered at $16,000.",
+      "MX06 Idle Job isn't missing an estimate.",
+      "MX06 Idle Job's estimate is on file.",
+      "MX06 Idle Job has $4,000 spent of a $16,000 estimate. The rest of the jobs have no estimates on file.",
+      "MX06 Idle Job has $4,000 spent of a $16,000 estimate. Three open jobs have no estimate on file.",
+      "All the other jobs are billed ahead of the work, and MX05 Overdue Invoice has no estimate.",
+      // An estimate worked out from the target margin isn't one the contractor priced.
+      "Lakeside Bath has no estimate on file.",
+    ]) {
+      expect({ text, problems: brief(withEstimates, text) }).toEqual({ text, problems: [] });
+    }
+  });
+
+  it("takes out just those three sentences when the rewrite doesn't fix them", () => {
+    const left = withoutSentences(
+      OCT_29,
+      findSummaryProblems(OCT_29, oct29).map((p) => p.sentence),
+      OCT_29_JOBS
+    );
+    expect(left).not.toContain("projected loss");
+    expect(left).not.toContain("the owner");
+    expect(left).not.toContain("MX05 through MX17");
+    expect(left).toContain("MX04 Expected Loss is halfway through its estimate");
+    expect(left).toContain("MX02 Past Estimate needs a look first.");
+  });
+});
+
 describe("job names come first", () => {
   const withWarranty: SummaryFacts = { jobs: [...JOBS, { jobName: "Warranty", status: "completed", marginPct: 0.1 }], comparison: "skipped" };
 
