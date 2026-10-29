@@ -45,13 +45,54 @@ export const anthropic = aiClient(55_000, 1);
  */
 export const INFERENCE_GEO = "us" as const;
 
+/** The setting that turns a model's up-front thinking off, as Anthropic names it per model. */
+export type ThinkingOff = { type: "disabled" } | { type: "between_tools" };
+
 /**
- * The request's parameters with inference_geo set. The installed SDK
- * predates the field and sends unknown fields through as they are. Typed as
- * the SDK's own parameters so the request is still checked.
+ * How to turn up-front thinking off for `model`, or null where it can't be
+ * turned off or the model isn't one listed here.
+ *
+ * Claude Sonnet 5 (the default model) and the models after it think before
+ * they answer unless told not to, and the thinking counts toward max_tokens.
+ * The app's limits were set for replies with no thinking: the weekly
+ * brief's summary gets 1,200 tokens, then 2,400. With thinking on, the
+ * thinking used that room up and the brief went out with no summary
+ * (Sentry, Oct 29, 2026: "cut off at the length limit twice"). The same
+ * could cut off Profit Insights and job type suggestions.
+ *
+ * The setting differs by model, and the wrong one makes Anthropic refuse the
+ * request, which would cost every brief its summary. So only the models in
+ * Anthropic's table are listed, by exact name (an optional date suffix
+ * allowed); anything else is sent with no setting, which is never refused.
+ * See https://platform.claude.com/docs/en/build-with-claude/thinking
+ *  - "disabled": Claude Sonnet 5, Opus 5 and Haiku 5.5 (at the default
+ *    effort, high), and the 4.x models, where thinking is already off by
+ *    default and "disabled" changes nothing.
+ *  - "between_tools": Claude Sonnet 5.5, which refuses "disabled". With no
+ *    tools in the request it answers with text only.
+ *  - none: Claude Opus 5.5, Fable and Mythos, which refuse both. On those,
+ *    the length limits above can still be too small.
+ */
+export function thinkingOff(model: string): ThinkingOff | null {
+  const m = model.trim().toLowerCase();
+  const named = (name: string) => new RegExp(`^${name}(-\\d{8})?$`).test(m);
+  if (named("claude-sonnet-5-5")) return { type: "between_tools" };
+  if (named("claude-sonnet-5") || named("claude-opus-5") || named("claude-haiku-5-5")) return { type: "disabled" };
+  if (/^claude-(opus|sonnet|haiku)-4(-\d{1,2})?(-\d{8})?$/.test(m)) return { type: "disabled" };
+  return null;
+}
+
+/**
+ * The request's parameters with inference_geo set, and up-front thinking
+ * turned off where the model allows it (thinkingOff above) unless the caller
+ * chose a thinking setting itself. Every request goes through here. The
+ * installed SDK predates both fields and sends unknown fields through as
+ * they are. Typed as the SDK's own parameters so the request is still
+ * checked.
  */
 export function inUs(params: Anthropic.MessageCreateParamsNonStreaming): Anthropic.MessageCreateParamsNonStreaming {
-  return { ...params, inference_geo: INFERENCE_GEO } as Anthropic.MessageCreateParamsNonStreaming;
+  const off = "thinking" in params ? null : thinkingOff(params.model);
+  return { ...params, ...(off ? { thinking: off } : {}), inference_geo: INFERENCE_GEO } as Anthropic.MessageCreateParamsNonStreaming;
 }
 
 /**
