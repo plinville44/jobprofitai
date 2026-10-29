@@ -21,6 +21,20 @@ const snap = (o: Partial<BriefOpportunitySnapshot> = {}): BriefOpportunitySnapsh
 });
 
 describe("weekly brief headline", () => {
+  it("doesn't call a cost estimate above the contract new risk on the first brief that counts it", () => {
+    // MX04 on the test company, Oct 29, 2026: $20,000 short of target from a
+    // $60,000 estimate on a $50,000 contract, which snapshots stored before
+    // that day didn't count.
+    const now = snap({ openJobRisk: 23_000, openJobsAtRisk: 2, openRiskByJob: { mx04: 20_000, b: 3_000 }, openRiskVersion: 2, aboveContractByJob: { mx04: 20_000 } });
+    const older = { opportunities: { openRiskByJob: { b: 1_000 } } };
+    const h = computeBriefHeadline(now, older, "Acme");
+    expect(h.newRisk).toBe(2_000);
+    expect(h.subject).toBe("Acme: $2,000 of new margin risk since your last brief");
+    // From then on it's compared like any other risk.
+    expect(computeBriefHeadline(now, { opportunities: { openRiskByJob: { b: 3_000 }, openRiskVersion: 2 } }, "Acme").newRisk).toBe(20_000);
+    expect(computeBriefHeadline(now, { opportunities: { openRiskByJob: { mx04: 20_000, b: 3_000 }, openRiskVersion: 2 } }, "Acme").newRisk).toBe(0);
+  });
+
   it("leads with risk that's new or has grown since the last brief", () => {
     const now = snap({ openJobRisk: 9_000, openJobsAtRisk: 2, openRiskByJob: { a: 6_000, b: 3_000 } });
     const prior = { opportunities: { openRiskByJob: { a: 4_000, b: 3_500 } } };

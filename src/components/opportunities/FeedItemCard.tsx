@@ -8,6 +8,7 @@ const KIND_LABEL: Record<FeedItem["kind"], string> = {
   estimate_below_target: "Estimate",
   open_job_forecast: "Open job",
   open_job_over_estimate: "Open job",
+  open_job_estimate_above_contract: "Open job",
   underbilled: "Billing",
   job_type_pricing: "Pricing",
   category_pricing: "Pricing",

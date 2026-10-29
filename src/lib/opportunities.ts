@@ -365,6 +365,7 @@ export type FeedItemKind =
   | "estimate_below_target"
   | "open_job_forecast"
   | "open_job_over_estimate"
+  | "open_job_estimate_above_contract"
   | "underbilled"
   | "job_type_pricing"
   | "category_pricing"
@@ -917,6 +918,7 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
     const billingMeasured = f.wip != null && f.estimatedRevenue != null && wipCountsInTotals(f, now);
     if (billingMeasured) billingChecked++;
     let forecastFlagged = false;
+    let overEstimateFlagged = false;
     if (
       target != null &&
       firmForecast &&
@@ -966,6 +968,7 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
     ) {
       openJobRisk += f.varianceVsEstimate;
       openAtRisk.add(f.jobId);
+      overEstimateFlagged = true;
       items.push({
         id: `open_job_over_estimate:${f.jobId}`,
         kind: "open_job_over_estimate",
@@ -980,6 +983,60 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
         cause: null,
         action: "Find the extra before the job closes: work outside the contract is a change order; a cost on the wrong job is a fix in QuickBooks.",
         method: "Cost to date minus the estimated cost.",
+        jobIds: [f.jobId],
+        href: `/dashboard/jobs/${f.jobId}`,
+        breakdown: null,
+        trackable: null,
+      });
+    }
+    // A cost estimate above the contract is a loss on the job's own figures,
+    // with no forecast needed. On the test company, MX04 ($60,000 estimate,
+    // $50,000 contract) was in neither the brief's headline nor Act now
+    // while its forecast was held back for 38 days with nothing entered
+    // (Oct 29, 2026). Against a target, the figure is what the forecast item
+    // would show: the target margin times the contract, plus the loss. When
+    // the job is also past its estimate, the item above has the cost past
+    // the estimate and this one the rest, so nothing is counted twice; past
+    // it by less than that item needs, the cost so far is the floor.
+    // Not when more is billed than the contract on file: the forecast reads
+    // the contract as what's billed then, and so would a customer. Without a
+    // target there is no forecast item, so a firm forecast doesn't stop this
+    // one, and a forecast going stale isn't "new margin risk".
+    if (
+      !forecastFlagged &&
+      !(firmForecast && target != null) &&
+      hasOwnEstimate &&
+      f.estimatedCost != null &&
+      f.estimatedRevenue != null &&
+      f.estimatedRevenue > 0 &&
+      f.revenue <= f.estimatedRevenue &&
+      f.estimatedCost - f.estimatedRevenue >= 1
+    ) {
+      const contract = f.estimatedRevenue;
+      const pastEstimate = !overEstimateFlagged && f.costs > f.estimatedCost;
+      const loss = (pastEstimate ? f.costs : f.estimatedCost) - contract;
+      const impact = contract * (target ?? 0) + loss;
+      const againstTarget = target != null ? `, a ${pct(-loss / contract)} margin against your ${fmtTarget(target)} target` : "";
+      openJobRisk += impact;
+      openAtRisk.add(f.jobId);
+      items.push({
+        id: `open_job_estimate_above_contract:${f.jobId}`,
+        kind: "open_job_estimate_above_contract",
+        section: "act_now",
+        title: `${f.jobName}'s cost estimate is ${money(f.estimatedCost - contract)} above its contract`,
+        impact,
+        impactLabel: target != null ? "short of target on this job" : pastEstimate ? "lost at least, on cost so far" : "lost if costs match the estimate",
+        impactKind: "profit",
+        confidence: "medium",
+        confidenceReason: "From the cost estimate and contract value on file. If either is out of date, so is this.",
+        finding: pastEstimate
+          ? `${money(f.costs)} already spent against a ${money(f.estimatedCost)} cost estimate on a ${money(contract)} contract: the job loses at least ${money(loss)}${againstTarget}.`
+          : `A ${money(f.estimatedCost)} cost estimate on a ${money(contract)} contract: if costs come in at the estimate, the job loses ${money(loss)}${againstTarget}.`,
+        cause: null,
+        action:
+          "Check the cost estimate and the contract value on the job page. If both are right, write up any work outside the contract as a change order before it's done, and look for cost not yet spent that can come out.",
+        method:
+          "Cost estimate (or the cost so far, once past it) minus contract value; against your target, the target margin times the contract value as well. No forecast is used: these are the job's own figures.",
         jobIds: [f.jobId],
         href: `/dashboard/jobs/${f.jobId}`,
         breakdown: null,
@@ -1143,6 +1200,7 @@ export function computeOpportunityFeed(input: FeedInput): OpportunityFeed {
     estimate_below_target: 0,
     open_job_forecast: 1,
     open_job_over_estimate: 1,
+    open_job_estimate_above_contract: 1,
     underbilled: 2,
   };
   deduped.sort(

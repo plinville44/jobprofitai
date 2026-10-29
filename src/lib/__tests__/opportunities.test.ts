@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { ForecastResult, JobFinancials } from "../profitability";
+import { snapshotFromFeed } from "../briefHeadline";
 import {
   fmtTarget,
   categoryResults,
@@ -316,6 +317,81 @@ describe("open jobs and cash", () => {
       [fine.jobId, { available: true, forecastMarginPct: -2, forecastCostAtCompletion: 300_000, forecastProfit: -200_000, confidence: "low", progressSource: "billing", contractValue: 100_000 }],
     ]);
     expect(feed([fine], { forecasts: weak }).items.some((i) => i.kind === "open_job_forecast")).toBe(false);
+  });
+
+  // The test company's MX04 on Oct 29, 2026: a $60,000 cost estimate on a
+  // $50,000 contract, its forecast held back after 38 days with nothing
+  // entered, and in neither the brief's headline nor Act now.
+  const mx04 = (p: Partial<JobFinancials> = {}) =>
+    job({ jobName: "MX04 Expected Loss", status: "open", revenue: 25_000, costs: 30_000, estimatedRevenue: 50_000, estimatedCost: 60_000, targetMarginPct: 20, lastFinancialActivity: daysAgo(38), ...p });
+
+  it("puts a job whose cost estimate is above its contract in Act now, with no forecast needed", () => {
+    const j = mx04();
+    const out = feed([j]);
+    const item = out.items.find((i) => i.kind === "open_job_estimate_above_contract")!;
+    expect(item).toMatchObject({
+      section: "act_now",
+      title: "MX04 Expected Loss's cost estimate is $10,000 above its contract",
+      impact: 20_000,
+      impactLabel: "short of target on this job",
+      impactKind: "profit",
+      finding: "A $60,000 cost estimate on a $50,000 contract: if costs come in at the estimate, the job loses $10,000, a -20.0% margin against your 20% target.",
+      jobIds: [j.jobId],
+      href: `/dashboard/jobs/${j.jobId}`,
+    });
+    // What the forecast item would show: the 20% target on $50,000, plus the $10,000 loss.
+    expect(out.summary.openJobRisk).toBe(20_000);
+    expect(out.summary.openJobsAtRisk).toBe(1);
+    // In the brief's headline, and in what next week compares against.
+    expect(snapshotFromFeed(out).openRiskByJob).toEqual({ [j.jobId]: 20_000 });
+  });
+
+  it("gives the loss alone with no target, and leaves the job to a firm forecast when there is one", () => {
+    const noTarget = feed([mx04({ targetMarginPct: null })]).items.find((i) => i.kind === "open_job_estimate_above_contract")!;
+    expect(noTarget).toMatchObject({ impact: 10_000, impactLabel: "lost if costs match the estimate" });
+    expect(noTarget.finding).toBe("A $60,000 cost estimate on a $50,000 contract: if costs come in at the estimate, the job loses $10,000.");
+    const j = mx04({ lastFinancialActivity: daysAgo(5) });
+    const forecasts = new Map<string, ForecastResult>([
+      [j.jobId, { available: true, forecastMarginPct: -0.2, forecastCostAtCompletion: 60_000, forecastProfit: -10_000, confidence: "medium", method: "m", contractValue: 50_000 }],
+    ]);
+    const out = feed([j], { forecasts });
+    expect(out.items.map((i) => i.kind)).toEqual(["open_job_forecast"]);
+    expect(out.summary.openJobRisk).toBeCloseTo(20_000);
+  });
+
+  it("counts nothing twice on a job that is also past its estimate, and skips target-filled estimates and idle jobs", () => {
+    const past = mx04({ costs: 66_000, varianceVsEstimate: 6_000, varianceVsEstimatePct: 0.1 + 1e-9 });
+    const out = feed([past]);
+    expect(out.items.map((i) => [i.kind, i.impact])).toEqual([
+      ["open_job_estimate_above_contract", 20_000],
+      ["open_job_over_estimate", 6_000],
+    ]);
+    // The 20% target on $50,000, plus $66,000 spent on a $50,000 contract.
+    expect(out.summary.openJobRisk).toBe(26_000);
+    expect(out.summary.openJobsAtRisk).toBe(1);
+    const filled = mx04();
+    expect(feed([filled], { targetFilledEstimates: new Set([filled.jobId]) }).items.some((i) => i.kind === "open_job_estimate_above_contract")).toBe(false);
+    expect(feed([mx04({ lastFinancialActivity: daysAgo(200) })]).items).toEqual([]);
+    expect(feed([mx04({ estimatedCost: 45_000 })]).items.some((i) => i.kind === "open_job_estimate_above_contract")).toBe(false);
+    expect(feed([mx04({ status: "closed" })]).items.some((i) => i.kind === "open_job_estimate_above_contract")).toBe(false);
+  });
+
+  // From the review of Oct 29, 2026.
+  it("leaves out a job billed past its contract, floors the loss at cost so far, and comes in without a target", () => {
+    expect(feed([mx04({ estimatedCost: 55_000, revenue: 60_000, costs: 40_000 })]).items.some((i) => i.kind === "open_job_estimate_above_contract")).toBe(false);
+    // 5% past its estimate: too little for the over-estimate item, so the cost so far is the floor.
+    const out = feed([mx04({ costs: 63_000, varianceVsEstimate: 3_000, varianceVsEstimatePct: 0.05 })]);
+    expect(out.items.map((i) => [i.kind, i.impact])).toEqual([["open_job_estimate_above_contract", 23_000]]);
+    expect(out.items[0].finding).toBe(
+      "$63,000 already spent against a $60,000 cost estimate on a $50,000 contract: the job loses at least $13,000, a -26.0% margin against your 20% target."
+    );
+    // No target, so no forecast item: a firm forecast doesn't stop this one, and its going stale changes nothing.
+    const j = mx04({ targetMarginPct: null, lastFinancialActivity: daysAgo(5) });
+    const forecasts = new Map<string, ForecastResult>([
+      [j.jobId, { available: true, forecastMarginPct: -0.2, forecastCostAtCompletion: 60_000, forecastProfit: -10_000, confidence: "medium", method: "m", contractValue: 50_000 }],
+    ]);
+    expect(feed([j], { forecasts }).summary.openJobRisk).toBe(10_000);
+    expect(feed([j]).summary.openJobRisk).toBe(10_000);
   });
 
   it("keeps unbilled work out of profit figures", () => {

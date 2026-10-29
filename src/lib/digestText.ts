@@ -4,6 +4,8 @@
 // The prompt asks for all of this. This makes it true whether or not the
 // model listened, because the text goes straight into a customer's inbox.
 
+import { formatCurrency } from "./format";
+
 /**
  * - Drops a leading "Subject:" line. Asked for a "headline take", the model
  *   sometimes writes itself an email subject, which then arrived as the
@@ -87,6 +89,12 @@ export interface SummaryJobFacts {
   estimateSetFromTargetMargin?: boolean;
   /** The job's cost estimate, when the brief has it (estimate_said_missing). */
   estimatedCost?: number | null;
+  /**
+   * On an open job whose cost estimate is above its contract: what it loses
+   * if costs come in at the estimate. A loss said of it is true, with or
+   * without a forecast; a better finish isn't.
+   */
+  lossIfCostsMatchEstimate?: number;
 }
 
 export interface SummaryFacts {
@@ -192,6 +200,36 @@ const NO_ESTIMATE_WORDS = new RegExp(
   ].join("|"),
   "gi"
 );
+
+/** An open job that loses money if its costs come in at its estimate (SummaryJobFacts.lossIfCostsMatchEstimate). */
+const lossIfEstimateHolds = (j: SummaryJobFacts) => j.status === "open" && (j.lossIfCostsMatchEstimate ?? 0) > 0;
+
+/** A phrase a rule found: its words, whether a negation sits just before it, and the rest of its clause either side. */
+interface Hit {
+  text: string;
+  negated: boolean;
+  before: string;
+  after: string;
+}
+/** Where a clause ends, for Hit.before and Hit.after. A comma inside a number isn't one. */
+const HIT_CLAUSE = /(?<!\d),|,(?!\d)|[;:()]|\.(?!\d)/;
+/** Words that make a loss less than said: "unlikely to lose money", "little chance it will lose money". */
+const LOSS_DOUBTED = /\b(?:unlikely|hardly|little chance|no chance|nothing)\b/i;
+/**
+ * A loss said of a job whose cost estimate is above its contract, as it is:
+ * in the future or the conditional ("will lose money", "set to lose
+ * $10,000", "at a loss"), not denied or doubted, never "already lost money",
+ * "is losing money" or "unprofitable" (only a finished job has lost money),
+ * and when an amount follows, the amount it loses at the estimate (review,
+ * Oct 29).
+ */
+function lossAsItIs(job: SummaryJobFacts, hit: Hit): boolean {
+  if (!lossIfEstimateHolds(job) || hit.negated) return false;
+  if (/n['\u2019]t\b|\bnot\b/i.test(hit.text) || LOSS_DOUBTED.test(hit.text) || LOSS_DOUBTED.test(hit.before)) return false;
+  if (!/\blose\b|\bloss\b|\bin the red\b|money-?los/i.test(hit.text) || /\b(?:lost|losing|unprofitable)\b/i.test(hit.text)) return false;
+  const amount = /^\s*(?:about\s+|around\s+|roughly\s+)?\$([\d,]+(?:\.\d+)?)/.exec(hit.after);
+  return !amount || Math.abs(Number(amount[1].replace(/,/g, "")) - job.lossIfCostsMatchEstimate!) <= 1;
+}
 
 /** A cost estimate the contractor has, priced rather than worked out from the target margin. */
 const hasPricedEstimate = (j: SummaryJobFacts) => (j.estimatedCost ?? 0) > 0 && !j.estimateSetFromTargetMargin;
@@ -698,16 +736,23 @@ export function findSummaryProblems(text: string, facts: SummaryFacts): SummaryP
       // so a "not" before it doesn't make it right.
       const scan = (
         re: RegExp,
-        check: (job: SummaryJobFacts) => Omit<SummaryProblem, "sentence" | "jobName"> | null,
+        check: (job: SummaryJobFacts, hit: Hit) => Omit<SummaryProblem, "sentence" | "jobName"> | null,
         negationCounts = false
       ) => {
         re.lastIndex = 0;
         for (let m = re.exec(plain); m; m = re.exec(plain)) {
-          if (negationCounts ? doubtedBefore(plain, m.index) : negatedBefore(plain, m.index)) continue;
+          const negated = negatedBefore(plain, m.index);
+          if (negationCounts ? doubtedBefore(plain, m.index) : negated) continue;
           const tie = phraseJobs(plain, clauses, s.names, { start: m.index, end: m.index + m[0].length }, paragraphSubject);
           if (!Array.isArray(tie)) continue;
           for (const job of tie) {
-            const problem = check(job);
+            const end = m.index + m[0].length;
+            const problem = check(job, {
+              text: m[0],
+              negated,
+              before: plain.slice(0, m.index).split(HIT_CLAUSE).pop() ?? "",
+              after: plain.slice(end).split(HIT_CLAUSE)[0] ?? "",
+            });
             if (problem) {
               add({ ...problem, sentence: s.text, jobName: job.jobName });
               break;
@@ -721,12 +766,16 @@ export function findSummaryProblems(text: string, facts: SummaryFacts): SummaryP
         return {
           rule: "forecast_without_forecast",
           reason: isOpen(job)
-            ? `${job.jobName} has no forecastMarginPct, so nothing about it may be called a forecast or what it is "on track" for. Give its spend against the estimate and what has been billed.`
+            ? lossIfEstimateHolds(job)
+              ? `${job.jobName} has no forecastMarginPct, so don't call anything about it a forecast. Say instead that its cost estimate is above its contract, so it loses ${formatCurrency(job.lossIfCostsMatchEstimate!)} if costs come in at the estimate.`
+              : `${job.jobName} has no forecastMarginPct, so nothing about it may be called a forecast or what it is "on track" for. Give its spend against the estimate and what has been billed.`
             : `${job.jobName} is finished, so it has no forecast. Give how it closed.`,
         };
       });
-      scan(LOSS_WORDS, (job) => {
-        const loss = isOpen(job) ? job.forecastMarginPct != null && job.forecastMarginPct < 0 : job.marginPct != null && job.marginPct < 0;
+      scan(LOSS_WORDS, (job, hit) => {
+        const loss = isOpen(job)
+          ? (job.forecastMarginPct != null && job.forecastMarginPct < 0) || lossAsItIs(job, hit)
+          : job.marginPct != null && job.marginPct < 0;
         if (loss) return null;
         return {
           rule: "loss_without_loss",
@@ -756,15 +805,17 @@ export function findSummaryProblems(text: string, facts: SummaryFacts): SummaryP
       // needs no third reason for the same words.
       const outcomeCovered = (job: SummaryJobFacts) =>
         problems.some((p) => p.sentence === s.text && p.jobName === job.jobName && (p.rule === "forecast_without_forecast" || p.rule === "loss_without_loss"));
-      const outcomeCheck = (job: SummaryJobFacts) =>
-        isOpen(job) && job.forecastMarginPct == null && !outcomeCovered(job)
-          ? {
-              rule: "outcome_without_forecast" as const,
-              reason: `${job.jobName} is open and has no forecastMarginPct, so say nothing about how it will finish, either way: not that it is heading for a loss or a profit, and not that it isn't. Give its spend against the estimate and what has been billed.`,
-            }
-          : null;
-      scan(OUTCOME_WORDS, outcomeCheck, true);
-      scan(OUTCOME_MARGIN_WORDS, outcomeCheck);
+      const outcomeProblem = (job: SummaryJobFacts) => ({
+        rule: "outcome_without_forecast" as const,
+        reason: lossIfEstimateHolds(job)
+          ? `${job.jobName} has no forecastMarginPct, but its cost estimate is above its contract: say it loses ${formatCurrency(job.lossIfCostsMatchEstimate!)} if costs come in at the estimate, and never that it will do better than that.`
+          : `${job.jobName} is open and has no forecastMarginPct, so say nothing about how it will finish, either way: not that it is heading for a loss or a profit, and not that it isn't. Give its spend against the estimate and what has been billed.`,
+      });
+      const noForecast = (job: SummaryJobFacts) => isOpen(job) && job.forecastMarginPct == null && !outcomeCovered(job);
+      // A loss said as it is of a job whose estimate is above its contract
+      // is true without a forecast (lossAsItIs).
+      scan(OUTCOME_WORDS, (job, hit) => (noForecast(job) && !lossAsItIs(job, hit) ? outcomeProblem(job) : null), true);
+      scan(OUTCOME_MARGIN_WORDS, (job) => (noForecast(job) ? outcomeProblem(job) : null));
 
       const range = rangeOfJobs(s, facts.jobs);
       if (range) {
