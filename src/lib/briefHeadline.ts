@@ -38,6 +38,14 @@ export interface BriefOpportunitySnapshot {
   /** Risk on each open job, to find what's new next week. */
   openRiskByJob: Record<string, number>;
   /**
+   * OPEN_RISK_VERSION when this snapshot was stored. Absent on snapshots
+   * from before Oct 29, 2026, whose openRiskByJob didn't count an estimate
+   * above the contract (aboveContractByJob).
+   */
+  openRiskVersion?: number;
+  /** The part of openRiskByJob from a cost estimate above the contract (open_job_estimate_above_contract). */
+  aboveContractByJob?: Record<string, number>;
+  /**
    * The jobs behind unbilledWork, biggest first: the feed's own list, so
    * the brief's "not yet billed" figure always comes with the jobs in it.
    * Optional because older snapshots don't have it.
@@ -47,11 +55,22 @@ export interface BriefOpportunitySnapshot {
   top: { title: string; impact: number | null; impactLabel: string; impactKind: "profit" | "cash"; href: string }[];
 }
 
+/** 2 from Oct 29, 2026: openRiskByJob counts a cost estimate above the contract. */
+export const OPEN_RISK_VERSION = 2;
+
 export function snapshotFromFeed(feed: OpportunityFeed): BriefOpportunitySnapshot {
   const openRiskByJob: Record<string, number> = {};
+  const aboveContractByJob: Record<string, number> = {};
   const unbilledJobs: { jobId: string; amount: number }[] = [];
   for (const i of feed.items) {
-    if ((i.kind === "open_job_forecast" || i.kind === "open_job_over_estimate") && i.jobIds[0] && i.impact != null) {
+    if (i.kind === "open_job_estimate_above_contract" && i.jobIds[0] && i.impact != null) {
+      aboveContractByJob[i.jobIds[0]] = (aboveContractByJob[i.jobIds[0]] ?? 0) + i.impact;
+    }
+    if (
+      (i.kind === "open_job_forecast" || i.kind === "open_job_over_estimate" || i.kind === "open_job_estimate_above_contract") &&
+      i.jobIds[0] &&
+      i.impact != null
+    ) {
       openRiskByJob[i.jobIds[0]] = (openRiskByJob[i.jobIds[0]] ?? 0) + i.impact;
     }
     if (i.kind === "underbilled" && i.jobIds[0] && i.impact != null) {
@@ -84,6 +103,8 @@ export function snapshotFromFeed(feed: OpportunityFeed): BriefOpportunitySnapsho
     openJobsChecked: s.openJobsChecked,
     billingChecked: s.billingChecked,
     openRiskByJob,
+    openRiskVersion: OPEN_RISK_VERSION,
+    aboveContractByJob,
     unbilledJobs,
     top,
   };
@@ -98,6 +119,21 @@ export interface BriefHeadline {
   headline: string;
   /** A subject line with the money in it, or null to keep the usual one. */
   subject: string | null;
+}
+
+/**
+ * Risk on each open job as this week's snapshot has it, counted the way the
+ * prior snapshot counted it. A snapshot stored before Oct 29, 2026 didn't
+ * count a cost estimate above the contract, so on the first brief after
+ * that change every such job would have read as "new margin risk" with
+ * nothing changed on it (review, Oct 29).
+ */
+function riskComparableWith(snapshot: BriefOpportunitySnapshot, priorMetrics: unknown): Record<string, number> {
+  const v = (priorMetrics as { opportunities?: { openRiskVersion?: unknown } } | null)?.opportunities?.openRiskVersion;
+  if (v === OPEN_RISK_VERSION || !snapshot.aboveContractByJob) return snapshot.openRiskByJob;
+  const out: Record<string, number> = {};
+  for (const [jobId, risk] of Object.entries(snapshot.openRiskByJob)) out[jobId] = risk - (snapshot.aboveContractByJob[jobId] ?? 0);
+  return out;
 }
 
 function priorRiskByJob(priorMetrics: unknown): Record<string, number> | null {
@@ -144,7 +180,7 @@ export function computeBriefHeadline(
   let newRisk: number | null = null;
   if (prior) {
     newRisk = 0;
-    for (const [jobId, risk] of Object.entries(snapshot.openRiskByJob)) newRisk += Math.max(0, risk - (prior[jobId] ?? 0));
+    for (const [jobId, risk] of Object.entries(riskComparableWith(snapshot, priorMetrics))) newRisk += Math.max(0, risk - (prior[jobId] ?? 0));
     newRisk = round(newRisk);
   }
 

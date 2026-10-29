@@ -314,6 +314,58 @@ describe("the preview of Oct 29: how a job will finish, ranges of jobs, and who 
     }
   });
 
+  it("allows the loss on a job whose cost estimate is above its contract, and nothing better", () => {
+    const lossy: SummaryFacts = {
+      jobs: OCT_29_JOBS.map((j) => (j.jobName === "MX04 Expected Loss" ? { ...j, lossIfCostsMatchEstimate: 10_000 } : j)),
+      comparison: "skipped",
+    };
+    for (const text of [
+      "MX04 Expected Loss's $60,000 cost estimate is $10,000 above its $50,000 contract, so it loses $10,000 if costs come in at the estimate.",
+      "MX04 Expected Loss will lose money if costs come in at the estimate.",
+      "MX04 Expected Loss is set to lose $10,000 if its costs come in at the estimate.",
+    ]) {
+      expect({ text, problems: brief(lossy, text) }).toEqual({ text, problems: [] });
+    }
+    for (const text of ["MX04 Expected Loss won't lose money.", "MX04 Expected Loss will still finish profitable.", "MX04 Expected Loss is not a projected loss."]) {
+      const found = findSummaryProblems(text, lossy);
+      expect({ text, rules: found.map((p) => p.rule) }).toEqual({ text, rules: ["outcome_without_forecast"] });
+      expect(found[0].reason).toBe(
+        "MX04 Expected Loss has no forecastMarginPct, but its cost estimate is above its contract: say it loses $10,000 if costs come in at the estimate, and never that it will do better than that."
+      );
+    }
+    const called = findSummaryProblems("MX04 Expected Loss is forecast to lose $10,000.", lossy);
+    expect(called.map((p) => [p.rule, p.reason])).toEqual([
+      [
+        "forecast_without_forecast",
+        "MX04 Expected Loss has no forecastMarginPct, so don't call anything about it a forecast. Say instead that its cost estimate is above its contract, so it loses $10,000 if costs come in at the estimate.",
+      ],
+    ]);
+  });
+
+  it("takes the loss only as it is: no better finish, no doubt, no loss already made, and the right amount", () => {
+    const lossy: SummaryFacts = {
+      jobs: OCT_29_JOBS.map((j) => (j.jobName === "MX04 Expected Loss" ? { ...j, lossIfCostsMatchEstimate: 10_000 } : j)),
+      comparison: "skipped",
+    };
+    expect(brief(lossy, "MX04 Expected Loss will lose $10,000 if costs come in at the estimate.")).toEqual([]);
+    for (const text of [
+      "MX04 Expected Loss will still make money.",
+      "MX04 Expected Loss will still finish with a healthy margin.",
+      "MX04 Expected Loss will come in at a 15% margin.",
+      "MX04 Expected Loss is unlikely to lose money.",
+      "There's little chance MX04 Expected Loss will lose money.",
+      "MX04 Expected Loss has already lost money.",
+      "MX04 Expected Loss is losing money.",
+      "MX04 Expected Loss is unprofitable.",
+      "MX04 Expected Loss will lose $25,000.",
+    ]) {
+      const rules = brief(lossy, text).map((p) => String(p[0]));
+      expect({ text, caught: rules.some((r) => ["outcome_without_forecast", "loss_without_loss"].includes(r)) }).toEqual({ text, caught: true });
+    }
+    // A loss said of a job without it is still caught, even beside one with it.
+    expect(brief(lossy, "MX04 Expected Loss and MX02 Past Estimate will both lose money.").map((p) => [p[0], p[1]])).toEqual([["loss_without_loss", "MX02 Past Estimate"]]);
+  });
+
   it("takes out just those three sentences when the rewrite doesn't fix them", () => {
     const left = withoutSentences(
       OCT_29,
@@ -452,6 +504,29 @@ describe("the brief's summary, checked before it's sent", () => {
   beforeEach(() => {
     ai.replies = [];
     ai.calls = [];
+  });
+
+  it("tells the model what an open job loses when its cost estimate is above its contract", async () => {
+    const lossy = { ...job("MX04 Expected Loss", "open", -0.2, null), estimatedRevenue: 50_000, estimatedCost: 60_000, actualCost: 30_000, actualRevenue: 25_000 };
+    const filled = { ...job("MX02 Past Estimate", "open", -0.4167, null), estimatedRevenue: 20_000, estimatedCost: 30_000, actualRevenue: 10_000 };
+    // Billed past the contract on file: the forecast reads the contract as what's billed, so this does too.
+    const billedPast = { ...job("MX03 Billed Past Contract", "open", 0.3, null), jobId: "MX03", estimatedRevenue: 50_000, estimatedCost: 55_000, actualRevenue: 60_000 };
+    ai.replies = [GOOD];
+    await generateWeeklyDigest(
+      { ...metrics, briefJobIds: [...metrics.briefJobIds, "MX03"], jobs: [lossy, filled, billedPast] } as any,
+      "Acme",
+      skippedWeek,
+      Date.now() + 200_000,
+      new Set(["MX02 Past Estimate"])
+    );
+    const sent = JSON.parse(ai.calls[0].messages[0].content.slice(ai.calls[0].messages[0].content.indexOf("{")));
+    expect(sent.jobs.map((j: any) => [j.jobName, j.lossIfCostsMatchEstimate])).toEqual([
+      ["MX04 Expected Loss", 10_000],
+      // Its estimate was worked out from the target margin, so it isn't the contractor's.
+      ["MX02 Past Estimate", undefined],
+      ["MX03 Billed Past Contract", undefined],
+    ]);
+    expect(ai.calls[0].system).toContain('When an open job has "lossIfCostsMatchEstimate"');
   });
 
   it("sends a summary that breaks no rule as written, with one request", async () => {
