@@ -366,6 +366,15 @@ describe("the preview of Oct 29: how a job will finish, ranges of jobs, and who 
     expect(brief(lossy, "MX04 Expected Loss and MX02 Past Estimate will both lose money.").map((p) => [p[0], p[1]])).toEqual([["loss_without_loss", "MX02 Past Estimate"]]);
   });
 
+  it("catches the comparison note repeated in the second Oct 29 preview, and keeps its other sentences", () => {
+    const last = "Worth checking: no comparison to last week is available since the reporting basis just changed, so treat this brief as your new starting point.";
+    expect(brief(oct29, last)).toEqual([["comparison_skipped", null, last.slice(0, 40)]]);
+    expect(brief(oct29, "There's no comparison with the previous brief this week.").map((p) => p[0])).toEqual(["comparison_skipped"]);
+    // Only in a week nothing was compared.
+    expect(brief({ ...oct29, comparison: "changes" }, last)).toEqual([]);
+    expect(brief(oct29, "MX04 Expected Loss's $60,000 cost estimate is $10,000 above its $50,000 contract value.")).toEqual([]);
+  });
+
   it("takes out just those three sentences when the rewrite doesn't fix them", () => {
     const left = withoutSentences(
       OCT_29,

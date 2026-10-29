@@ -145,8 +145,11 @@ const OVERRUN_WORDS =
   /\b(over (?:its |the |their )?(?:\$[\d,.]+ )?(?:estimate|budget)|overr(?:an|un|uns|unning)|ran over|went over|gone over|exceeded (?:its |the |their )?(?:estimate|budget))\b/gi;
 // Not "comparison" or "baseline" on their own: "For comparison, ..." and a
 // job such as "Baseline Rd Kitchen" say nothing about this week's comparison.
+// "No comparison to last week is available since the reporting basis just
+// changed" closed the test company's preview of Oct 29, 2026, repeating the
+// section above it.
 const COMPARISON_WORDS =
-  /\b(nothing (?:has )?changed|no changes|nothing new|(?:can['\u2019]t|cannot|couldn['\u2019]t|can not) be compared|(?:wasn['\u2019]t|weren['\u2019]t|isn['\u2019]t|aren['\u2019]t|not) compared|compared (?:to|with|against) last week)\b/i;
+  /\b(nothing (?:has )?changed|no changes|nothing new|(?:can['\u2019]t|cannot|couldn['\u2019]t|can not) be compared|(?:wasn['\u2019]t|weren['\u2019]t|isn['\u2019]t|aren['\u2019]t|not) compared|compared (?:to|with|against) last week|no comparison|comparisons? (?:to|with|against) (?:last week|the (?:last|previous|prior) (?:week|brief)))\b/i;
 const NOTHING_CHANGED_WORDS = /\b(nothing (?:has )?changed|no changes|nothing new)\b/i;
 
 /**
