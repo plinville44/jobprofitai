@@ -85,6 +85,8 @@ export interface SummaryJobFacts {
   /** Only when the forecast is firm enough to act on (see computeConnectionMetrics). */
   forecastMarginPct?: number | null;
   estimateSetFromTargetMargin?: boolean;
+  /** The job's cost estimate, when the brief has it (estimate_said_missing). */
+  estimatedCost?: number | null;
 }
 
 export interface SummaryFacts {
@@ -106,7 +108,11 @@ export type SummaryRule =
   | "target_estimate_overrun"
   | "comparison_skipped"
   | "nothing_changed"
-  | "contact_not_in_data";
+  | "contact_not_in_data"
+  | "outcome_without_forecast"
+  | "range_of_jobs"
+  | "owner_in_third_person"
+  | "estimate_said_missing";
 
 export interface SummaryProblem {
   rule: SummaryRule;
@@ -116,6 +122,9 @@ export interface SummaryProblem {
   /** What's wrong, in words the model is given when asked to rewrite. */
   reason: string;
 }
+
+/** The source of NEGATING_LEAD (below), shared with OUTCOME_DOUBT. */
+const NEGATING_LEAD_SRC = String.raw`\bno (?:sign|indication|evidence)s? (?:yet |so far )?that\b|(?:n['\u2019]t|\bnot) (?:yet )?far enough along to\b|(?<!\b(?:regardless|irrespective) of\s+|\bno (?:matter|longer)\s+)\bwhether\b`;
 
 /** A word that turns the phrase after it around: "no forecast", "didn't lose money". */
 const NEGATION = /\b(no|not|none|never|without|too early|cannot)\b|n['\u2019]t\b/i;
@@ -131,6 +140,61 @@ const OVERRUN_WORDS =
 const COMPARISON_WORDS =
   /\b(nothing (?:has )?changed|no changes|nothing new|(?:can['\u2019]t|cannot|couldn['\u2019]t|can not) be compared|(?:wasn['\u2019]t|weren['\u2019]t|isn['\u2019]t|aren['\u2019]t|not) compared|compared (?:to|with|against) last week)\b/i;
 const NOTHING_CHANGED_WORDS = /\b(nothing (?:has )?changed|no changes|nothing new)\b/i;
+
+/**
+ * How a job will finish, said either way: "a projected loss", "not a
+ * projected loss", "isn't heading for a loss", "won't lose money", "will
+ * still finish profitable". Only a firm forecast can say that, so on an open
+ * job without one these are wrong even when negated, unlike FORECAST_WORDS,
+ * where "no forecast" says only that there isn't one. The test company's
+ * preview of Oct 29, 2026 said MX04, whose cost estimate is $10,000 above
+ * its contract, was "not a projected loss". Present-tense "isn't losing
+ * money" isn't one of these: the prompt asks for it about an open job whose
+ * costs are ahead of its billing.
+ */
+const OUTCOME_WORDS = new RegExp(
+  [
+    String.raw`\b(?:projected|expected|forecast(?:ed)?|likely|eventual|final)\s+(?:loss(?:es)?|profits?)\b`,
+    String.raw`\b(?:heading|headed|on track|on course|on pace|tracking|trending|set|going|poised|projected|expected|forecast(?:ed)?|(?:un)?likely)\s+(?:for|to|toward|towards|into)\s+(?:(?:a|an|the|finish|end|close|come in|turn|make|be|with|at|in)\s+){0,3}(?:loss|lose|profit|profitable|profitably|red|black)\b`,
+    String.raw`(?:\b(?:will|won['\u2019]t|would|wouldn['\u2019]t|should(?:n['\u2019]t)?|could(?:n['\u2019]t)?|may|might|is going to|isn['\u2019]t going to|stands? to)|['\u2019]ll)\s+(?:(?:still|likely|probably|also|not|even|easily)\s+){0,2}(?:lose|make (?:a |any |some |good )?(?:profit|money)|(?:turn|show|post|book) (?:a )?(?:profit|loss)|break[- ]even|(?:end(?: up)?|finish|close|come in|land)\s+(?:(?:in|at|with|above|below)\s+(?:\S+\s+){0,3}?(?:loss|profit|margin|red|black|-?\d[\d.]*%)|profitabl[ey])|(?:be|stay|remain) (?:a |an )?(?:profitable|in the (?:red|black)|loss|money-?loser)|come out (?:ahead|behind))\b`,
+  ].join("|"),
+  "gi"
+);
+
+/** A projected or final margin said not to exist yet ("no forecast margin yet") is fine; one stated is a forecast. */
+const OUTCOME_MARGIN_WORDS = /\b(?:projected|expected|forecast(?:ed)?|likely|eventual|final)\s+margins?\b/gi;
+
+/** Doubt about how it will finish isn't a claim about it: "too early to say whether it will make a profit". */
+const OUTCOME_DOUBT = new RegExp(NEGATING_LEAD_SRC + String.raw`|\b(?:say|tell|know|sure|clear)\s+(?:yet\s+)?if\b`, "i");
+
+/** Words that join two job codes into a range: "MX05 through MX17", "MX05 to MX17", "MX05-MX17". */
+const RANGE_JOIN = /^\s*(?:through|thru|to|until|-|\u2013|\u2014)\s*$/i;
+
+/** The summary is written to the owner, so it never talks about them as someone else ("Give the owner the plain numbers"). */
+const OWNER_WORDS = /\bthe (?:business )?owner\b(?!['\u2019]s\b|\s+of\b)/i;
+
+/**
+ * A job said to have no estimate: "no estimate on file", "without an
+ * estimate", "doesn't have a cost estimate", "lacks an estimate". Not "no
+ * estimate problems" or "no estimate changes", not "had no estimate last
+ * week", and not "its missing estimate has now been entered". The preview of
+ * Oct 29, 2026 said "MX05 through MX17 have no estimates on file", and MX06
+ * has one (estimate_said_missing). Only checked against a job the same
+ * sentence names: a group ("the rest of the jobs") is left to the prompt,
+ * since telling which jobs it means takes more than a pattern.
+ */
+const NO_ESTIMATE_WORDS = new RegExp(
+  [
+    String.raw`(?<!\bhad\s)\b(?:no|without|missing)\s+(?:(?:a|an|any|cost)\s+)*(?:estimates?|estimated\s+costs?)\b(?!\s+(?:problems?|issues?|overruns?|gaps?|lines?|checks?|changes?|updates?|revisions?)\b|\s+(?:has|have|was|were)\s+(?:now\s+)?been\b)`,
+    String.raw`\bestimates?\s+(?:is|are)\s+missing\b|\bestimates?\s+(?:is|are)(?:n['\u2019]t|\s+not)\s+on file\b`,
+    String.raw`\b(?:has|have|do|does)(?:n['\u2019]t|\s+not)\s+(?:got\s+|have\s+)?(?:(?:a|an|any|cost)\s+)*estimates?\b`,
+    String.raw`\black(?:s|ing)?\s+(?:(?:a|an|any|cost)\s+)*estimates?\b`,
+  ].join("|"),
+  "gi"
+);
+
+/** A cost estimate the contractor has, priced rather than worked out from the target margin. */
+const hasPricedEstimate = (j: SummaryJobFacts) => (j.estimatedCost ?? 0) > 0 && !j.estimateSetFromTargetMargin;
 
 // Contact details. Nothing in the data the model is given is one, unless a
 // QuickBooks name has one in it.
@@ -474,8 +538,7 @@ const NEGATION_ALL = new RegExp(NEGATION.source, "gi");
  * ("The question is no longer whether X is losing money"), and see
  * DOUBT_UNDONE.
  */
-const NEGATING_LEAD =
-  /\bno (?:sign|indication|evidence)s? (?:yet |so far )?that\b|(?:n['\u2019]t|\bnot) (?:yet )?far enough along to\b|(?<!\b(?:regardless|irrespective) of\s+|\bno (?:matter|longer)\s+)\bwhether\b/i;
+const NEGATING_LEAD = new RegExp(NEGATING_LEAD_SRC, "i");
 /**
  * After the doubt, a phrase that makes the claim anyway: "no sign that X
  * will stop losing money", "isn't far enough along to stop losing money"
@@ -517,6 +580,17 @@ function negatedBefore(sentence: string, at: number): boolean {
   return false;
 }
 
+/**
+ * Whether the clause before position `at` puts what follows in doubt (OUTCOME_DOUBT):
+ * "too early to say whether it will make a profit" makes no claim. For the rule
+ * where a plain "not" doesn't excuse the claim (OUTCOME_WORDS).
+ */
+function doubtedBefore(sentence: string, at: number): boolean {
+  const before = sentence.slice(Math.max(0, at - 80), at).split(/(?<!\d),|,(?!\d)|[;:()]|\b(?:and|but|so|while)\b/i).pop() ?? "";
+  const lead = OUTCOME_DOUBT.exec(before);
+  return lead != null && !DOUBT_UNDONE.test(before.slice(lead.index));
+}
+
 /** Links, email addresses and phone numbers in a piece of text, written the same way for comparing. */
 function contactDetails(text: string): string[] {
   const found: string[] = [];
@@ -553,6 +627,41 @@ export function withoutUnknownContacts(text: string, input: string): string {
 
 const isOpen = (j: SummaryJobFacts) => j.status === "open";
 
+/** A job code's letters and number: "MX05" is "mx" and 5, "2024-118" is "2024-" and 118. */
+function codeParts(name: string): { prefix: string; num: number } | null {
+  const code = leadingCode(name.trim().replace(/\s+/g, " "));
+  const m = code ? /^(.*?)(\d+)$/.exec(code) : null;
+  return m ? { prefix: m[1].toLowerCase(), num: Number(m[2]) } : null;
+}
+
+/**
+ * A range of job codes in the sentence that takes in jobs it doesn't name:
+ * "MX05 through MX17" takes in MX06 to MX16. The preview of Oct 29, 2026
+ * said "MX05 through MX17 have no estimates on file", and MX06 has one.
+ * Null when the sentence has no such range.
+ */
+function rangeOfJobs(s: Sentence, jobs: SummaryJobFacts[]): { from: string; to: string; inside: SummaryJobFacts[] } | null {
+  for (let i = 1; i < s.names.length; i++) {
+    const a = s.names[i - 1];
+    const b = s.names[i];
+    if (!a.job || !b.job || !RANGE_JOIN.test(s.text.slice(a.end, b.start))) continue;
+    const pa = codeParts(a.job.jobName);
+    const pb = codeParts(b.job.jobName);
+    if (!pa || !pb || pa.prefix !== pb.prefix) continue;
+    // "from MX05 Overdue Invoice to MX07 Parent Match" is two jobs, not a range: "to" joins one only between bare codes.
+    const bare = (n: NameSpan) => leadingCode(n.job!.jobName.trim().replace(/\s+/g, " "))?.toLowerCase() === s.text.slice(n.start, n.end).toLowerCase();
+    if (/^\s*(?:to|until)\s*$/i.test(s.text.slice(a.end, b.start)) && !(bare(a) && bare(b))) continue;
+    const lo = Math.min(pa.num, pb.num);
+    const hi = Math.max(pa.num, pb.num);
+    const inside = jobs.filter((j) => {
+      const p = codeParts(j.jobName);
+      return p != null && p.prefix === pa.prefix && p.num > lo && p.num < hi;
+    });
+    if (inside.length) return { from: s.text.slice(a.start, a.end), to: s.text.slice(b.start, b.end), inside };
+  }
+  return null;
+}
+
 /**
  * The sentences in an AI-written summary that break the brief's rules, in
  * the cases that have actually gone wrong: a forecast for a job that has
@@ -560,7 +669,11 @@ const isOpen = (j: SummaryJobFacts) => j.status === "open";
  * job called under budget, an overrun on an estimate the contractor never
  * priced, talk of the week-over-week comparison when there wasn't one
  * ("Nothing changed since the last brief" in a week nothing was compared),
- * and a link, email address or phone number that isn't in the data.
+ * a link, email address or phone number that isn't in the data, and since
+ * the preview of Oct 29, 2026: how an open job without a forecast will
+ * finish, said either way; a range of jobs that takes in ones it doesn't
+ * name; "the owner" in a summary written to them; and "no estimate" said of
+ * a job that has one.
  *
  * Job names are found first, and the rules are read only outside them. A
  * phrase is tied to a job only when it's clear which (see phraseJobs); when
@@ -581,10 +694,16 @@ export function findSummaryProblems(text: string, facts: SummaryFacts): SummaryP
         found.add(p.rule);
         problems.push(p);
       };
-      const scan = (re: RegExp, check: (job: SummaryJobFacts) => Omit<SummaryProblem, "sentence" | "jobName"> | null) => {
+      // `negationCounts`: the claim is wrong said either way (OUTCOME_WORDS),
+      // so a "not" before it doesn't make it right.
+      const scan = (
+        re: RegExp,
+        check: (job: SummaryJobFacts) => Omit<SummaryProblem, "sentence" | "jobName"> | null,
+        negationCounts = false
+      ) => {
         re.lastIndex = 0;
         for (let m = re.exec(plain); m; m = re.exec(plain)) {
-          if (negatedBefore(plain, m.index)) continue;
+          if (negationCounts ? doubtedBefore(plain, m.index) : negatedBefore(plain, m.index)) continue;
           const tie = phraseJobs(plain, clauses, s.names, { start: m.index, end: m.index + m[0].length }, paragraphSubject);
           if (!Array.isArray(tie)) continue;
           for (const job of tie) {
@@ -630,6 +749,46 @@ export function findSummaryProblems(text: string, facts: SummaryFacts): SummaryP
               rule: "target_estimate_overrun",
               reason: `${job.jobName}'s estimate was worked out from the target margin, not priced, so never say it went over its estimate. Say it cost more than the target margin allows.`,
             }
+          : null
+      );
+
+      // A sentence already sent back for calling it a forecast or a loss
+      // needs no third reason for the same words.
+      const outcomeCovered = (job: SummaryJobFacts) =>
+        problems.some((p) => p.sentence === s.text && p.jobName === job.jobName && (p.rule === "forecast_without_forecast" || p.rule === "loss_without_loss"));
+      const outcomeCheck = (job: SummaryJobFacts) =>
+        isOpen(job) && job.forecastMarginPct == null && !outcomeCovered(job)
+          ? {
+              rule: "outcome_without_forecast" as const,
+              reason: `${job.jobName} is open and has no forecastMarginPct, so say nothing about how it will finish, either way: not that it is heading for a loss or a profit, and not that it isn't. Give its spend against the estimate and what has been billed.`,
+            }
+          : null;
+      scan(OUTCOME_WORDS, outcomeCheck, true);
+      scan(OUTCOME_MARGIN_WORDS, outcomeCheck);
+
+      const range = rangeOfJobs(s, facts.jobs);
+      if (range) {
+        const names = range.inside.map((j) => j.jobName);
+        const list = names.length > 3 ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more` : names.join(" and ");
+        add({
+          rule: "range_of_jobs",
+          sentence: s.text,
+          reason: `It describes jobs as a range (${range.from} to ${range.to}), which takes in ${list} as well, and what it says may not be true of them. Name each job you mean.`,
+        });
+      }
+
+      if (OWNER_WORDS.test(plain)) {
+        add({
+          rule: "owner_in_third_person",
+          sentence: s.text,
+          reason: 'The summary is written to the owner. Address them as "you" and never write "the owner".',
+        });
+      }
+
+      // "No estimate" said of a job the sentence names, when it has one.
+      scan(NO_ESTIMATE_WORDS, (job) =>
+        hasPricedEstimate(job) && s.names.some((n) => n.job === job)
+          ? { rule: "estimate_said_missing", reason: `${job.jobName} has a cost estimate, so don't say it has none.` }
           : null
       );
 
