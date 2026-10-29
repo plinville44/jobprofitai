@@ -70,7 +70,7 @@ import {
   summaryToReuse,
   withSummaryForRetry,
 } from "../digest";
-import { aiFailureKind } from "../ai";
+import { AI_MODEL, aiFailureKind, thinkingOff } from "../ai";
 import { computeBriefHeadline } from "../briefHeadline";
 import { renderAlertEmail, renderBriefEmail, verifyUnsubscribe, unsubscribeUrl } from "../email/briefEmail";
 import { EMAIL_TRADEMARK_LINE, EMAIL_TRADEMARK_NOTICE, renderHtml, renderText } from "../email/templates";
@@ -372,6 +372,8 @@ describe("3. AI failures reach Sentry", () => {
     ai.replies = ["MX04 Expected Loss has $30,000 spent. It has $25,000 billed."];
     await generateWeeklyDigest(state.metrics, "Acme", computeWeekOverWeek(null, state.metrics), Date.now() + 200_000);
     expect(ai.calls[0].params.inference_geo).toBe("us");
+    // Thinking counts toward max_tokens and cut the summary off (Sentry, Oct 29, 2026).
+    expect(ai.calls[0].params.thinking).toEqual(thinkingOff(AI_MODEL) ?? undefined);
   });
 });
 
