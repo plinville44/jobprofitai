@@ -852,7 +852,9 @@ describe("review: Z3, an invitation sent before the address check can't be accep
   async function seedOldInvite(email: string) {
     await seedOwner();
     await fake.client.teamMember.create({
-      data: { ownerUserId: "owner", email, tokenHash: hashToken(TOKEN), invitedAt: ago(1), expiresAt: new Date(NOW.getTime() + 6 * DAY), role: "member" },
+      // The accept route reads the real clock, so the expiry comes from it too.
+      // Set from NOW (Oct 27), it lapsed on Nov 2, 2026 and these tests failed.
+      data: { ownerUserId: "owner", email, tokenHash: hashToken(TOKEN), invitedAt: ago(1), expiresAt: new Date(Date.now() + 6 * DAY), role: "member" },
     });
   }
   const ADDRESS = "sam&co@ortizbuilders.com";

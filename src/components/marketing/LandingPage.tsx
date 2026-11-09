@@ -9,7 +9,7 @@ import {
   TrackedChangePreview,
   WipPreview,
 } from "./ProductPreview";
-import QuickBooksComparison from "./QuickBooksComparison";
+import QuickBooksComparison, { ADVANCED_AI_FAQ } from "./QuickBooksComparison";
 import DemoVideo from "./DemoVideo";
 import FitCheck from "./FitCheck";
 import PricingCards from "./PricingCards";
@@ -149,6 +149,7 @@ const FAQ_ITEMS: { q: string; a: ReactNode }[] = [
       </>
     ),
   },
+  ADVANCED_AI_FAQ,
   {
     q: "Do I need to use QuickBooks Projects?",
     a: (

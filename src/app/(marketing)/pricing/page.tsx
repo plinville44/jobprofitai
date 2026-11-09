@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ButtonLink, Eyebrow, Faq, FinalCta, Section, SectionHeading } from "@/components/marketing/ui";
 import PricingCards from "@/components/marketing/PricingCards";
+import { ADVANCED_AI_FAQ } from "@/components/marketing/QuickBooksComparison";
 import PlanGuide from "@/components/marketing/PlanGuide";
 import FitCheck from "@/components/marketing/FitCheck";
 import { PLANS } from "@/lib/plans";
@@ -48,6 +49,7 @@ const FAQ_ITEMS = [
       </>
     ),
   },
+  ADVANCED_AI_FAQ,
   {
     q: "Is a credit card required to start the trial?",
     a: <>No. The 14-day trial needs no card and no payment details. You only enter payment information if you decide to subscribe.</>,

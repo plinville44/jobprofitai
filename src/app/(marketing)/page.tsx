@@ -19,7 +19,7 @@ import {
   WeeklyBriefPreview,
 } from "@/components/marketing/ProductPreview";
 import PricingCards from "@/components/marketing/PricingCards";
-import QuickBooksComparison from "@/components/marketing/QuickBooksComparison";
+import QuickBooksComparison, { ADVANCED_AI_FAQ } from "@/components/marketing/QuickBooksComparison";
 import FitCheck from "@/components/marketing/FitCheck";
 import { PLANS, TRIAL_DAYS, TRIAL_LIMITS } from "@/lib/plans";
 import { OG_IMAGE } from "@/lib/siteMeta";
@@ -79,6 +79,7 @@ const FAQ_ITEMS = [
       </>
     ),
   },
+  ADVANCED_AI_FAQ,
   {
     q: "How are the dollar figures worked out?",
     a: (
