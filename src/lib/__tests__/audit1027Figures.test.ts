@@ -226,12 +226,18 @@ describe("F2: a sync that couldn't read a type doesn't move the change feed past
 
   it("reads the change feed's start as the earlier of the two, and ignores anything else stored", () => {
     const last = new Date("2026-10-26T07:00:00Z");
-    const at = (stored: unknown) => changeFeedStart({ lastSyncedAt: last, lastSyncEntitiesUpdated: stored as any });
+    // Read on the day of the sync. Left to the real clock, the stored start
+    // passed the 29-day reach on Nov 22, 2026 and this test would have failed.
+    const at = (stored: unknown, now = last.getTime()) =>
+      changeFeedStart({ lastSyncedAt: last, lastSyncEntitiesUpdated: stored as any }, now);
     expect(at({ jobs: 4, changeFeedFrom: "2026-10-24T07:00:00.000Z" })).toEqual(new Date("2026-10-24T07:00:00Z"));
     expect(at({ jobs: 4 })).toEqual(last);
     expect(at({ changeFeedFrom: "not a date" })).toEqual(last);
     expect(at(null)).toEqual(last);
-    expect(changeFeedStart({ lastSyncedAt: null, lastSyncEntitiesUpdated: null })).toBeNull();
+    expect(changeFeedStart({ lastSyncedAt: null, lastSyncEntitiesUpdated: null }, last.getTime())).toBeNull();
+    // Past QuickBooks' reach (29 days kept), the last sync is used instead.
+    expect(at({ changeFeedFrom: "2026-10-24T07:00:00.000Z" }, Date.parse("2026-11-22T06:00:00Z"))).toEqual(new Date("2026-10-24T07:00:00Z"));
+    expect(at({ changeFeedFrom: "2026-10-24T07:00:00.000Z" }, Date.parse("2026-11-22T08:00:00Z"))).toEqual(last);
   });
 
   it("doesn't take a company's first full read that missed a type as the full sync, and retries it for up to a day", async () => {
