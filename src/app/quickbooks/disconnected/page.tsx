@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { LogoLink } from "@/components/marketing/Logo";
 import { TRADEMARK_NOTICE } from "@/components/marketing/trademark";
 import { getAccount, listCompanies } from "@/lib/account";
@@ -27,10 +28,22 @@ const PROBE_TIMEOUT_MS = 8_000;
  * disconnected now, so the dashboard shows the Connect button straight
  * away instead of at the next sync. The check only records what Intuit
  * says, so visiting this page can't disconnect anything that still works.
+ *
+ * The page is OpenID-enabled (Intuit's requirement 4.4): someone who isn't
+ * signed in here goes through Intuit's sign-in first, which asks for nothing
+ * if they're signed in to Intuit, and comes back signed in
+ * (/api/auth/intuit?intent=disconnected). The way back carries sso=1, so a
+ * sign-in that didn't take shows the signed-out version below instead of
+ * going round again.
  */
-export default async function DisconnectedPage(props: { searchParams: Promise<{ realmId?: string }> }) {
-  const { realmId } = await props.searchParams;
+export default async function DisconnectedPage(props: { searchParams: Promise<{ realmId?: string; sso?: string }> }) {
+  const { realmId, sso } = await props.searchParams;
   const account = await getAccount();
+  if (!account && sso !== "1") {
+    const query = new URLSearchParams({ intent: "disconnected" });
+    if (realmId && /^\d{1,32}$/.test(realmId)) query.set("realmId", realmId);
+    redirect(`/api/auth/intuit?${query.toString()}`);
+  }
 
   let disconnected: string[] = [];
   let stillConnected = 0;

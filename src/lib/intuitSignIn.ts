@@ -74,8 +74,26 @@ const cookieBase = () => ({
 /** "signup" is the button on /signup: the App Store flow, from our own page. */
 export type IntuitIntent = "signin" | "appstore" | "signup";
 
-/** Sends the browser to Intuit's sign-in. */
-export async function startIntuitFlow(intent: IntuitIntent, opts: { realmId?: string | null } = {}): Promise<NextResponse> {
+const isRealmId = (v: unknown): v is string => typeof v === "string" && /^\d{1,32}$/.test(v);
+
+/**
+ * The Disconnect URL's page (/quickbooks/disconnected), for someone coming
+ * back to it signed in. `sso=1` says the Intuit sign-in has been tried, so
+ * the page shows itself instead of sending them round again.
+ */
+export function disconnectedLanding(realmId: string | null | undefined): string {
+  return `/quickbooks/disconnected?${isRealmId(realmId) ? `realmId=${realmId}&` : ""}sso=1`;
+}
+
+/**
+ * Sends the browser to Intuit's sign-in. `land: "disconnected"` (sign-in
+ * only) brings them back to the Disconnect URL's page instead of the
+ * dashboard: Intuit's requirement 4.4 has that page OpenID-enabled.
+ */
+export async function startIntuitFlow(
+  intent: IntuitIntent,
+  opts: { realmId?: string | null; land?: "disconnected" } = {}
+): Promise<NextResponse> {
   const nonce = randomBytes(16).toString("base64url");
   const connecting = intent !== "signin";
   const state = await new SignJWT({
@@ -83,10 +101,11 @@ export async function startIntuitFlow(intent: IntuitIntent, opts: { realmId?: st
     // Signed with the rest of the state, so only our signup page can ask
     // for a new account to be measured.
     ...(intent === "signup" ? { signup: true } : {}),
+    ...(opts.land === "disconnected" && !connecting ? { land: "disconnected" } : {}),
     nonce,
     // QuickBooks Online Accountant launches for a particular company; land
     // on that one if it belongs to the account.
-    ...(opts.realmId && /^\d{1,32}$/.test(opts.realmId) ? { realmHint: opts.realmId } : {}),
+    ...(isRealmId(opts.realmId) ? { realmHint: opts.realmId } : {}),
   })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
@@ -324,8 +343,13 @@ export async function handleIntuitFlow(
   };
 
   if (!connecting) {
-    const res = redirectTo("/dashboard");
     const hint = typeof payload.realmHint === "string" ? payload.realmHint : null;
+    if (payload.land === "disconnected") {
+      // Signed in from the Disconnect URL's page: back to it, now signed in,
+      // where it checks the company with Intuit and shows Connect again.
+      return redirectTo(disconnectedLanding(hint));
+    }
+    const res = redirectTo("/dashboard");
     if (hint) {
       const company = await prisma.quickBooksConnection.findFirst({
         where: { realmIdHash: hashRealmId(hint), userId: account.ownerId, disconnectedAt: null },

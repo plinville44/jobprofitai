@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { readFileSync } from "fs";
+import { join } from "path";
 import { createFakePrisma, type FakePrisma } from "./support/fakePrisma";
 
 process.env.AUTH_SECRET = "test-secret-for-intuit-sign-in-tests";
@@ -71,6 +73,7 @@ vi.mock("@/lib/signupReferral", () => ({ attributeSignupReferral: async () => fa
 vi.mock("@/lib/referrals", () => ({ REFERRAL_COOKIE: "jpai_ref" }));
 
 import {
+  disconnectedLanding,
   handleIntuitFlow,
   INTUIT_PENDING_COOKIE,
   OIDC_NONCE_COOKIE,
@@ -93,8 +96,8 @@ beforeEach(() => {
 });
 
 /** Starts a flow and moves its nonce cookie into the browser jar, like a real round trip. */
-async function begin(intent: "signin" | "appstore") {
-  const res: any = await startIntuitFlow(intent);
+async function begin(intent: "signin" | "appstore", opts: Parameters<typeof startIntuitFlow>[1] = {}) {
+  const res: any = await startIntuitFlow(intent, opts);
   jar.set(OIDC_NONCE_COOKIE, res.setCookies[OIDC_NONCE_COOKIE]);
   const state = decodeURIComponent(new URL(res.url).searchParams.get("state")!);
   const payload = JSON.parse(Buffer.from(state.split(".")[1], "base64url").toString());
@@ -205,5 +208,54 @@ describe("handleIntuitFlow", () => {
   it("rejects flows it doesn't know", async () => {
     const res: any = await handleIntuitFlow("something_else", {}, "code", null);
     expect(res.url).toContain("notice=invalid_state");
+  });
+});
+
+describe("the Disconnect URL's page is OpenID-enabled (Intuit 4.4)", () => {
+  const SRC = join(__dirname, "..", "..");
+  const flat = (rel: string) => readFileSync(join(SRC, rel), "utf8").replace(/\s+/g, " ");
+
+  it("signs in with identity only, remembering the company", async () => {
+    const { res, payload } = await begin("signin", { realmId: "9130354", land: "disconnected" });
+    expect(payload).toMatchObject({ flow: "intuit_signin", land: "disconnected", realmHint: "9130354" });
+    expect(new URL(res.url).searchParams.get("scope")).toBe("openid profile email");
+  });
+
+  it("never carries the landing into a QuickBooks connection", async () => {
+    const { payload } = await begin("appstore", { land: "disconnected" });
+    expect(payload.land).toBeUndefined();
+  });
+
+  it("brings a known Intuit account back to the page signed in, without picking the disconnected company", async () => {
+    await fake.client.user.create({ data: { id: "u1", email: "sam@builder.com", intuitSub: "intuit-sub-1" } });
+    const { payload } = await begin("signin", { realmId: "9130354", land: "disconnected" });
+    const res: any = await handleIntuitFlow("intuit_signin", payload, "code", null);
+    expect(calls.sessions).toEqual(["u1"]);
+    expect(res.url).toBe("https://app.example.com/quickbooks/disconnected?realmId=9130354&sso=1");
+    expect(res.setCookies.jpai_company).toBeUndefined();
+  });
+
+  it("still asks a new person whether to create an account", async () => {
+    const { payload } = await begin("signin", { land: "disconnected" });
+    const res: any = await handleIntuitFlow("intuit_signin", payload, "code", null);
+    expect(res.url).toBe("https://app.example.com/login/intuit");
+    expect(calls.sessions).toEqual([]);
+  });
+
+  it("puts only a real realm ID in the address back", () => {
+    expect(disconnectedLanding("9130354")).toBe("/quickbooks/disconnected?realmId=9130354&sso=1");
+    expect(disconnectedLanding("12abc")).toBe("/quickbooks/disconnected?sso=1");
+    expect(disconnectedLanding(null)).toBe("/quickbooks/disconnected?sso=1");
+  });
+
+  it("is where the page sends someone who isn't signed in, once, and the route answers with a 302", () => {
+    const page = flat("app/quickbooks/disconnected/page.tsx");
+    expect(page).toContain('if (!account && sso !== "1") {');
+    expect(page).toContain('const query = new URLSearchParams({ intent: "disconnected" });');
+    expect(page).toContain("redirect(`/api/auth/intuit?${query.toString()}`);");
+    const route = flat("app/api/auth/intuit/route.ts");
+    expect(route).toContain('if (asked === "disconnected") {');
+    expect(route).toContain("NextResponse.redirect(new URL(disconnectedLanding(realmId), process.env.APP_URL), 302);");
+    expect(route).toContain('return startIntuitFlow("signin", { realmId, land: "disconnected" });');
   });
 });
