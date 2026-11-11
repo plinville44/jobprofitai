@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
-import { startIntuitFlow } from "@/lib/intuitSignIn";
+import { disconnectedLanding, startIntuitFlow } from "@/lib/intuitSignIn";
 
 /**
  * GET /api/auth/intuit?intent=signin[&realmId=...]
@@ -16,13 +16,26 @@ import { startIntuitFlow } from "@/lib/intuitSignIn";
  *   The button on /signup: the same one step, but the visitor came through
  *   our pages, so a new account is measured like an email signup (see
  *   src/lib/intuitSignIn.ts).
+ *
+ * GET /api/auth/intuit?intent=disconnected[&realmId=...]
+ *   Where the Disconnect URL's page (/quickbooks/disconnected) sends someone
+ *   who isn't signed in: Intuit's sign-in, then back to that page signed in.
+ *   Disconnecting from QuickBooks then lands in the app without a password,
+ *   as Intuit's requirement 4.4 asks.
  */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const asked = url.searchParams.get("intent");
-  const intent = asked === "appstore" || asked === "signup" ? asked : "signin";
   const realmId = url.searchParams.get("realmId");
 
+  if (asked === "disconnected") {
+    if (await getSession()) {
+      return NextResponse.redirect(new URL(disconnectedLanding(realmId), process.env.APP_URL), 302);
+    }
+    return startIntuitFlow("signin", { realmId, land: "disconnected" });
+  }
+
+  const intent = asked === "appstore" || asked === "signup" ? asked : "signin";
   if (intent === "signin" && (await getSession())) {
     // 302: this is the Launch URL, and Intuit can put the realm ID in it.
     return NextResponse.redirect(new URL("/dashboard", process.env.APP_URL), 302);
