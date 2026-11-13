@@ -22,12 +22,14 @@ import FeedItemCard from "@/components/opportunities/FeedItemCard";
 import { getOpportunityData } from "@/lib/opportunityData";
 import JobSourcePrompt from "@/components/dashboard/JobSourcePrompt";
 import { jobSourceQuestionPending } from "@/lib/jobSetup";
+import { DISCONNECTED_RETENTION_DAYS } from "@/lib/dataRetention";
 
 export default async function DashboardPage(props: {
   // Next.js 16: searchParams arrives as a Promise. Awaited into a local of
   // the same name so every reference below reads exactly as it did before.
   searchParams: Promise<{
     qbo_connected?: string;
+    qbo_disconnected?: string;
     qbo_error?: string;
     range?: string;
     from?: string;
@@ -98,6 +100,22 @@ export default async function DashboardPage(props: {
       }
     : null;
 
+  // Back from disconnecting in QuickBooks (the Disconnect URL's page sends
+  // ?qbo_disconnected=1). Names come from the companies this account had
+  // disconnected in the last hour, never from the address; a client's
+  // view-only login isn't shown the firm's other company names.
+  const justDisconnected =
+    searchParams.qbo_disconnected && !viewOnly
+      ? (
+          await prisma.quickBooksConnection.findMany({
+            where: { userId: account.ownerId, disconnectedAt: { gte: new Date(now.getTime() - 60 * 60 * 1000) } },
+            select: { companyName: true },
+            orderBy: { disconnectedAt: "desc" },
+            take: 5,
+          })
+        ).map((c) => c.companyName ?? "Your QuickBooks company")
+      : [];
+
   const linkWithParams = (overrides: Record<string, string | undefined>) => {
     const params = new URLSearchParams();
     const merged = { range: rangeKey, status: statusFilter, trend: trendGranularity, ...overrides };
@@ -117,6 +135,27 @@ export default async function DashboardPage(props: {
         <p className="mt-4 rounded-lg bg-green-50 px-4 py-3 text-sm text-green-800">
           QuickBooks connected.
         </p>
+      )}
+      {/* Intuit's review (Nov 13, 2026, requirement 4.4): disconnecting in
+          QuickBooks lands here with Connect to QuickBooks showing. With no
+          company left, the "Connect your QuickBooks Online company" box
+          below has the button; with others still connected, this does. */}
+      {searchParams.qbo_disconnected && (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
+          <p className="font-semibold">
+            JobProfitAI is disconnected from QuickBooks
+            {justDisconnected.length > 0 ? `: ${justDisconnected.join(", ")}` : ""}.
+          </p>
+          <p className="mt-1">
+            Syncing and the Weekly Profit Brief have stopped for{" "}
+            {justDisconnected.length > 1 ? "those companies" : "that company"}. Everything already in JobProfitAI is kept for {DISCONNECTED_RETENTION_DAYS} days and comes back as it was if you reconnect in that time.
+          </p>
+          {!viewOnly && connections.length > 0 ? (
+            <div className="mt-3">
+              <ConnectToQuickBooksButton />
+            </div>
+          ) : null}
+        </div>
       )}
       {searchParams.qbo_error && (
         <p className="mt-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-800">

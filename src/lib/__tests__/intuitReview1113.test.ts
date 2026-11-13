@@ -41,8 +41,22 @@ vi.mock("@/lib/email/client", () => ({
   },
 }));
 
-const session = { account: null as null | { userId: string; ownerId: string; role: string } };
-vi.mock("@/lib/account", () => ({ getAccount: async () => session.account }));
+const session = { account: null as null | { userId: string; ownerId: string; role: string; connectionId?: string | null } };
+const companies = { list: [] as { id: string; realmIdHash: string; companyName: string | null }[] };
+vi.mock("@/lib/account", () => ({
+  getAccount: async () => session.account,
+  listCompanies: async () => companies.list,
+}));
+// What Intuit says about each company when the Disconnect URL's page checks it.
+const probes: Record<string, "ok" | "revoked" | "unknown"> = {};
+vi.mock("@/lib/quickbooksSync", () => ({ probeConnection: async (id: string) => probes[id] ?? "unknown" }));
+vi.mock("@/lib/crypto", () => ({ hashRealmId: (r: string) => `h:${r}`, legacyHashRealmId: (r: string) => `l:${r}` }));
+vi.mock("@/components/marketing/Logo", () => ({ LogoLink: () => null }));
+vi.mock("next/navigation", () => ({
+  redirect: (url: string) => {
+    throw Object.assign(new Error("NEXT_REDIRECT"), { url });
+  },
+}));
 vi.mock("@/lib/entitlements", () => ({
   canConnectAnotherCompany: async () => ({ allowed: true }),
   getEntitlements: async () => ({ plan: "profit_intelligence" }),
@@ -59,6 +73,7 @@ import { intuitLinkedEmail } from "../email/templates";
 import { linkIntuitOnConnect } from "../intuitConnectLink";
 import { ACCEPTANCE_VERSION, LEGAL_UPDATED, legalDateKey } from "../legalVersion";
 import { GET as connect } from "../../app/api/quickbooks/connect/route";
+import DisconnectedPage from "../../app/quickbooks/disconnected/page";
 
 const SRC = join(__dirname, "..", "..");
 const ROOT = join(SRC, "..");
@@ -266,6 +281,52 @@ describe("d. connecting QuickBooks makes the Disconnect URL's Intuit sign-in ask
   it("keeps the usual Intuit-linked email for the other ways of linking", () => {
     expect(intuitLinkedEmail().text).toContain("An Intuit account was just linked to your JobProfitAI login");
     expect(flat("app/api/auth/intuit/link/route.ts")).toContain("...intuitLinkedEmail() })");
+  });
+});
+
+describe("d. the Disconnect URL lands inside the app, with Connect to QuickBooks showing", () => {
+  const open = (params: Record<string, string>) => DisconnectedPage({ searchParams: Promise.resolve(params) } as never);
+  beforeEach(() => {
+    for (const k of Object.keys(probes)) delete probes[k];
+    companies.list = [{ id: "c1", realmIdHash: "h:9130354", companyName: "JobProfitAI Test Co." }];
+  });
+
+  it("signed in: checks the company with Intuit, then opens the dashboard and its disconnect notice", async () => {
+    session.account = { userId: "u1", ownerId: "u1", role: "owner", connectionId: null };
+    probes.c1 = "revoked";
+    await expect(open({ realmId: "9130354", sso: "1" })).rejects.toMatchObject({ url: "/dashboard?qbo_disconnected=1" });
+    // Intuit slow to answer: still into the app, where Connect to QuickBooks shows.
+    probes.c1 = "unknown";
+    await expect(open({ realmId: "9130354" })).rejects.toMatchObject({ url: "/dashboard?qbo_disconnected=1" });
+    // Nothing connected any more: the same.
+    companies.list = [];
+    await expect(open({})).rejects.toMatchObject({ url: "/dashboard?qbo_disconnected=1" });
+  });
+
+  it("an old link while everything is still connected opens the dashboard without the notice", async () => {
+    session.account = { userId: "u1", ownerId: "u1", role: "owner", connectionId: null };
+    probes.c1 = "ok";
+    await expect(open({})).rejects.toMatchObject({ url: "/dashboard" });
+  });
+
+  it("signed out: Intuit's sign-in first, and only after one that didn't take, a page with a login link", async () => {
+    session.account = null;
+    await expect(open({ realmId: "9130354" })).rejects.toMatchObject({ url: "/api/auth/intuit?intent=disconnected&realmId=9130354" });
+    const html = renderToStaticMarkup((await open({ sso: "1" })) as never);
+    expect(html).toContain("JobProfitAI is disconnected from QuickBooks");
+    expect(html).toContain('href="/login"');
+    expect(html).not.toContain("C2QB_");
+  });
+
+  it("the dashboard says what was disconnected and shows Connect to QuickBooks", () => {
+    const page = flat("app/dashboard/page.tsx");
+    expect(page).toContain("qbo_disconnected?: string;");
+    expect(page).toContain("{searchParams.qbo_disconnected && (");
+    // Names only from this account's own rows disconnected in the last hour, never from the address.
+    expect(page).toContain("where: { userId: account.ownerId, disconnectedAt: { gte: new Date(now.getTime() - 60 * 60 * 1000) } },");
+    // Other companies still connected: the notice has the button. None left: the box below has it.
+    expect(page).toContain("{!viewOnly && connections.length > 0 ? ( <div className=\"mt-3\"> <ConnectToQuickBooksButton /> </div> ) : null}");
+    expect(page).toContain("Connect your QuickBooks Online company to see your job profitability.");
   });
 });
 
