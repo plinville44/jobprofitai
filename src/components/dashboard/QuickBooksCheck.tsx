@@ -72,7 +72,8 @@ export default function QuickBooksCheck({ jobId }: { jobId: string }) {
           <div className="mt-3 overflow-x-auto">
             <table className="w-full min-w-[28rem] text-sm">
               <thead>
-                <tr className="text-left text-xs uppercase tracking-wide text-gray-400">
+                {/* Not in capitals: QuickBooks keeps its own capitalization (Intuit's requirement 1.4). */}
+                <tr className="text-left text-xs text-gray-400">
                   <th className="pb-2 font-medium" />
                   <th className="pb-2 text-right font-medium">JobProfitAI</th>
                   <th className="pb-2 text-right font-medium">QuickBooks</th>

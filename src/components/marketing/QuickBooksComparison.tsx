@@ -56,7 +56,8 @@ export default function QuickBooksComparison() {
   return (
     <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-2">
       <Card className="p-7">
-        <p className="text-sm font-semibold uppercase tracking-wide text-jp-muted">QuickBooks tells you</p>
+        {/* Not in capitals: QuickBooks keeps its own capitalization (Intuit's requirement 1.4). */}
+        <p className="text-sm font-semibold text-jp-muted">QuickBooks tells you</p>
         <ul className="mt-4 space-y-3 text-[15px] text-jp-slate">
           {QUICKBOOKS.map((item) => (
             <li key={item} className="flex gap-2.5">
@@ -67,7 +68,7 @@ export default function QuickBooksComparison() {
         </ul>
       </Card>
       <Card className="border-jp-blue/30 p-7">
-        <p className="text-sm font-semibold uppercase tracking-wide text-jp-blue">JobProfitAI tells you</p>
+        <p className="text-sm font-semibold text-jp-blue">JobProfitAI tells you</p>
         <ul className="mt-4 space-y-3 text-[15px] text-jp-ink">
           {JOBPROFITAI.map((item) => (
             <li key={item} className="flex gap-2.5">
