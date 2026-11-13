@@ -46,9 +46,13 @@ export function Section({
 }
 
 export function Eyebrow({ children, light = false }: { children: ReactNode; light?: boolean }) {
+  // Intuit's technical requirement 1.4: "QuickBooks" and "Intuit" keep their
+  // own capitalization, so an eyebrow that names them isn't set in capitals
+  // ("Works with QuickBooks", never "WORKS WITH QUICKBOOKS").
+  const keepCase = typeof children === "string" && /QuickBooks|Intuit/.test(children);
   return (
     <p
-      className={`mb-4 text-xs font-semibold uppercase tracking-[0.14em] ${
+      className={`mb-4 text-xs font-semibold ${keepCase ? "tracking-wide" : "uppercase tracking-[0.14em]"} ${
         light ? "text-jp-blue-bright" : "text-jp-blue"
       }`}
     >

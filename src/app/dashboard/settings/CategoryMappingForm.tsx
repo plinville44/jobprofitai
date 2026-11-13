@@ -64,7 +64,8 @@ export default function CategoryMappingForm({ connectionId }: { connectionId: st
     <div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[520px] text-left text-sm">
-          <thead className="text-xs uppercase text-gray-500">
+          {/* Not in capitals: QuickBooks keeps its own capitalization (Intuit's requirement 1.4). */}
+          <thead className="text-xs text-gray-500">
             <tr>
               <th className="py-2 font-medium">QuickBooks account or item</th>
               <th className="py-2 text-right font-medium">Job costs</th>

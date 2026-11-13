@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { ConnectToQuickBooksButton } from "@/components/IntuitButtons";
+import { AddCompanyButton, ConnectToQuickBooksButton } from "@/components/IntuitButtons";
 import Link from "next/link";
 import { getAccount, getActiveConnection } from "@/lib/account";
 import { getEntitlements } from "@/lib/entitlements";
@@ -139,7 +139,8 @@ export default async function DashboardPage(props: {
       {/* Intuit's review (Nov 13, 2026, requirement 4.4): disconnecting in
           QuickBooks lands here with Connect to QuickBooks showing. With no
           company left, the "Connect your QuickBooks Online company" box
-          below has the button; with others still connected, this does. */}
+          below has the button. With others still connected, Connect stays
+          hidden behind Add company, as requirements 1.1 and 6.2 ask. */}
       {searchParams.qbo_disconnected && (
         <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-900">
           <p className="font-semibold">
@@ -152,7 +153,7 @@ export default async function DashboardPage(props: {
           </p>
           {!viewOnly && connections.length > 0 ? (
             <div className="mt-3">
-              <ConnectToQuickBooksButton />
+              <AddCompanyButton />
             </div>
           ) : null}
         </div>

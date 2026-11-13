@@ -324,9 +324,47 @@ describe("d. the Disconnect URL lands inside the app, with Connect to QuickBooks
     expect(page).toContain("{searchParams.qbo_disconnected && (");
     // Names only from this account's own rows disconnected in the last hour, never from the address.
     expect(page).toContain("where: { userId: account.ownerId, disconnectedAt: { gte: new Date(now.getTime() - 60 * 60 * 1000) } },");
-    // Other companies still connected: the notice has the button. None left: the box below has it.
-    expect(page).toContain("{!viewOnly && connections.length > 0 ? ( <div className=\"mt-3\"> <ConnectToQuickBooksButton /> </div> ) : null}");
+    // Other companies still connected: Add company, which reveals Connect (1.1 and 6.2). None left: the box below has Connect.
+    expect(page).toContain("{!viewOnly && connections.length > 0 ? ( <div className=\"mt-3\"> <AddCompanyButton /> </div> ) : null}");
     expect(page).toContain("Connect your QuickBooks Online company to see your job profitability.");
+  });
+});
+
+describe("1.4. QuickBooks and Intuit keep their own capitalization", () => {
+  it("are never inside an element set in capitals", () => {
+    const found: string[] = [];
+    for (const f of sourceFiles().filter((f) => f.endsWith(".tsx"))) {
+      const s = read(f);
+      for (const m of s.matchAll(/className="[^"]*\buppercase\b[^"]*"/g)) {
+        const open = s.lastIndexOf("<", m.index!);
+        const tag = /^<(\w+)/.exec(s.slice(open))?.[1];
+        if (!tag) continue;
+        const close = s.indexOf(`</${tag}>`, m.index!);
+        const body = s.slice(m.index!, close > 0 ? close : m.index! + 800);
+        if (/QuickBooks|Intuit/.test(body)) found.push(`${f}: ${body.replace(/\s+/g, " ").slice(0, 100)}`);
+      }
+    }
+    expect(found).toEqual([]);
+  });
+
+  it("an eyebrow naming QuickBooks or Intuit isn't set in capitals; others still are", async () => {
+    const { Eyebrow } = await import("@/components/marketing/ui");
+    const qb = renderToStaticMarkup(createElement(Eyebrow, null, "Works with QuickBooks"));
+    expect(qb).not.toContain("uppercase");
+    expect(qb).toContain(">Works with QuickBooks</p>");
+    expect(renderToStaticMarkup(createElement(Eyebrow, null, "What to change"))).toContain("uppercase");
+  });
+
+  it("no misspelling or abbreviation in the text people see", () => {
+    for (const f of sourceFiles()) {
+      const text = read(f)
+        .split("\n")
+        .filter((l) => !/^\s*(\*|\/\/|import )/.test(l))
+        .join("\n");
+      expect({ f, misspelled: /Quickbooks|Quick Books|QuickBook\b/.test(text) }).toEqual({ f, misspelled: false });
+      // "QBO" and "QB" only as parts of code names (QBO_SCOPE, qboCompanyInfo), never as words in quotes or text.
+      expect({ f, abbreviated: /["'`>][^"'`<\n]*\bQBO?\b[^"'`<\n]*["'`<]/.test(text) }).toEqual({ f, abbreviated: false });
+    }
   });
 });
 
