@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { ConnectToQuickBooksButton, QuickBooksLogo } from "@/components/IntuitButtons";
+import { ConnectToQuickBooksButton } from "@/components/IntuitButtons";
 import Link from "next/link";
 import { getAccount, getActiveConnection } from "@/lib/account";
 import { getEntitlements } from "@/lib/entitlements";
@@ -134,9 +134,6 @@ export default async function DashboardPage(props: {
           </div>
         ) : (
           <div className="mt-8 rounded-xl border border-gray-200 p-8 text-center">
-            <div className="mb-5 flex justify-center">
-              <QuickBooksLogo />
-            </div>
             <p className="text-gray-600">
               Connect your QuickBooks Online company to see your job profitability. It takes about two minutes,
               JobProfitAI only reads your books, and your first numbers are ready in a few minutes. QuickBooks Desktop

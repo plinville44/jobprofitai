@@ -19,12 +19,6 @@ import { useState } from "react";
  * and the hover file shows on hover and keyboard focus, as Intuit supplies
  * both.
  *
- * The QuickBooks logo (QuickBooksLogo below) is Intuit's
- * intuit-quickbooks-stacked-signature-light-tally-logo-icom.png (777x205,
- * the "light" version for light backgrounds), sent by Preston on Nov 13 from
- * the link in Intuit's review, also saved unchanged. It sits beside Connect
- * to QuickBooks where connections are managed and is never a link.
- *
  * Where they go (Intuit's review, Nov 13, 2026):
  * - Connect to QuickBooks is the only way an OAuth connection starts. With
  *   no company connected it shows as is; once one is, it's hidden behind an
@@ -49,31 +43,6 @@ const SIGN_IN_IMG: ButtonImage = {
   width: 201,
   height: 48,
 };
-
-const QUICKBOOKS_LOGO = {
-  src: "/intuit/intuit-quickbooks-stacked-signature-light-tally-logo-icom.png",
-  width: 777,
-  height: 205,
-};
-
-/**
- * Intuit's approved QuickBooks logo, drawn at `height` pixels tall with its
- * own proportions (never stretched or recolored). Not a link: only the
- * Connect to QuickBooks button starts a connection.
- */
-export function QuickBooksLogo({ height = 40 }: { height?: number }) {
-  return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src={QUICKBOOKS_LOGO.src}
-      alt="Intuit QuickBooks"
-      width={QUICKBOOKS_LOGO.width}
-      height={QUICKBOOKS_LOGO.height}
-      style={{ height, width: "auto", maxWidth: "100%" }}
-      className="block"
-    />
-  );
-}
 
 function ImageButton({
   href,

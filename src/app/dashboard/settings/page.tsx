@@ -20,7 +20,7 @@ import JobTypesManager from "./JobTypesManager";
 import { getJobTypes } from "@/lib/jobTypesServer";
 import { needsReconnect } from "@/lib/quickbooks";
 import { syncErrorForPeople } from "@/lib/syncProblem";
-import { AddCompanyButton, ConnectToQuickBooksButton, QuickBooksLogo } from "@/components/IntuitButtons";
+import { AddCompanyButton, ConnectToQuickBooksButton } from "@/components/IntuitButtons";
 
 const SYNC_STATUS_DOT: Record<string, "good" | "warning" | "critical" | "unmeasured"> = {
   success: "good",
@@ -121,9 +121,6 @@ export default async function SettingsPage(props: {
             </p>
           ) : (
             <>
-              <div className="mb-5 flex justify-center">
-                <QuickBooksLogo />
-              </div>
               <p className="text-gray-600">Connect your QuickBooks Online company to configure settings.</p>
               <div className="mt-4 flex justify-center">
                 <ConnectToQuickBooksButton />
@@ -134,12 +131,9 @@ export default async function SettingsPage(props: {
       ) : (
         <>
           <section className="mt-6 rounded-xl border border-gray-200 p-6">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-sm font-semibold text-navy">
-                QuickBooks {companies.length > 1 ? "companies" : "company"}
-              </h2>
-              <QuickBooksLogo height={32} />
-            </div>
+            <h2 className="text-sm font-semibold text-navy">
+              QuickBooks {companies.length > 1 ? "companies" : "company"}
+            </h2>
             <ul className="mt-3 divide-y divide-gray-100">
               {companies.map((c) => {
                 const active = c.id === connection.id;
