@@ -455,7 +455,8 @@ describe("audit 2026-10-19: billing, team logins, sign-in, ad measurement", () =
       expect(payload).toMatchObject({ flow: "intuit_appstore", signup: true });
       expect(new URL(res.url).searchParams.get("scope")).toContain("com.intuit.quickbooks.accounting");
       expect((await begin("appstore")).payload.signup).toBeUndefined();
-      expect(flat("app/signup/SignupForm.tsx")).toContain('<SignInWithIntuitButton intent="signup" />');
+      // No button on /signup since Intuit's review (Nov 13, 2026); the intent is kept for old links.
+      expect(flat("app/signup/SignupForm.tsx")).not.toContain("SignInWithIntuitButton");
     });
 
     it("measures a new account like an email signup: source kept, sign_up reported before the company, jpai_src cleared", async () => {

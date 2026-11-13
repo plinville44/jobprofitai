@@ -18,15 +18,18 @@
  * wording ever published is on record (legal-archive/README.md).
  *
  * Nothing since 2026-10-14 was material, so that stays the version people
- * agree to. Every change since was to the Privacy Policy's "Videos"
- * section: October 26, 2026 added it, October 27 said the videos play from
+ * agree to. Every change since was to the Privacy Policy: its "Videos"
+ * section (October 26, 2026 added it, October 27 said the videos play from
  * our own website, and October 28 said which videos our emails link to on
- * YouTube and that the player links there if a video can't load. The other
- * three documents' text is unchanged since October 14, the date they print.
+ * YouTube and that the player links there if a video can't load), and on
+ * November 13 its "Sign in with Intuit" line, which now says connecting a
+ * QuickBooks company tells us the same about the Intuit account and when we
+ * keep its ID (src/lib/intuitConnectLink.ts). The other three documents'
+ * text is unchanged since October 14, the date they print.
  */
 export const LEGAL_UPDATED = {
   terms: "October 14, 2026",
-  privacy: "October 28, 2026",
+  privacy: "November 13, 2026",
   dpa: "October 14, 2026",
   "privacy-choices": "October 14, 2026",
 } as const;

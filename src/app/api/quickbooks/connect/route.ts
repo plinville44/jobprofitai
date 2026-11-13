@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { SignJWT } from "jose";
 import { prisma } from "@/lib/prisma";
 import { getAccount } from "@/lib/account";
-import { buildAuthorizeUrl } from "@/lib/quickbooks";
+import { buildAuthorizeUrl, CONNECT_WITH_OPENID_SCOPES } from "@/lib/quickbooks";
 import { canConnectAnotherCompany, getEntitlements } from "@/lib/entitlements";
 import { connectNeedsOwner, OWNER_ONLY_CONNECT_NOTICE } from "@/lib/connectCompany";
 
@@ -70,5 +70,10 @@ export async function GET(req: NextRequest) {
     .setExpirationTime("10m")
     .sign(new TextEncoder().encode(process.env.AUTH_SECRET));
 
-  return NextResponse.redirect(await buildAuthorizeUrl(state));
+  // QuickBooks access plus the OpenID scopes, as the App Store flow asks.
+  // The person agrees to both once, on Intuit's consent screen, so a later
+  // Intuit sign-in (the Disconnect URL's, requirement 4.4) asks nothing; the
+  // callback links that Intuit account when its verified email is this
+  // login's (src/lib/intuitConnectLink.ts).
+  return NextResponse.redirect(await buildAuthorizeUrl(state, CONNECT_WITH_OPENID_SCOPES));
 }

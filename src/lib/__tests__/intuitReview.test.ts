@@ -53,7 +53,7 @@ describe("response headers (next.config.mjs)", () => {
     for (const path of ["/", "/login", "/reset-password", "/dashboard/jobs/abc", "/api/wip/export", "/api/brief/unsubscribe", "/lp/wip", "/invite/abc"]) {
       expect({ path, noStore: matches(path) }).toEqual({ path, noStore: true });
     }
-    for (const path of ["/_next/static/chunks/app.js", "/_next/image", "/demo-video-poster.jpg", "/intuit/connect-to-quickbooks.png", "/favicon.ico", "/robots.txt", "/sitemap.xml"]) {
+    for (const path of ["/_next/static/chunks/app.js", "/_next/image", "/demo-video-poster.jpg", "/intuit/C2QB_green_btn_tall_default.svg", "/favicon.ico", "/robots.txt", "/sitemap.xml"]) {
       expect({ path, noStore: matches(path) }).toEqual({ path, noStore: false });
     }
   });

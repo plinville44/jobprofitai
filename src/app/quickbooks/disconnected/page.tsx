@@ -6,7 +6,7 @@ import { TRADEMARK_NOTICE } from "@/components/marketing/trademark";
 import { getAccount, listCompanies } from "@/lib/account";
 import { hashRealmId, legacyHashRealmId } from "@/lib/crypto";
 import { probeConnection } from "@/lib/quickbooksSync";
-import { ConnectToQuickBooksButton, SignInWithIntuitButton } from "@/components/IntuitButtons";
+import { ConnectToQuickBooksButton } from "@/components/IntuitButtons";
 import { DISCONNECTED_RETENTION_DAYS } from "@/lib/dataRetention";
 
 export const metadata: Metadata = {
@@ -106,10 +106,14 @@ export default async function DisconnectedPage(props: { searchParams: Promise<{ 
                 <li>On the dashboard or in Settings, choose Connect to QuickBooks.</li>
                 <li>Sign in to Intuit and pick the company.</li>
               </ol>
-              <div className="mt-5 flex flex-wrap items-center gap-4">
-                <SignInWithIntuitButton />
-                <Link href="/login" className="text-sm font-medium text-brand hover:underline">
-                  Log in with your password
+              {/* Sign in with Intuit is on the login page only (Intuit's
+                  review, Nov 13, 2026). */}
+              <div className="mt-5">
+                <Link
+                  href="/login"
+                  className="inline-block rounded-lg bg-brand px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
+                >
+                  Log in to JobProfitAI
                 </Link>
               </div>
             </>

@@ -278,7 +278,8 @@ export interface FakePrisma {
  */
 export function createFakePrisma(): FakePrisma {
   const models: Record<string, FakeModel> = {
-    user: new FakeModel("user", [{ fields: ["email"] }], () => ({ createdAt: new Date() })),
+    // intuitSub unique, as in the schema: one login per Intuit account.
+    user: new FakeModel("user", [{ fields: ["email"] }, { fields: ["intuitSub"] }], () => ({ createdAt: new Date() })),
     subscription: new FakeModel(
       "subscription",
       [{ fields: ["userId"] }, { fields: ["stripeCustomerId"] }, { fields: ["stripeSubscriptionId"] }],
