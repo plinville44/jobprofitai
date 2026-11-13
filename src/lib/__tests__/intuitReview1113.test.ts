@@ -8,6 +8,8 @@ import { createFakePrisma, type FakePrisma } from "./support/fakePrisma";
 //  a) only Intuit's current Connect to QuickBooks button starts an OAuth
 //     connection, hidden behind "Add company" once a company is connected
 //     (requirement 6.2);
+//  b) Intuit's approved QuickBooks logo (the stacked "light" logo from the
+//     link in Intuit's review, sent by Preston), beside Connect to QuickBooks;
 //  c) Intuit's current Sign in with Intuit button, on the login page only;
 //  d) disconnecting from the QuickBooks App Store lands back in the app
 //     signed in, with no password or consent screen (requirement 4.4).
@@ -54,7 +56,8 @@ vi.mock("next/server", () => ({
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { AddCompanyButton, ConnectToQuickBooksButton, SignInWithIntuitButton } from "@/components/IntuitButtons";
+import { AddCompanyButton, ConnectToQuickBooksButton, QuickBooksLogo, SignInWithIntuitButton } from "@/components/IntuitButtons";
+import { TRADEMARK_NOTICE } from "@/components/marketing/trademark";
 import { intuitLinkedEmail } from "../email/templates";
 import { linkIntuitOnConnect } from "../intuitConnectLink";
 import { ACCEPTANCE_VERSION, LEGAL_UPDATED, legalDateKey } from "../legalVersion";
@@ -88,6 +91,9 @@ describe("a and c. Intuit's current button files, unchanged", () => {
     "C2QB_green_btn_tall_hover.svg": "0b7fd52dd2287ca94d791e419670a8fb3458e038f8373b31c7e3b3820a236784",
     "Sign_in_blue_btn_tall_default.svg": "2415eb8fbb655d77f64c4e00599640979d20f7d53917e4f79f9b1b73785f8ab6",
     "Sign_in_blue_btn_tall_hover.svg": "4c77775d1f82c1b547db5eb3d6235f431998aaf6945c146f51daa46091d13214",
+    // intuit-quickbooks-stacked-signature-light-tally-logo-icom.png, 777x205, from
+    // the link in Intuit's review (www.intuit.com/oidam/intuit/ic/en_us/logos/), as Preston sent it.
+    "intuit-quickbooks-stacked-signature-light-tally-logo-icom.png": "0376f153891d8ee88e28ef6b6e9b86f6d489ff0e695df76805d1c0df3b421d5d",
   };
 
   it("serves Intuit's own files byte for byte, and nothing else in public/intuit", () => {
@@ -118,6 +124,41 @@ describe("a and c. Intuit's current button files, unchanged", () => {
     expect(html).toContain('href="/api/auth/intuit?intent=signin"');
     expect(html).toContain('src="/intuit/Sign_in_blue_btn_tall_default.svg" alt="Sign in with Intuit" width="201" height="48"');
     expect(html).toContain('src="/intuit/Sign_in_blue_btn_tall_hover.svg"');
+  });
+});
+
+describe("b. Intuit's approved QuickBooks logo beside Connect to QuickBooks", () => {
+  it("draws Intuit's file at its own proportions, and isn't a link", () => {
+    const html = renderToStaticMarkup(createElement(QuickBooksLogo));
+    // (React may add a <link rel="preload"> for the image ahead of it.)
+    expect(html).toContain(
+      '<img src="/intuit/intuit-quickbooks-stacked-signature-light-tally-logo-icom.png" alt="Intuit QuickBooks" width="777" height="205" style="height:40px;width:auto;max-width:100%" class="block"/>'
+    );
+    expect(html).not.toContain("<a ");
+    expect(html).not.toContain("href=\"/api/");
+    expect(renderToStaticMarkup(createElement(QuickBooksLogo, { height: 32 }))).toContain("height:32px;width:auto");
+  });
+
+  it("sits where connections are managed: the dashboard and Settings with nothing connected, Settings' company list, the disconnect page", () => {
+    const dashboard = flat("app/dashboard/page.tsx");
+    expect(dashboard).toContain('<QuickBooksLogo /> </div> <p className="text-gray-600"> Connect your QuickBooks Online company to see your job profitability.');
+    const settings = flat("app/dashboard/settings/page.tsx");
+    expect(settings).toContain('<QuickBooksLogo /> </div> <p className="text-gray-600">Connect your QuickBooks Online company to configure settings.</p>');
+    expect(settings).toContain('QuickBooks {companies.length > 1 ? "companies" : "company"} </h2> <QuickBooksLogo height={32} />');
+    expect(flat("app/quickbooks/disconnected/page.tsx")).toContain(
+      '<QuickBooksLogo height={32} /> </div> <h1 className="text-xl font-bold text-navy">JobProfitAI is disconnected from QuickBooks</h1>'
+    );
+    // Never inside a link.
+    for (const f of sourceFiles().filter((f) => f !== "components/IntuitButtons.tsx" && read(f).includes("<QuickBooksLogo"))) {
+      expect({ f, inLink: /<(a|Link)\b[^>]*>\s*<QuickBooksLogo/.test(read(f)) }).toEqual({ f, inLink: false });
+    }
+  });
+
+  it("carries Intuit's trademark notice on every app page, now that the app shows the logo", () => {
+    const layout = flat("app/dashboard/layout.tsx");
+    expect(layout).toContain('import { TRADEMARK_NOTICE } from "@/components/marketing/trademark";');
+    expect(layout).toContain("{TRADEMARK_NOTICE}</p> </footer>");
+    expect(TRADEMARK_NOTICE).toContain("Intuit and QuickBooks are registered trademarks of Intuit Inc. Used with permission.");
   });
 });
 

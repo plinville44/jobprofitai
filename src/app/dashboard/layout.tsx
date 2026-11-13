@@ -16,6 +16,7 @@ import LogoutButton from "@/components/LogoutButton";
 import FeedbackModal from "@/components/dashboard/FeedbackModal";
 import TrialBanner from "@/components/dashboard/TrialBanner";
 import { Logo } from "@/components/marketing/Logo";
+import { TRADEMARK_NOTICE } from "@/components/marketing/trademark";
 import ResendVerificationButton from "@/components/dashboard/ResendVerificationButton";
 
 /**
@@ -170,6 +171,11 @@ export default async function DashboardLayout({ children }: { children: React.Re
             over to the next. */}
         <Fragment key={activeCompany?.id ?? "none"}>{children}</Fragment>
       </div>
+      {/* The app shows Intuit's QuickBooks logo and buttons, so it carries
+          the trademark notice too (src/components/marketing/trademark.ts). */}
+      <footer className="mx-auto max-w-6xl px-6 pb-8">
+        <p className="border-t border-gray-100 pt-4 text-xs text-gray-400">{TRADEMARK_NOTICE}</p>
+      </footer>
     </div>
   );
 }

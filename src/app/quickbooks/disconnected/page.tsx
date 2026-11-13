@@ -6,7 +6,7 @@ import { TRADEMARK_NOTICE } from "@/components/marketing/trademark";
 import { getAccount, listCompanies } from "@/lib/account";
 import { hashRealmId, legacyHashRealmId } from "@/lib/crypto";
 import { probeConnection } from "@/lib/quickbooksSync";
-import { ConnectToQuickBooksButton } from "@/components/IntuitButtons";
+import { ConnectToQuickBooksButton, QuickBooksLogo } from "@/components/IntuitButtons";
 import { DISCONNECTED_RETENTION_DAYS } from "@/lib/dataRetention";
 
 export const metadata: Metadata = {
@@ -71,6 +71,9 @@ export default async function DisconnectedPage(props: { searchParams: Promise<{ 
           <LogoLink width={220} priority />
         </div>
         <div className="rounded-xl border border-jp-line bg-white p-7 sm:p-8">
+          <div className="mb-5">
+            <QuickBooksLogo height={32} />
+          </div>
           <h1 className="text-xl font-bold text-navy">JobProfitAI is disconnected from QuickBooks</h1>
           {disconnected.length > 0 && (
             <p className="mt-3 text-sm text-jp-slate">
