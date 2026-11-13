@@ -121,7 +121,11 @@ export default function PrivacyPage() {
               <span className="font-medium text-jp-ink">Sign in with Intuit:</span> if you use it,
               Intuit tells us its permanent ID for your Intuit account, your name, your email
               address and whether Intuit has verified that address. We store the ID to recognize
-              you next time, and use the name and email for your account.
+              you next time, and use the name and email for your account. Intuit tells us the same
+              when you connect a QuickBooks company. If Intuit has verified that the Intuit
+              account&rsquo;s email address is your login&rsquo;s, we store its ID so that Intuit
+              account can sign you in from then on, and we email you to say so; otherwise we
+              don&rsquo;t keep it.
             </li>
             <li>
               <span className="font-medium text-jp-ink">Team members:</span> the email addresses of

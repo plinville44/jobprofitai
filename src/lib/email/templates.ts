@@ -371,14 +371,18 @@ export function verifyEmailEmail(verifyUrl: string, name: string | null, expiryH
  */
 /**
  * Sent when an Intuit account is linked to a JobProfitAI login, so a link
- * the owner didn't make is noticed.
+ * the owner didn't make is noticed. "connect": linked when the person
+ * connected QuickBooks with an Intuit account whose verified email is this
+ * login's (src/lib/intuitConnectLink.ts).
  */
-export function intuitLinkedEmail(): RenderedEmail {
+export function intuitLinkedEmail(how?: "connect"): RenderedEmail {
   return buildEmail("Sign in with Intuit was turned on for your JobProfitAI login", {
     preheader: "An Intuit account can now sign in to your JobProfitAI login.",
     heading: "Sign in with Intuit is on",
     body: [
-      "An Intuit account was just linked to your JobProfitAI login, so it can now sign in without your password. If that was you, there is nothing to do.",
+      how === "connect"
+        ? "You just connected QuickBooks with an Intuit account that has the same email address as your JobProfitAI login, so that Intuit account can now sign in without your password. If that was you, there is nothing to do."
+        : "An Intuit account was just linked to your JobProfitAI login, so it can now sign in without your password. If that was you, there is nothing to do.",
       "If it wasn't you, reset your password straight away. That signs everyone out and unlinks the Intuit account. You can also unlink it in Settings under Sign-in security.",
     ],
     cta: { label: "Open Settings", url: appUrl("/dashboard/settings") },

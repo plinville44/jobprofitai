@@ -197,7 +197,8 @@ describe("W6. the Privacy Policy says which videos our emails link to", () => {
   });
 
   it("is not a material change", () => {
-    expect(LEGAL_UPDATED.privacy).toBe("October 28, 2026");
+    // Since moved on for the Sign in with Intuit line (Nov 13, 2026), also not material.
+    expect(LEGAL_UPDATED.privacy).toBe("November 13, 2026");
     expect(ACCEPTANCE_VERSION).toBe("2026-10-14");
   });
 });
@@ -213,11 +214,11 @@ describe("W7. each legal page prints the date its own text last changed", () => 
   it("moves the Terms, the Addendum and Your Privacy Choices back to October 14", () => {
     expect(LEGAL_UPDATED).toEqual({
       terms: "October 14, 2026",
-      privacy: "October 28, 2026",
+      privacy: "November 13, 2026",
       dpa: "October 14, 2026",
       "privacy-choices": "October 14, 2026",
     });
-    expect(LEGAL_LAST_UPDATED).toBe("October 28, 2026");
+    expect(LEGAL_LAST_UPDATED).toBe("November 13, 2026");
     expect(newestLegalUpdate(["terms", "dpa"])).toBe("October 14, 2026");
     expect(legalDateKey("October 8, 2026")).toBe("2026-10-08");
   });

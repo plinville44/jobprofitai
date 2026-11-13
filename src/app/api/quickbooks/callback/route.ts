@@ -5,6 +5,7 @@ import { accountFor, ACTIVE_COMPANY_COOKIE } from "@/lib/account";
 import { exchangeCodeForTokens } from "@/lib/quickbooks";
 import { attachCompany, OWNER_ONLY_CONNECT_NOTICE } from "@/lib/connectCompany";
 import { handleIntuitFlow } from "@/lib/intuitSignIn";
+import { linkIntuitOnConnect } from "@/lib/intuitConnectLink";
 
 // Token exchange, company lookups and a revoke can all happen here. Each
 // QuickBooks request can take up to 46 seconds with its retry and the token
@@ -108,6 +109,10 @@ async function handleConnect(payload: Record<string, unknown>, code: string, rea
           : `/dashboard/billing?limit=${result.code}`;
     return found(target);
   }
+
+  // Sign in with Intuit for this person, when the Intuit account they just
+  // used is safely theirs. Never throws; the connection is already saved.
+  await linkIntuitOnConnect(actorId, tokens.access_token);
 
   const res = found("/dashboard?qbo_connected=1");
   // Show the company just connected, which matters on a multi-company plan.

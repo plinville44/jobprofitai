@@ -192,7 +192,9 @@ describe("where the steps are reported", () => {
     expect(intuitFlow).toContain("const fromSignupPage = connecting && payload.signup === true;");
     expect(intuitFlow).toContain("fromSignupPage ? { ...signupAdOptOut({ headers: reqHeaders }), ...signupAdSource(reqHeaders) } : {}");
     expect(intuitFlow).toContain('await reportServerEvent(user.id, "sign_up", { method: "intuit" }');
-    expect(flat("app/signup/SignupForm.tsx")).toContain('<SignInWithIntuitButton intent="signup" />');
+    // Intuit's review (Nov 13, 2026): Sign in with Intuit on the login page only, so /signup has no
+    // button now. The signup intent stays for any old link, still measured like the email form.
+    expect(flat("app/signup/SignupForm.tsx")).not.toContain("SignInWithIntuitButton");
   });
 
   it("reports the first QuickBooks connection, checkout and the subscription", () => {

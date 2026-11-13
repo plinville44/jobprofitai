@@ -136,7 +136,8 @@ describe("legal pages", () => {
     const version = read("lib/legalVersion.ts");
     // The Videos section (October 26, 27 and 28) didn't need a new acceptance. Each page prints its own
     // date, and only the Privacy Policy's text has changed since October 14.
-    expect(version).toContain('privacy: "October 28, 2026"');
+    // November 13 changed the Sign in with Intuit line (connecting QuickBooks), also not material.
+    expect(version).toContain('privacy: "November 13, 2026"');
     expect(version).toContain('terms: "October 14, 2026"');
     expect(version).toContain('ACCEPTANCE_VERSION = "2026-10-14"');
     expect(read("components/marketing/Legal.tsx")).toContain('export { LEGAL_UPDATED } from "@/lib/legalVersion"');

@@ -12,8 +12,10 @@ them from that date on:
 - A later `LEGAL_LAST_UPDATED` for a change that wasn't material, so it
   needed no new acceptance. 2026-10-26 added the Privacy Policy's "Videos"
   section, 2026-10-27 changed it to say the videos play from our own
-  website, and 2026-10-28 said which videos our emails link to on YouTube
-  and that the player links there if a video can't load. People who
+  website, 2026-10-28 said which videos our emails link to on YouTube
+  and that the player links there if a video can't load, and 2026-11-13
+  said that connecting a QuickBooks company tells us about the Intuit
+  account used, and when we keep its ID for Sign in with Intuit. People who
   accepted 2026-10-14 accepted that version.
 
 Each document prints its own "Last updated" date (`LEGAL_UPDATED` in

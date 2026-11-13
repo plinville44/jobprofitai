@@ -20,7 +20,7 @@ import JobTypesManager from "./JobTypesManager";
 import { getJobTypes } from "@/lib/jobTypesServer";
 import { needsReconnect } from "@/lib/quickbooks";
 import { syncErrorForPeople } from "@/lib/syncProblem";
-import { ConnectToQuickBooksButton } from "@/components/IntuitButtons";
+import { AddCompanyButton, ConnectToQuickBooksButton } from "@/components/IntuitButtons";
 
 const SYNC_STATUS_DOT: Record<string, "good" | "warning" | "critical" | "unmeasured"> = {
   success: "good",
@@ -191,10 +191,7 @@ export default async function SettingsPage(props: {
                   connects new ones.
                 </p>
               ) : permission.allowed ? (
-                <div>
-                  <p className="mb-2 font-medium text-navy">Add another company</p>
-                  <ConnectToQuickBooksButton />
-                </div>
+                <AddCompanyButton />
               ) : (
                 <p className="text-gray-500">{permission.reason}</p>
               )}
@@ -322,8 +319,9 @@ function personalSections(isOwner: boolean, intuitLinked: boolean) {
             </>
           ) : (
             <p className="mt-1 text-sm text-gray-600">
-              Off. To turn it on, log out and choose Sign in with Intuit on the login page; you&apos;ll be asked for
-              your password once to link it.
+              Off. It turns on when you connect QuickBooks with an Intuit account that has this login&apos;s email
+              address. Or log out and choose Sign in with Intuit on the login page; you&apos;ll be asked for your
+              password once to link it.
             </p>
           )}
         </div>

@@ -313,7 +313,9 @@ export default function SecurityPage() {
                 If you use Sign in with Intuit, your account is matched on Intuit&rsquo;s permanent
                 account ID, never on the email address. Intuit must have verified your email, and
                 an Intuit sign-in is only linked to an existing JobProfitAI login after that
-                login&rsquo;s password has been entered.
+                login&rsquo;s password has been entered, or when you connect QuickBooks while signed
+                in to that login, with an Intuit account whose verified email address is the
+                login&rsquo;s own. We email you whenever one is linked.
               </p>
             </Item>
 

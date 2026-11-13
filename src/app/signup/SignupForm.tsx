@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { SignInWithIntuitButton } from "@/components/IntuitButtons";
 import Link from "next/link";
 
 const inputClass =
@@ -97,25 +96,10 @@ export default function SignupForm() {
         </p>
       ) : null}
 
-      {!partnerIntent && (
-        <>
-          {/* One step with the QuickBooks login they already have: Intuit
-              sign-in and QuickBooks access together, account and trial
-              created on the way back (see src/lib/intuitSignIn.ts). Its own
-              intent, so the signup is measured like the email one below. */}
-          <div className="mt-7 flex flex-col items-center gap-2">
-            <SignInWithIntuitButton intent="signup" />
-            <p className="text-center text-xs text-jp-muted">
-              Uses your QuickBooks login and connects your company in the same step.
-            </p>
-          </div>
-          <div className="mt-6 flex items-center gap-3 text-xs uppercase tracking-wide text-jp-muted">
-            <span className="h-px flex-1 bg-jp-line" />
-            or with email
-            <span className="h-px flex-1 bg-jp-line" />
-          </div>
-        </>
-      )}
+      {/* No Sign in with Intuit here: Intuit's review (Nov 13, 2026) allows
+          that button on the login page only. Someone who wants to use their
+          Intuit login can choose it there; a new Intuit identity is offered
+          a new account at /login/intuit. */}
 
       <form onSubmit={handleSubmit} className="mt-7 space-y-4">
         <div>
