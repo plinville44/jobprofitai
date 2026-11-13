@@ -66,14 +66,14 @@ const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
 const flat = (rel: string) => read(rel).replace(/\s+/g, " ");
 const sha256 = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
 
-/** Every source file outside the tests, relative to src/. */
+/** Every source file outside the tests, relative to src/, with forward slashes on Windows too. */
 function sourceFiles(dir = SRC, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     const full = join(dir, name);
     if (statSync(full).isDirectory()) {
       if (name !== "__tests__" && name !== "node_modules") sourceFiles(full, out);
     } else if (/\.(ts|tsx)$/.test(name)) {
-      out.push(full.slice(SRC.length + 1));
+      out.push(full.slice(SRC.length + 1).replace(/\\/g, "/"));
     }
   }
   return out;
