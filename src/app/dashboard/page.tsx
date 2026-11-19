@@ -266,7 +266,7 @@ export default async function DashboardPage(props: {
                 </Link>
               </div>
               <div className="mt-4">
-                <OpportunitySummary summary={opportunities.feed.summary} />
+                <OpportunitySummary summary={opportunities.feed.summary} viewOnly={viewOnly} />
               </div>
               {opportunities.feed.items.filter((i) => i.section !== "working").length > 0 ? (
                 <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -351,13 +351,21 @@ export default async function DashboardPage(props: {
             />
             <KpiCard label="Revenue" value={formatCurrency(profitData.totals.revenue)} />
             <KpiCard label="Tracked Job Costs" value={formatCurrency(profitData.totals.trackedJobCosts)} />
-            <KpiCard label="Job Gross Profit" value={formatCurrency(profitData.totals.jobGrossProfit)} />
+            {/* Only jobs with both revenue and costs (computeDashboardTotals), so
+                it can differ from Revenue minus Tracked Job Costs. Said on the
+                tile, or the three side by side look like a sum that's wrong. */}
+            <KpiCard
+              label="Job Gross Profit"
+              value={formatCurrency(profitData.totals.jobGrossProfit)}
+              note="Only jobs with both revenue and costs"
+            />
             {/* Job Gross Profit over the same jobs' revenue, so it always
                 agrees with the tile beside it. On the Active tab it's margin
                 to date: billing timing as much as profit, and said so. */}
             <KpiCard
               label={statusFilter === "open" ? "Margin to Date" : "Job Margin"}
               value={formatPct(profitData.totals.avgJobMarginPct)}
+              note="On those same jobs"
             />
             <KpiCard
               label="Your Target Margin"
@@ -565,12 +573,15 @@ function KpiCard({
   value,
   tone,
   wholeJob = false,
+  note,
 }: {
   label: string;
   value: string;
   tone?: "warning" | "critical";
   /** Marks a tile the period picker does not change, on the tile itself. */
   wholeJob?: boolean;
+  /** A short line under the figure saying what it covers. */
+  note?: string;
 }) {
   const toneClass =
     tone === "critical" ? "border-red-200 bg-red-50" : tone === "warning" ? "border-amber-200 bg-amber-50" : "border-gray-200";
@@ -581,6 +592,7 @@ function KpiCard({
         {wholeJob ? <span className="ml-1.5 text-gray-400">· whole job</span> : null}
       </p>
       <p className="mt-1 text-xl font-bold text-navy">{value}</p>
+      {note ? <p className="mt-1 text-[11px] text-gray-400">{note}</p> : null}
     </div>
   );
 }

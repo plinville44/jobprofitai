@@ -100,7 +100,7 @@ export default async function OpportunitiesPage() {
       </p>
 
       <div className="mt-6">
-        <OpportunitySummary summary={feed.summary} />
+        <OpportunitySummary summary={feed.summary} viewOnly={viewOnly} />
       </div>
 
       {feed.setup.length > 0 && (

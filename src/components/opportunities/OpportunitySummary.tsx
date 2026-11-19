@@ -8,7 +8,30 @@ import { estimatesDetail, type FeedSummary } from "@/lib/opportunities";
  * because they are different kinds of money (profit on finished work,
  * profit on open work, price on unsent estimates, and cash owed).
  */
-export default function OpportunitySummary({ summary, compact = false }: { summary: FeedSummary; compact?: boolean }) {
+export default function OpportunitySummary({
+  summary,
+  compact = false,
+  viewOnly = false,
+}: {
+  summary: FeedSummary;
+  compact?: boolean;
+  /**
+   * A client's view-only login. It can't set a target margin (the settings
+   * routes refuse it), so it isn't offered a link to try: it's told who can.
+   */
+  viewOnly?: boolean;
+}) {
+  if (!summary.targetSet && viewOnly) {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
+        <p className="font-semibold">No target margin is set for this company yet.</p>
+        <p className="mt-1">
+          Every figure here is measured against the margin the company aims for, so these stay empty until your
+          bookkeeper sets one.
+        </p>
+      </div>
+    );
+  }
   if (!summary.targetSet) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
