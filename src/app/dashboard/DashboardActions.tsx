@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { syncRefusalNotice } from "@/lib/syncNotice";
 
 export default function DashboardActions({ connectionId }: { connectionId: string }) {
   const router = useRouter();
@@ -41,7 +42,13 @@ export default function DashboardActions({ connectionId }: { connectionId: strin
       if (res.ok && data) {
         setStatus(onSuccess(data));
       } else {
-        setStatus(`Failed: ${data?.error ?? `Server returned status ${res.status}. Please try again, or email support@jobprofitai.com.`}`);
+        // A sync already running, or one that ended under a minute ago, is
+        // not a failure: that sync is doing the work. Shown as a plain
+        // notice, without "Failed:" (src/lib/syncNotice.ts).
+        const notice = syncRefusalNotice(data);
+        setStatus(
+          notice ?? `Failed: ${data?.error ?? `Server returned status ${res.status}. Please try again, or email support@jobprofitai.com.`}`
+        );
       }
     } catch (err) {
       setStatus(`Failed: ${err instanceof Error ? err.message : "Network error. Please try again."}`);
