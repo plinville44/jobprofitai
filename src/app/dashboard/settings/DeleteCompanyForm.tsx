@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import PasswordInput from "@/components/PasswordInput";
 import { useRouter } from "next/navigation";
 
 /**
@@ -61,12 +62,12 @@ export default function DeleteCompanyForm({ connectionId, companyName }: { conne
       </p>
       <label className="block text-sm">
         <span className="text-gray-700">Your password</span>
-        <input
-          type="password"
+        <PasswordInput
+          containerClassName="mt-1"
           autoComplete="current-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"
+          className="w-full rounded-lg border border-gray-300 px-3 py-2"
           required
         />
       </label>

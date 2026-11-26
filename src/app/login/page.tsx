@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import PasswordInput from "@/components/PasswordInput";
 import { LogoLink } from "@/components/marketing/Logo";
 import { SignInWithIntuitButton } from "@/components/IntuitButtons";
 import { TRADEMARK_NOTICE } from "@/components/marketing/trademark";
@@ -120,33 +121,41 @@ export default function LoginPage() {
 
       <form onSubmit={handleSubmit} className="mt-6 space-y-4">
         <div>
-          <label className="block text-sm font-medium text-navy">Email</label>
+          <label htmlFor="login-email" className="block text-sm font-medium text-navy">
+            Email
+          </label>
           <input
+            id="login-email"
             type="email"
             required
+            autoComplete="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"
           />
         </div>
         <div>
-          <div className="flex items-baseline justify-between">
-            <label className="block text-sm font-medium text-navy">Password</label>
-            {/* Next to the field, not buried in the footer. Someone reaches
-                for this at the exact moment their password fails, and the
-                login error deliberately doesn't say which half was wrong, so
-                the recovery route has to be visible without hunting. */}
+          <label htmlFor="login-password" className="block text-sm font-medium text-navy">
+            Password
+          </label>
+          <PasswordInput
+            id="login-password"
+            required
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            containerClassName="mt-1"
+            className="w-full rounded-lg border border-gray-300 px-3 py-2"
+          />
+          {/* Right under the field, not buried in the footer: someone reaches
+              for this the moment their password fails, and the login error
+              deliberately doesn't say which half was wrong. After the field
+              in the page, so Tab goes from Email straight into Password. */}
+          <div className="mt-1.5 text-right">
             <Link href="/forgot-password" className="text-sm font-medium text-brand hover:underline">
               Forgot password?
             </Link>
           </div>
-          <input
-            type="password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"
-          />
         </div>
         {error && <p className="text-sm text-red-700">{error}</p>}
         <button

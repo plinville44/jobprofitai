@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import PasswordInput from "@/components/PasswordInput";
 
 type LinkState = "checking" | "valid" | "invalid";
 
@@ -134,16 +135,16 @@ export default function ResetPasswordForm() {
           <label htmlFor="password" className="block text-sm font-medium text-jp-ink">
             New password
           </label>
-          <input
+          <PasswordInput
             id="password"
-            type="password"
             autoComplete="new-password"
             required
             minLength={8}
             maxLength={200}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-jp-line px-3 py-2"
+            containerClassName="mt-1"
+            className="w-full rounded-lg border border-jp-line px-3 py-2"
           />
           <p className="mt-1 text-xs text-jp-muted">At least 8 characters.</p>
         </div>
@@ -152,15 +153,15 @@ export default function ResetPasswordForm() {
           <label htmlFor="confirm" className="block text-sm font-medium text-jp-ink">
             Confirm new password
           </label>
-          <input
+          <PasswordInput
             id="confirm"
-            type="password"
             autoComplete="new-password"
             required
             maxLength={200}
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-jp-line px-3 py-2"
+            containerClassName="mt-1"
+            className="w-full rounded-lg border border-jp-line px-3 py-2"
           />
         </div>
 

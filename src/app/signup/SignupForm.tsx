@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
+import PasswordInput from "@/components/PasswordInput";
 
 const inputClass =
   "w-full rounded-lg border border-jp-line bg-white px-3.5 py-2.5 text-[15px] text-jp-ink shadow-sm outline-none transition-colors placeholder:text-jp-muted focus:border-jp-blue focus:ring-2 focus:ring-jp-blue/20";
@@ -20,6 +21,10 @@ export default function SignupForm() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  // Typed twice, so a typo can't lock someone out of the account they just made.
+  const [confirm, setConfirm] = useState("");
+  // Flagged only once what's typed stops matching, not while it's still a beginning of the password.
+  const confirmOff = confirm !== "" && !password.startsWith(confirm);
   // The Terms box starts unchecked; the server refuses a signup without it.
   const [agreed, setAgreed] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -28,6 +33,10 @@ export default function SignupForm() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (loading) return;
+    if (password !== confirm) {
+      setError("Those two passwords don't match.");
+      return;
+    }
     if (!agreed) {
       setError("Please check the box to agree to the Terms of Service and Privacy Policy.");
       return;
@@ -137,9 +146,8 @@ export default function SignupForm() {
           <label htmlFor="signup-password" className="mb-1.5 block text-sm font-medium text-jp-ink">
             Password
           </label>
-          <input
+          <PasswordInput
             id="signup-password"
-            type="password"
             required
             minLength={8}
             maxLength={200}
@@ -149,6 +157,28 @@ export default function SignupForm() {
             className={inputClass}
           />
           <p className="mt-1.5 text-xs text-jp-muted">At least 8 characters.</p>
+        </div>
+
+        <div>
+          <label htmlFor="signup-confirm" className="mb-1.5 block text-sm font-medium text-jp-ink">
+            Confirm password
+          </label>
+          <PasswordInput
+            id="signup-confirm"
+            required
+            maxLength={200}
+            autoComplete="new-password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            aria-invalid={confirmOff}
+            aria-describedby={confirmOff ? "signup-confirm-hint" : undefined}
+            className={inputClass}
+          />
+          {confirmOff ? (
+            <p id="signup-confirm-hint" className="mt-1.5 text-xs text-red-700">
+              Doesn&apos;t match the password above yet.
+            </p>
+          ) : null}
         </div>
 
         <label className="flex items-start gap-2.5 text-sm text-jp-slate">
