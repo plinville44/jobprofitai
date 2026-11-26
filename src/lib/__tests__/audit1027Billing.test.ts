@@ -614,7 +614,9 @@ describe("Z2: a password over 200 characters gets our own words", () => {
 
   it("and the password boxes stop at 200", () => {
     expect(flat("app/signup/SignupForm.tsx")).toContain('minLength={8} maxLength={200} autoComplete="new-password"');
-    expect(flat("app/invite/[token]/AcceptInviteForm.tsx")).toContain("minLength={8} maxLength={200} value={password}");
+    const invite = flat("app/invite/[token]/AcceptInviteForm.tsx");
+    expect(invite).toContain('minLength={8} maxLength={200} autoComplete="new-password" value={password}');
+    expect(invite).toContain('maxLength={200} autoComplete="new-password" value={confirm}');
     const reset = flat("app/reset-password/ResetPasswordForm.tsx");
     expect(reset).toContain("minLength={8} maxLength={200} value={password}");
     expect(reset).toContain("maxLength={200} value={confirm}");
