@@ -397,8 +397,13 @@ describe("2. a full read that's owed isn't partway", () => {
   });
 
   it("when it's put off late in a window: owed if nothing was read, partway if a step was", async () => {
+    // "Late" is well past the deadline: the first step is allowed 45 s past
+    // it (FIRST_STEP_GRACE_MS), and once a step has been timed at a few
+    // milliseconds (a busier machine) it's estimated at 5 s, so a deadline
+    // only 10 s back still let it run and this test failed on Windows (Nov 26).
+    // Ten minutes back, nothing fits whatever the timings.
     await addConnection({ syncVersion: SYNC_VERSION - 1 });
-    const late = { deadline: Date.now() - 10_000, windowStart: Date.now() - 60_000 };
+    const late = { deadline: Date.now() - 10 * 60_000, windowStart: Date.now() - 15 * 60_000 };
     const owed = await runSyncForConnection("c1", late);
     expect(owed).toMatchObject({ unfinished: true, deferred: true });
     expect((await connection()).fullSyncContinueAt).toEqual(FULL_SYNC_OWED_AT);
@@ -406,7 +411,7 @@ describe("2. a full read that's owed isn't partway", () => {
     // One step read, then put off.
     await runSyncForConnection("c1", { deadline: noTimeLeft() });
     await tick();
-    await runSyncForConnection("c1", { deadline: Date.now() - 10_000, windowStart: Date.now() - 60_000 });
+    await runSyncForConnection("c1", { deadline: Date.now() - 10 * 60_000, windowStart: Date.now() - 15 * 60_000 });
     const c = await connection();
     expect(c.fullSyncContinueAt).toEqual(FULL_SYNC_PARTWAY_FIRST_AT);
     expect([fullSyncOwed(c), fullSyncPartway(c)]).toEqual([false, true]);
@@ -430,7 +435,7 @@ describe("2. a full read that's owed isn't partway", () => {
     await db().syncRun.create({
       data: { connectionId: "c1", status: "partial", mode: "full", startedAt: new Date(Date.now() - DAY), finishedAt: new Date(Date.now() - DAY), entitiesUpdated: { fullSyncProgress: { startedAt: new Date(Date.now() - DAY).toISOString(), version: SYNC_VERSION - 1, done: ["Jobs"] } } },
     });
-    await runSyncForConnection("c1", { deadline: Date.now() - 10_000, windowStart: Date.now() - 60_000 });
+    await runSyncForConnection("c1", { deadline: Date.now() - 10 * 60_000, windowStart: Date.now() - 15 * 60_000 });
     expect((await connection()).fullSyncContinueAt).toEqual(FULL_SYNC_PARTWAY_FIRST_AT);
   });
 
