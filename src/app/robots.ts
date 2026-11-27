@@ -5,7 +5,8 @@ import type { MetadataRoute } from "next";
  *
  * /dashboard and /api are disallowed because they're authenticated and
  * useless as search results; /r/ is disallowed so referral links don't get
- * indexed and attributed to a crawler.
+ * indexed and attributed to a crawler, and /go/ so the outreach short links
+ * don't either (a crawler's visit would show up as an outreach click).
  */
 export default function robots(): MetadataRoute.Robots {
   const base = (process.env.APP_URL ?? "https://jobprofitai.com").replace(/\/+$/, "");
@@ -24,6 +25,7 @@ export default function robots(): MetadataRoute.Robots {
           "/dashboard/",
           "/reports/",
           "/r/",
+          "/go/",
           "/login",
           "/signup",
           "/forgot-password",
